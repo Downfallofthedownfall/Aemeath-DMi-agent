@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的桌面助手 - 爱弥斯</title>
+  <!-- 引入 KaTeX 样式和库 -->
+  <link rel="stylesheet" href="../node_modules/katex/dist/katex.min.css">
+  <script src="../node_modules/katex/dist/katex.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    
+    <!-- ===== 左侧：对话历史栏 ===== -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h3>💬 对话历史</h3>
+        <!-- 模式切换 -->
+        <div class="mode-switcher">
+          <span id="mode-indicator">爱弥斯桌宠</span>
+          <button id="mode-toggle-btn" title="切换模式">🔄</button>
+        </div>
+        <button id="new-chat-btn" title="新建对话">➕</button>
+      </div>
+      <ul id="history-list"></ul>
+    </aside>
+
+    <!-- ===== 右侧：主聊天区域 ===== -->
+    <main id="chat-area">
+      <div id="messages-container"></div>
+
+      <!-- ===== 底部输入区域 ===== -->
+      <div id="input-area">
+        
+        <!-- 语音播报开关 -->
+        <label class="tts-toggle" title="开启/关闭语音播报">
+          <span>🔊</span>
+          <input type="checkbox" id="tts-switch" checked>
+          <span class="slider"></span>
+        </label>
+
+        <textarea id="user-input" placeholder="输入您的问题..." rows="1"></textarea>
+
+        <div class="button-group">
+          <button id="mic-btn" title="语音输入">🎤</button>
+          <button id="send-btn">发送</button>
+        </div>
+      </div>
+    </main>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

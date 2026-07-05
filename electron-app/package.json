@@ -1,0 +1,56 @@
+{
+  "name": "aemeath-desktop-agent",
+  "version": "0.0.1",
+  "description": "aemeath-desktop-agent",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --win --x64"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0",
+    "fastmcp": "^4.3.2",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "zod": "^4.4.3"
+  },
+  "build": {
+    "appId": "com.aemeath.desktop-agent",
+    "productName": "aemeath",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "config.json",
+      "config.example.json",
+      "py_config.json",
+      "run_server.py",
+      "renderer/**/*",
+      "assets/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "爱弥斯",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "dependencies": {
+    "@iflow-mcp/filesystem-mcp-server": "^1.0.5",
+    "katex": "^0.17.0"
+  }
+}

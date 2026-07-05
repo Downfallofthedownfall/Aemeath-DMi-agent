@@ -1,0 +1,19 @@
+{
+  "name": "mcp-ts-filesystem",
+  "version": "1.0.0",
+  "description": "MCP filesystem server using FastMCP",
+  "main": "mcp-server.ts",
+  "scripts": {
+    "start": "tsx mcp-server.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "fastmcp": "^3.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

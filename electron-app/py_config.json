@@ -1,0 +1,14 @@
+{
+    "timeout_seconds": 120,
+    "host": "0.0.0.0",
+    "port": 18888,
+    "allowed_commands": [
+        "start chrome",
+        "start notepad",
+        "start calc",
+        "start explorer",
+        "start msedge",
+        "start wmplayer",
+        "start mspaint"
+    ]
+}

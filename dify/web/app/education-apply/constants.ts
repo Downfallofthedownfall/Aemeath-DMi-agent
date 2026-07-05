@@ -1,0 +1,2 @@
+export const EDUCATION_VERIFY_URL_SEARCHPARAMS_ACTION = 'getEducationVerify'
+export const EDUCATION_RE_VERIFY_ACTION = 'educationReVerify'

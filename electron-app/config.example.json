@@ -1,0 +1,15 @@
+{
+    "dify_api_base": "http://localhost/v1",
+    "tts_model_path": "",
+    "ooc_workflow_key": "app-x",
+    "modes": {
+        "aemeath": {
+            "name": "爱弥斯桌宠",
+            "dify_api_key": "在此填入爱弥斯桌宠的API Key"
+        },
+        "physicist": {
+            "name": "星炬物理学霸",
+            "dify_api_key": "在此填入星炬物理学霸的API Key"
+        }
+    }
+}
