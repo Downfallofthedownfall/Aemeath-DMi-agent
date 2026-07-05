@@ -159,9 +159,6 @@ Thumbs.db
 # voices
 .wav
 
-# 绝不允许把 Docker 数据卷提交上去
-docker/volumes/
-volumes/
 node_modules/
 *.log
 __pycache__/
