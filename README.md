@@ -1,139 +1,173 @@
-# 🤖 爱弥斯DMi助手 / Aemeath DMi Agent
+# 🤖 爱弥斯DMi助手
+# 🤖 Aemeath Dual-Mode-intelligent Assistant
 
-> 🇨🇳 一个支持语音、视觉、RAG、工具调用、双模态切换的桌面 AI 助手  
-> 🇬🇧 A desktop AI assistant with voice, vision, RAG, tool calling, and dual-mode switching.
-
-![版本](https://img.shields.io/badge/版本-2.0.0-blue)
-![Electron](https://img.shields.io/badge/Electron-28.0.0-47848F)
-![DeepSeek](https://img.shields.io/badge/DeepSeek-Chat-4F46E5)
-![Python](https://img.shields.io/badge/Python-3.10+-3776AB)
+> 🇨🇳 一个支持语音、RAG、工具调用、视觉识别、双模态切换的桌面AI助手  
+> 🇬🇧 A desktop AI assistant with voice, RAG, tool calling, visual recognition, and dual-mode switching.
 
 ---
 
 ## ✨ 功能一览 / Features
 
-### 🧠 AI 核心能力 / Core AI Capabilities
+### 🧠 AI 核心能力 / Core AI
 
-| 功能 / Feature | 状态 / Status | 说明 / Description |
-|------|------|------|
-| DeepSeek 对话 / DeepSeek Chat | ✅ | 双 Agent 独立运行 / Dual agents running independently |
-| RAG 知识库 / RAG Knowledge Base | ✅ | 独立知识库 / Independent knowledge bases |
-| 共享记忆 / Shared Memory | ✅ | 双模态共享用户信息 / Shared user info across modes |
-| 深度思考 / Deep Thinking | ✅ | 保留思考，界面自动过滤 / Kept but filtered in UI |
-| 双模态切换 / Dual-mode Switching | ✅ | 一键切换桌宠/学霸 / One-click: Pet ↔ Scholar |
-| OOC 自动修正 / Auto OOC Correction | ✅ | 语义级角色一致性检测与自动修正 / Semantic role consistency check & auto-fix |
+| 🇨🇳 功能 | 🇬🇧 Feature | 状态 |
+|---------|------------|------|
+| DeepSeek 对话 | DeepSeek Chat | ✅ |
+| RAG 知识库 | RAG Knowledge Base | ✅ |
+| 共享记忆 | Shared Memory | ✅ |
+| 深度思考（自动过滤） | Deep Thinking (auto-filtered) | ✅ |
+| 双模态切换 | Dual-mode Switching | ✅ |
 
-### 👁️ 视觉与识别 / Vision & Recognition
+### 🔧 工具与扩展 / Tools
 
-| 功能 / Feature | 技术栈 / Tech Stack | 说明 / Description |
-|------|--------|------|
-| 目标检测 / Object Detection | YOLOv8 | 实时检测屏幕中的人、物体 / Real-time detection of people & objects |
-| OCR 文字识别 / OCR | EasyOCR | 从屏幕截图提取文字 / Extract text from screenshots |
-| 场景描述 / Scene Description | 自定义 / Custom | 综合检测 + OCR 描述屏幕内容 / Combined detection + OCR description |
-| 屏幕分析 / Screen Analysis | MSS + OpenCV | 快速截屏与区域分析 / Fast screenshot & region analysis |
+| 🇨🇳 功能 | 🇬🇧 Feature | 状态 |
+|---------|------------|------|
+| 联网搜索 | Web Search | ✅ |
+| 天气查询 | Weather Query | ✅ |
+| 数学计算 | Math Calculations | ✅ |
+| 代码执行 | Code Interpreter | ✅ |
+| 文件系统操作 | File System Operations | ✅ |
+| 键盘鼠标控制 | Keyboard & Mouse Control | ✅ |
+| 本地命令执行 | Local Command Execution | ✅ |
+| 工作流技能 | Workflow Skills | ✅ |
 
-### 🔧 工具与扩展 / Tools & Extensions
+### 🎙️ 语音与视觉 / Voice & Vision
 
-| 功能 / Feature | 协议 / Protocol | 说明 / Description |
-|------|------|------|
-| 联网搜索 / Web Search | Dify 内置 | 实时搜索网络信息 / Real-time web search |
-| 天气查询 / Weather | Dify 内置 | 实时天气数据 / Real-time weather data |
-| 数学计算 / Math | Dify 内置 | 公式计算与推导 / Formula calculation |
-| 代码执行 / Code Interpreter | Dify 内置 | 执行 Python 代码 / Execute Python code |
-| 文件系统 / File System | MCP (TypeScript) | 浏览、读写、搜索本地文件 / Browse, read, write local files |
-| 本地命令 / Local Command | HTTP API | 打开软件、操作电脑 / Open apps, control PC |
-| **键盘鼠标 / Keyboard & Mouse** | **HTTP API (PyAutoGUI)** | **模拟点击、输入、快捷键、窗口切换 / Simulate clicks, typing, hotkeys, window switching** |
-| **视觉识别 / Vision** | **HTTP API (YOLOv8 + EasyOCR)** | **屏幕分析、文字提取、物体检测 / Screen analysis, OCR, object detection** |
-| MCP 扩展 / MCP Extensions | Dify 市场 | 插件市场工具支持 / Marketplace tool support |
-| 工作流技能 / Workflow Skills | Dify 工作流 | 自定义多步骤自动化 / Custom multi-step automation |
-
-### 🎙️ 语音能力 / Voice Capabilities
-
-| 功能 / Feature | 技术栈 / Tech Stack | 说明 / Description |
-|------|--------|------|
-| 语音输入 / Voice Input | Web Speech API | 麦克风录音转文字 / Mic recording to text |
-| **自训练 TTS / Self-trained TTS** | **IndexTTS2** | **用自己的声音训练模型，实时合成语音 / Train with your own voice for real-time synthesis** |
-| 情感控制 / Emotion Control | IndexTTS2 | 情感向量 + 文本情感引导 / Emotion vector + text emotion guidance |
+| 🇨🇳 功能 | 🇬🇧 Feature | 状态 |
+|---------|------------|------|
+| TTS 语音播报（自训练音色） | TTS (Custom Voice) | ✅ |
+| 语音输入 | Voice Input | ✅ |
+| YOLO 目标检测 | YOLO Object Detection | ✅ |
+| OCR 文字识别 | OCR Text Recognition | ✅ |
+| 屏幕场景描述 | Screen Scene Description | ✅ |
 
 ### 🖥️ 桌面体验 / Desktop Experience
 
-| 功能 / Feature | 状态 / Status | 说明 / Description |
-|------|------|------|
-| 深色科技风 UI / Dark Tech UI | ✅ | 紫色/蓝色主题 / Purple-blue theme |
-| 流式显示 / Streaming Display | ✅ | AI 回复实时逐字出现 / Real-time character-by-character display |
-| KaTeX 公式渲染 / KaTeX Rendering | ✅ | 数学公式美观显示 / Beautiful math formula display |
-| 对话历史管理 / Chat History | ✅ | 新建、切换、删除 / New, switch, delete conversations |
-| 系统托盘 / System Tray | ✅ | 关窗口不退出 / Minimize to tray |
-| 全局快捷键 / Global Shortcut | ✅ | Ctrl+Shift+Space 唤出/隐藏 / Show/Hide |
-| 开机自启 / Auto-start | ✅ | 电脑开机自动启动 / Auto-start on boot |
-
----
-
-## 🛠️ 技术栈 / Tech Stack
-
-| 技术 / Technology | 用途 / Purpose |
-|------|------|
-| **Electron 28** | 桌面应用框架 / Desktop app framework |
-| **Dify 1.15** | AI 引擎 / AI engine (DeepSeek, RAG, tools, workflows) |
-| **DeepSeek Chat** | LLM 模型 / LLM model |
-| **IndexTTS2** | 自训练 TTS 语音合成 / Self-trained TTS |
-| **KaTeX** | 公式渲染 / Formula rendering |
-| **Web Speech API** | 语音输入 / Voice input |
-| **YOLOv8** | 目标检测 / Object detection |
-| **EasyOCR** | 文字识别 / Text recognition |
-| **PyAutoGUI** | 键盘鼠标自动化 / Keyboard & mouse automation |
-| **PyGetWindow** | 窗口管理 / Window management |
-| **MCP (TypeScript)** | 文件系统协议 / File system protocol |
-| **Docker** | Dify 部署 / Dify deployment |
+| 🇨🇳 功能 | 🇬🇧 Feature | 状态 |
+|---------|------------|------|
+| KaTeX 公式渲染 | KaTeX Formula Rendering | ✅ |
+| OOC 检测 + 自动修正 | OOC Detection + Auto-fix | ✅ |
+| 系统托盘 | System Tray | ✅ |
 
 ---
 
 ## 🚀 一键部署 / One-Click Setup
 
-### 前提条件 / Prerequisites
+### 📋 前提条件 / Prerequisites
 
-| 工具 / Tool | 版本 / Version | 下载 / Download |
-|------|---------|------|
-| Node.js | 20+ | https://nodejs.org |
-| Docker Desktop | 最新 / Latest | https://docker.com |
-| Python | 3.10+ | https://python.org |
-| Git | 最新 / Latest | https://git-scm.com |
+| 🇨🇳 软件 | 🇬🇧 Software | 版本 / Version | 下载 / Download |
+|---------|------------|---------------|----------------|
+| Node.js | Node.js | 20+ | https://nodejs.org |
+| Docker Desktop | Docker Desktop | latest | https://docker.com |
+| Python | Python | 3.10+ | https://python.org |
+| Git | Git | latest | https://git-scm.com |
 
-### Windows 一键安装 / One-Click Windows Setup
+### 🔑 需要准备的 API Key / API Keys Required
 
-```batch
+| 🇨🇳 Key | 🇬🇧 Key | 用途 / Purpose | 获取地址 / URL |
+|---------|--------|---------------|---------------|
+| DeepSeek API Key | DeepSeek API Key | 对话模型 / Chat Model | https://platform.deepseek.com/api_keys |
+| 通义千问 API Key | Qwen API Key | 知识库重排序 / RAG Reranking | https://help.aliyun.com/zh/model-studio |
+
+### 📥 安装步骤 / Installation Steps
+
+# 🇨🇳 克隆项目
+# 🇬🇧 Clone the project
 git clone https://github.com/你的用户名/my-desktop-agent.git
 cd my-desktop-agent
+
+# 🇨🇳 一键部署（Windows）
+# 🇬🇧 One-click deployment (Windows)
 setup.bat
 
-setup.bat 会自动完成 / Automatically completes:
+🇨🇳 setup.bat 会自动完成以下操作：
+🇬🇧 setup.bat will automatically:
+✅ 检查 Node.js / Docker / Python 是否已安装 / Check if Node.js, Docker, Python are installed
+✅ 安装 Python 依赖 / Install Python dependencies (pip install -r requirements.txt)
+✅ 安装 Electron 依赖 / Install Electron dependencies (npm install)
+✅ 启动 Dify 服务 / Start Dify service (docker compose up -d)
+✅ 导入预置应用配置（YAML）/ Import preset app configurations (YAML)
+✅ 引导你填写 DeepSeek 和通义千问的 API Key / Guide you to enter API Keys
 
-✅ 检查 Node.js、Docker、Python 环境 / Check Node.js, Docker, Python
-✅ 安装所有 Python 依赖 / Install Python dependencies
-✅ 安装 Electron 依赖 / Install Electron dependencies
-✅ 启动 Dify 服务 / Start Dify service
+🇨🇳 手动启动（不通过 setup.bat）
+🇬🇧 Manual Start (without setup.bat)
 
-手动安装 / Manual Setup
-# 1. 克隆项目 / Clone the project
-git clone https://github.com/你的用户名/my-desktop-agent.git
-cd my-desktop-agent
-
-# 2. 安装 Python 依赖 / Install Python dependencies
-pip install -r requirements.txt
-
-# 3. 安装 IndexTTS2（可选，用于自训练音色） / Install IndexTTS2 (optional)
-cd F:\index-tts  # 或你的模型路径 / or your model path
-uv sync --all-extras
-cd ..
-
-# 4. 启动 Dify / Start Dify
+# 🇨🇳 启动 Dify
+# 🇬🇧 Start Dify
 cd dify/docker
 docker compose up -d
-cd ../..
 
-# 5. 安装 Electron 依赖 / Install Electron dependencies
-cd electron-app
+# 🇨🇳 安装依赖并启动桌面应用
+# 🇬🇧 Install dependencies and launch
+cd ../../electron-app
 npm install
-
-# 6. 启动桌面应用 / Start the desktop app
 npm start
+
+首次配置 / First-time Setup
+打开浏览器访问 http://localhost，注册 Dify 账号 / Open http://localhost and register a Dify account
+进入设置 → 模型供应商，配置 DeepSeek 和通义千问的 API Key / Go to Settings → Model Providers, configure API Keys
+复制 config.example.json 为 config.json，填入你的 API Key / Copy config.example.json to config.json, fill in your keys
+重启应用，预置配置将自动加载 / Restart the app, preset configs will load automatically
+
+📁 项目结构 / Project Structure
+Aemeath-Desktop-Agent/
+├── electron-app/              # 🇨🇳 Electron 桌面应用 / 🇬🇧 Electron desktop app
+│   ├── main.js               # 🇨🇳 主进程 / 🇬🇧 Main process
+│   ├── preload.js            # 🇨🇳 桥接文件 / 🇬🇧 Bridge file
+│   ├── config.json           # 🇨🇳 配置文件（含 API Key，不上传 Git）
+│   │                         # 🇬🇧 Config file (contains API keys, not committed)
+│   ├── config.example.json   # 🇨🇳 配置模板 / 🇬🇧 Config template
+│   ├── dify_apps/            # 🇨🇳 Dify 应用配置导出（YAML）
+│   │                         # 🇬🇧 Dify app config exports (YAML)
+│   │   ├── aemeath.yml       # 🇨🇳 爱弥斯桌宠 / 🇬🇧 Aemeath Pet
+│   │   ├── physicist.yml     # 🇨🇳 星炬物理学霸 / 🇬🇧 Physicist Scholar
+│   │   └── ooc_check.yml     # 🇨🇳 OOC 检测工作流 / 🇬🇧 OOC Check Workflow
+│   ├── renderer/             # 🇨🇳 前端界面 / 🇬🇧 Frontend UI
+│   │   ├── index.html
+│   │   ├── style.css
+│   │   └── app.js
+│   ├── run_server.py         # 🇨🇳 本地命令执行服务 / 🇬🇧 Local command service
+│   ├── control_server.py     # 🇨🇳 键盘鼠标控制服务 / 🇬🇧 Control service
+│   └── assets/               # 🇨🇳 图标资源 / 🇬🇧 Icons
+├── dify/                     # 🇨🇳 Dify 服务（Docker）/ 🇬🇧 Dify service
+├── setup.bat                 # 🇨🇳 Windows 一键部署脚本 / 🇬🇧 One-click setup script
+├── requirements.txt          # 🇨🇳 Python 依赖 / 🇬🇧 Python dependencies
+└── README.md                 # 🇨🇳 本文件 / 🇬🇧 This file
+
+🛠️ 技术栈 / Tech Stack
+🇨🇳 技术	🇬🇧 Technology	🇨🇳 用途	🇬🇧 Purpose
+Electron 28	Electron 28	桌面应用框架	Desktop app framework
+Dify 1.15	Dify 1.15	AI 引擎	AI engine
+DeepSeek Chat	DeepSeek Chat	对话模型	Chat model
+通义千问 (Qwen)	Qwen	知识库重排序	RAG reranking
+IndexTTS2	IndexTTS2	语音合成	Voice synthesis
+YOLOv8	YOLOv8	目标检测	Object detection
+EasyOCR	EasyOCR	文字识别	Text recognition
+pyautogui	pyautogui	键盘鼠标控制	Keyboard & mouse control
+KaTeX	KaTeX	公式渲染	Formula rendering
+Docker	Docker	Dify 部署	Dify deployment
+
+🎯 路线图 / Roadmap
+✅ 第一阶段 / Phase 1 — 已完成 / Completed
+ DeepSeek 对话 + RAG 知识库 / DeepSeek Chat + RAG Knowledge Base
+ 双模态切换 + 共享记忆 / Dual-mode Switching + Shared Memory
+ 工具调用 + 文件系统 / Tool Calling + File System
+ TTS 语音播报 + 语音输入 / TTS + Voice Input
+ KaTeX 公式渲染 / KaTeX Formula Rendering
+ 系统托盘 + 快捷键 + 开机自启 / System Tray + Hotkey + Auto-start
+ OOC 检测 + 自动修正 / OOC Detection + Auto-fix
+ 视觉识别（YOLO + OCR）/ Visual Recognition (YOLO + OCR)
+ 键盘鼠标控制 / Keyboard & Mouse Control
+🟡 第二阶段 / Phase 2 — 进行中 / In Progress
+ 打包 exe 安装程序 / Package as exe installer
+ 一键部署脚本完善 / Improve setup script
+🔮 第三阶段 / Phase 3 — 已规划 / Planned
+ 自定义 MCP Server / Custom MCP Server
+ 插件系统 / Plugin System
+ 多语言支持 / Multi-language Support
+📜 许可证 / License
+MIT License
+
+💬 项目启动时间 / Project Started
+🇨🇳 2026年6月28日
+🇬🇧 June 28, 2026
