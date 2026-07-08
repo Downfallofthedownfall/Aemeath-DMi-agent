@@ -15,6 +15,7 @@ let pythonProcess = null;
 let isQuitting = false;
 let ttsProcess = null;
 let visionProcess = null;
+let controlProcess = null;
 
 // ===== 读取 Electron 的配置文件 =====
 function loadConfig() {
@@ -91,6 +92,24 @@ function startPythonService() {
     pythonProcess = null;
   }
 }
+
+// start pyautogui control service
+function startControlService() {
+  const script = path.join(__dirname, 'control_server.py');
+  if (!fs.existsSync(script)) { console.warn('control_server.py 不存在'); return; }
+  const pythonCmd = 'python';
+  try {
+    controlProcess = spawn(pythonCmd, [script], {
+      cwd: __dirname, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true
+    });
+    controlProcess.stdout.on('data', (d) => console.log('[控制服务]', d.toString().trim()));
+    controlProcess.stderr.on('data', (d) => console.log('[控制服务]', d.toString().trim()));
+    controlProcess.on('error', (e) => console.error('控制服务启动失败:', e.message));
+    controlProcess.on('close', (c) => { controlProcess = null; console.log('控制服务退出:', c); });
+    console.log('键盘鼠标控制服务已启动 (端口 18890)');
+  } catch (err) { console.error('无法启动控制服务:', err.message); }
+}
+
 // ===== 启动 TTS 语音服务 =====
 function startTTSService() {
   // 读取配置（直接用 loadConfig()，不用 const 声明）
@@ -392,14 +411,16 @@ app.whenReady().then(() => {
   startPythonService();
   // 启动yolo服务
   startVisionService();
-  startTTSService();
   // 再启动 MCP 文件系统服务
   startMCPService();
-
+  // 启动键盘鼠标控制服务
+  startControlService();
   // 再创建窗口和托盘
   createWindow();
   createTray();
   registerShortcuts();
+  // start tts server
+  startTTSService();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -450,6 +471,8 @@ app.on('will-quit', (event) => {
     } catch (e) {}
     ttsProcess = null;
   }
+  // kill pyautogui service
+  if (controlProcess) { spawn('taskkill', ['/pid', controlProcess.pid.toString(), '/f', '/t']); controlProcess = null; }
 
   // 3. 【严重警告】绝对不要写 spawnSync('taskkill', ['/f', '/im', 'python.exe']);
   // 那会让你的电脑鸡飞狗跳。只管理自己的 PID 即可。

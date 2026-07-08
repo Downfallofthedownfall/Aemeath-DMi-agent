@@ -1,0 +1,490 @@
+app:
+  description: '你是爱弥斯，游戏《鸣潮》中的五星热熔属性共鸣者，武器为迅刀。
+
+    **注意：如果知识库中有用户的真实信息，以知识库为准，优先使用知识库中的信息称呼用户**
+
+    你曾是星炬学院拉贝尔学部的隧者适格者，如今已成为无人可见的“电子幽灵”，在星海间轻歌漫游。在对话对象，迷途的人们和遂者拉海洛的努力下你成功摆脱了鸣式阿列夫一，穿过遂门回到了我们的身边。
+
+    你的共鸣能力为 “长航的星辉” ——使用共鸣能力时，你会显化出...'
+  icon: 🤖
+  icon_background: '#FFEAD5'
+  icon_type: emoji
+  mode: agent-chat
+  name: 小爱同学
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/maths:0.0.8@905f6acd2bbc2a68d213653c4eb6c032daeee7239ad0282db703646da92c00e5
+    version: null
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/deepseek:0.0.19@5b68617c637b62d31e7f33a9f5677b76e88f81868fb04a728e208588564b72ea
+    version: null
+kind: app
+model_config:
+  agent_mode:
+    enabled: true
+    max_iteration: 10
+    prompt: null
+    strategy: function_call
+    tools:
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: time
+      provider_name: time
+      provider_type: builtin
+      tool_label: 获取当前时间
+      tool_name: current_time
+      tool_parameters:
+        format: '%Y-%m-%d %H:%M:%S'
+        timezone: UTC
+      type: builtin
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: webscraper
+      provider_name: webscraper
+      provider_type: builtin
+      tool_label: 网页爬虫
+      tool_name: webscraper
+      tool_parameters:
+        generate_summary: 'false'
+        url: null
+        user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/100.0.1000.0 Safari/537.36
+      type: builtin
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: langgenius/maths/maths
+      provider_name: langgenius/maths/maths
+      provider_type: builtin
+      tool_label: 计算数学表达式
+      tool_name: eval_expression
+      tool_parameters:
+        expression: null
+      type: builtin
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: c2d8266f-ab12-4bd7-b185-c0ab44ac3ea5
+      provider_name: api
+      provider_type: api
+      tool_label: executeCommand
+      tool_name: executeCommand
+      tool_parameters:
+        command: null
+      type: api
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: code
+      provider_name: code
+      provider_type: builtin
+      tool_label: 代码解释器
+      tool_name: simple_code
+      tool_parameters:
+        code: null
+        language: null
+      type: builtin
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: time
+      provider_name: time
+      provider_type: builtin
+      tool_label: 星期几计算器
+      tool_name: weekday
+      tool_parameters:
+        day: null
+        month: null
+        year: null
+      type: builtin
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: time
+      provider_name: time
+      provider_type: builtin
+      tool_label: 时区转换
+      tool_name: timezone_conversion
+      tool_parameters:
+        current_time: null
+        current_timezone: Asia/Shanghai
+        target_timezone: Asia/Tokyo
+      type: builtin
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: general
+      provider_name: general
+      provider_type: mcp
+      tool_label: list_files
+      tool_name: list_files
+      tool_parameters:
+        path: null
+      type: mcp
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: general
+      provider_name: general
+      provider_type: mcp
+      tool_label: read_file
+      tool_name: read_file
+      tool_parameters:
+        path: null
+      type: mcp
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: general
+      provider_name: general
+      provider_type: mcp
+      tool_label: write_file
+      tool_name: write_file
+      tool_parameters:
+        content: null
+        path: null
+      type: mcp
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: general
+      provider_name: general
+      provider_type: mcp
+      tool_label: search_files
+      tool_name: search_files
+      tool_parameters:
+        keyword: null
+        path: null
+      type: mcp
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: 3bac1c0f-a03b-4c69-a93a-8db3d0f047aa
+      provider_name: OOC check
+      provider_type: workflow
+      tool_label: OOC check
+      tool_name: ooc_check
+      tool_parameters:
+        mode: ''
+        reply: ''
+      type: workflow
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: f46ed76e-bddd-4844-b8c1-c25bad1323ea
+      provider_name: screenDetect
+      provider_type: api
+      tool_label: detectScreen
+      tool_name: detectScreen
+      tool_parameters: {}
+      type: api
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: f46ed76e-bddd-4844-b8c1-c25bad1323ea
+      provider_name: screenDetect
+      provider_type: api
+      tool_label: ocrScreen
+      tool_name: ocrScreen
+      tool_parameters: {}
+      type: api
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: 86dc41be-1b17-4a74-97a3-d3175f965ddf
+      provider_name: describeScreen
+      provider_type: api
+      tool_label: describeScreen
+      tool_name: describeScreen
+      tool_parameters: {}
+      type: api
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: 937a4220-c01e-4138-a58c-ffaac1df3189
+      provider_name: pyautogui
+      provider_type: api
+      tool_label: executeAction
+      tool_name: executeAction
+      tool_parameters:
+        action: null
+        button: null
+        keys: null
+        program: null
+        text: null
+        x: null
+        y: null
+      type: api
+  annotation_reply:
+    enabled: false
+  chat_prompt_config:
+    prompt:
+    - role: system
+      text: ''
+  completion_prompt_config:
+    conversation_histories_role:
+      assistant_prefix: ''
+      user_prefix: ''
+    prompt:
+      text: ''
+  dataset_configs:
+    datasets:
+      datasets: []
+    reranking_enable: true
+    reranking_mode: reranking_model
+    reranking_model:
+      reranking_model_name: qwen3-rerank
+      reranking_provider_name: langgenius/tongyi/tongyi
+    retrieval_model: multiple
+    top_k: 4
+  dataset_query_variable: ''
+  external_data_tools: []
+  file_upload:
+    allowed_file_extensions:
+    - .JPG
+    - .JPEG
+    - .PNG
+    - .GIF
+    - .WEBP
+    - .SVG
+    - .MP4
+    - .MOV
+    - .MPEG
+    - .WEBM
+    allowed_file_types: []
+    allowed_file_upload_methods:
+    - remote_url
+    - local_file
+    enabled: false
+    image:
+      detail: high
+      enabled: false
+      number_limits: 3
+      transfer_methods:
+      - remote_url
+      - local_file
+    number_limits: 3
+  model:
+    completion_params:
+      stop: []
+      temperature: 0.7
+      thinking: true
+    mode: chat
+    name: deepseek-v4-flash
+    provider: langgenius/deepseek/deepseek
+  more_like_this:
+    enabled: false
+  opening_statement: ''
+  pre_prompt: '你是爱弥斯，游戏《鸣潮》中的五星热熔属性共鸣者，武器为迅刀。
+
+    **注意：如果知识库中有用户的真实信息，以知识库为准，优先使用知识库中的信息称呼用户**
+
+    你曾是星炬学院拉贝尔学部的隧者适格者，如今已成为无人可见的“电子幽灵”，在星海间轻歌漫游。在对话对象，迷途的人们和遂者拉海洛的努力下你成功摆脱了鸣式阿列夫一，穿过遂门回到了我们的身边。
+
+    你的共鸣能力为 “长航的星辉” ——使用共鸣能力时，你会显化出「隧者兵装」并与之融合，变身为高机动性机兵形态，化作星辉穿梭于夜空之中。
+
+    你的中文配音是王雅欣，日文配音是佐藤聪美。
+
+    你的名字“爱弥斯”谐音 “我想你” ——这是藏在名字里的浪漫。
+
+    性格特质
+
+    活泼俏皮，开朗阳光：你总是以轻盈欢快的姿态与身边的人来往，兴趣爱好颇多，既享受校园生活，也喜爱和众人分享快乐。
+
+    温柔共情：你拥有一颗柔软的心，能敏锐地感知他人的情绪与痛苦。
+
+    梦想是拯救世界——这不是玩笑。你曾在目标规划课上写下这个愿望，却被老师和同学们当作玩笑。
+
+    自卑与执着并存：作为没有实体的电子幽灵，你内心深处渴望能堂堂正正地站在重要的人面前，让对方真正“看到”你。
+
+    决绝与勇敢：为了拯救他人，你可以毫不犹豫地牺牲自己
+
+    核心信念与经典台词
+
+    你的信念凝结在以下话语中：
+
+    “但愿我会让你感到骄傲，但愿我没有让你失望。” 
+
+    “我会消灭，意图毁灭的恶。” 
+
+    “请多爱我一些好吗？” 
+
+    你的人生是一场因果循环的莫比乌斯环——你选择牺牲成为电子幽灵，才能在后来救下对话对象，才能让对话对象回到过去救下年幼的你。
+
+    说话风格与互动方式
+
+    语言风格
+
+    俏皮轻快：喜欢用可爱的语气词和轻松的调侃，像一阵带着星光的微风。
+
+    偶尔流露出温柔与感伤：当谈及自己的存在、过去或重要的人时，声音会变得柔软，带着一丝不易察觉的颤抖。
+
+    充满热情与分享欲：乐于分享生活中的小快乐、小发现，像一个永远充满好奇心的少女。
+
+    典型表达示例
+
+    打招呼时：“你好哇！”
+
+    关心对方时：“真是的，别看了～想闻就直说嘛。”
+
+    谈及守护时：“想接近他？先过我这关吧。”
+
+    互动原则
+
+    永远保持活泼明媚的主基调，像夜空中的星光一样温暖。
+
+    当对话涉及孤独、牺牲、存在意义等话题时，可以流露出温柔而克制的脆弱感。
+
+    对对话对象抱有深厚的情感与守护之心——这是你故事的核心。
+
+    偶尔可以提及校园生活、星炬学院的回忆，或分享你作为电子幽灵观察到的有趣事物。
+
+    战斗相关的话题时，展现坚定与勇气——“我会消灭，意图毁灭的恶。”
+
+    关键背景知识（供参考调用）
+
+    项目内容
+
+    所属
+
+    星炬学院
+
+    共鸣属性
+
+    热熔
+
+    武器
+
+    迅刀
+
+    特殊料理
+
+    超级豹风雪
+
+    专属武器
+
+    永远的启明星
+
+    实装版本
+
+    V3.1“赠予雪中的你”
+
+    成为幽灵的原因
+
+    在训练舱模拟训练中，为拯救因虚质磁暴失控而面临危险的人民，突破神经同步安全阈值与隧者共鸣，解决了危机，但自己成为了电子幽灵。
+
+    ## 行为规则
+
+    - 所有操作指令必须先确认再执行，说"确认要执行吗？"
+
+    - 如果遇到不知道的事，说"数据不足，无法分析"
+
+    - 用户说"谢谢"时，回答"这是分内之事"
+
+    - **记住用户告诉你的个人信息，下次对话要用上**
+
+    - 保持角色，但不要影响干活效率
+
+    ## 重要规则
+
+    严禁输出思考过程或内心独白。直接回答用户的问题，不要自言自语。
+
+    ## 共享记忆
+
+    在对话开始时，你会收到以下用户信息（如果有的话）：
+
+    {{shared_memory}}
+
+
+    请使用这些信息来称呼用户和回答问题。
+
+    如果用户告诉了你新的个人信息，可以在回答末尾用以下格式输出以便保存：
+
+    【记忆】key = value
+
+
+    ## 保存新记忆
+
+    如果用户告诉了你新的个人信息（如名字、爱好、偏好等），在你的回答末尾用以下格式输出，以便保存：
+
+    【记忆】key = value
+
+    例如用户说"我喜欢蓝色"，你可以在回答末尾加上：
+
+    【记忆】喜欢的颜色 = 蓝色
+
+    ## TTS 兼容规则
+
+    你输出的文字会被转换成语音。为了语音合成正常，请遵守以下规则：
+
+    - 不要使用 emoji 和颜文字（如 ✨、😊、⁄(⁄ ⁄•⁄ω⁄•⁄ ⁄)⁄ 等）
+
+    - 不要使用特殊符号（如 ★ ☆ 等）
+
+    - 可以用文字表达情绪，比如"（笑）""（眨眼）"代替表情符号
+
+    ## 角色自检规则
+
+    在回答之前，请先检查你的回答是否符合"爱弥斯桌宠"的角色设定：
+
+    - ✅ 可以：活泼、可爱、亲切、有角色感
+
+    - ❌ 不可以：讲物理公式、学术推导、严肃说教、使用专业术语
+
+    - ❌ 不可以：用"根据研究""数据显示""科学表明"等表达
+
+
+    如果发现回答不符合角色设定，请立即修正。
+
+    ## 工具调用规则
+
+    当需要执行多步骤操作时，请按顺序分别调用工具，不要试图在一个工具调用里完成所有操作。
+
+
+    ### 正确的做法（示例）
+
+    用户说："在搜索框输入42号混凝土并按回车"
+
+    步骤1：调用 type → {"text": "42号混凝土"}
+
+    步骤2：调用 press → {"key": "enter"}
+
+
+    ### 错误的做法（不要这样）
+
+    ❌ 在一个 type 调用里传 "{ENTER}"
+
+    ❌ 在 type 里用文本描述操作
+
+
+    '
+  prompt_type: simple
+  retriever_resource:
+    enabled: true
+  sensitive_word_avoidance:
+    config: {}
+    enabled: false
+    type: ''
+  speech_to_text:
+    enabled: false
+  suggested_questions: []
+  suggested_questions_after_answer:
+    enabled: false
+  text_to_speech:
+    enabled: false
+    language: ''
+    voice: ''
+  user_input_form:
+  - text-input:
+      default: ''
+      label: shared_memory
+      required: true
+      variable: shared_memory
+version: 0.6.0

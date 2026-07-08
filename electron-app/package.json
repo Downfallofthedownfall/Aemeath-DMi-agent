@@ -27,7 +27,6 @@
     "files": [
       "main.js",
       "preload.js",
-      "config.json",
       "config.example.json",
       "py_config.json",
       "run_server.py",

@@ -5,11 +5,11 @@
     "modes": {
         "aemeath": {
             "name": "爱弥斯桌宠",
-            "dify_api_key": "在此填入爱弥斯桌宠的API Key"
+            "dify_api_key": "x"
         },
         "physicist": {
             "name": "星炬物理学霸",
-            "dify_api_key": "在此填入星炬物理学霸的API Key"
+            "dify_api_key": "x"
         }
     }
 }

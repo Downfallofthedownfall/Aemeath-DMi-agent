@@ -313,6 +313,28 @@ window.addEventListener('DOMContentLoaded', () => {
   // ========== OOC 检测 + 自动修正 ==========
   async function autoFixOOC(originalReply, mode, maxRetries = 2) {
     let currentReply = originalReply;
+    // ===== 如果回复是工具调用的结果，直接跳过 OOC 检测 =====
+    const toolCallIndicators = [
+      '已打开', '已输入', '已执行', '已保存', '已关闭', '已点击',
+      '已粘贴', '已按下', '已复制', '已启动', '已停止',
+      '正在打开', '正在执行', '正在输入', '正在搜索',
+      '操作成功', '执行成功',
+      '记事本已打开', '计算器已打开',
+      '在桌面上', '在目录中', '文件列表',
+      '已写入文件', '已删除', '已创建',
+      '下面是你需要的', '这是你要的',
+    ];
+  
+    const replyLower = (originalReply || '').toLowerCase();
+    const isToolResult = toolCallIndicators.some(indicator => 
+      replyLower.includes(indicator.toLowerCase())
+    );
+  
+    if (isToolResult) {
+      console.log('[OOC] 检测到工具调用结果，跳过 OOC 检测');
+      return { reply: originalReply, score: 10, fixed: false, skipped: true };
+    }
+
     let attempts = 0;
     let lastScore = 0;
 
@@ -363,40 +385,65 @@ window.addEventListener('DOMContentLoaded', () => {
 
         const conv = getCurrentConversation();
         const sharedMemoryText = getAllSharedMemoryText();
+        // 把用户的原始问题也传过去
+        const userQuery = conv.messages.find(m => m.role === 'user')?.content || '';
+          
+        const fixText = `用户刚才的问题是：${userQuery}\n\n你刚才的回答存在角色偏离问题：${problem}。请重新回答用户的问题，确保回答严格符合当前角色设定。直接给出修正后的回答，不要解释。`;
 
-        const fixText = `请重新回答用户的上一个问题。注意：你刚才的回答存在角色偏离问题：${problem}。请重新组织语言，确保回答严格符合当前角色设定。直接给出修正后的回答，不要解释。`;
+          try {
+            // 修正时用 streaming 模式，但后台一次性读完
+            const fixResponse = await fetch(difyApiBase + '/chat-messages', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${difyApiKey}`,
+              },
+              body: JSON.stringify({
+                inputs: { shared_memory: sharedMemoryText },
+                query: fixText,
+                response_mode: 'streaming',  // Agent 必须用 streaming
+                user: 'aemeath-fixer'
+              })
+            });
 
-        try {
-          // 修正时不要传 conversation_id，让 Dify 新建临时对话
-          const fixResponse = await fetch(difyApiBase + '/chat-messages', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${difyApiKey}`,
-            },
-            body: JSON.stringify({
-              inputs: { shared_memory: sharedMemoryText },
-              query: fixText,
-              response_mode: 'blocking',  // blocking 模式，一次性获取完整回答
-              user: 'aemeath-fixer'       // 用不同的 user id，避免冲突
-            })
-          });
-          if (fixResponse.ok) {
-            const fixData = await fixResponse.json();
-            const fixed = cleanReply(fixData.answer || '');
-            if (fixed && fixed.length > 5) {  // 确保有内容
-              currentReply = fixed;
-              console.log('[OOC] 修正成功，新回答长度:', fixed.length);
+            if (fixResponse.ok) {
+              // 流式读取完整内容
+              const reader = fixResponse.body.getReader();
+              const decoder = new TextDecoder();
+              let fullFixAnswer = '';
+
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n');
+                for (const line of lines) {
+                  if (line.startsWith('data: ')) {
+                    try {
+                      const data = JSON.parse(line.substring(6));
+                      if (data.answer) {
+                        fullFixAnswer += data.answer;
+                      }
+                    } catch (e) { /* 忽略 */ }
+                  }
+                }
+              }
+
+              const fixed = cleanReply(fullFixAnswer);
+              if (fixed && fixed.length > 5) {
+                currentReply = fixed;
+                console.log('[OOC] 修正成功，新回答长度:', fixed.length);
+              } else {
+                console.warn('[OOC] 修正返回内容太短，保留原回答');
+              }
             } else {
-              console.warn('[OOC] 修正返回内容太短，保留原回答');
+              const errText = await fixResponse.text();
+              console.warn('[OOC] 修正请求失败:', fixResponse.status, errText);
             }
-          } else {
-            const errText = await fixResponse.text();
-            console.warn('[OOC] 修正请求失败:', fixResponse.status, errText);
+          } catch (fixError) {
+            console.warn('[OOC] 重新生成异常:', fixError.message);
           }
-        } catch (fixError) {
-          console.warn('[OOC] 重新生成异常:', fixError.message);
-        }
+
 
       }
     }
