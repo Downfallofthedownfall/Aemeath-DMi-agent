@@ -104,35 +104,36 @@ npm install
 npm start
 
 首次配置 / First-time Setup
-打开浏览器访问 http://localhost，注册 Dify 账号 / Open http://localhost and register a Dify account
-进入设置 → 模型供应商，配置 DeepSeek 和通义千问的 API Key / Go to Settings → Model Providers, configure API Keys
-复制 config.example.json 为 config.json，填入你的 API Key / Copy config.example.json to config.json, fill in your keys
-重启应用，预置配置将自动加载 / Restart the app, preset configs will load automatically
+打开浏览器访问 http://localhost，注册 Dify 账号 
+进入设置 → 模型供应商，配置 DeepSeek 和通义千问的 
+复制 config.example.json 为 config.json，填入你的 
+重启应用，预置配置将自动加载
+Open http://localhost and register a Dify account API Key Go to Settings → Model Providers, configure API Keys API Key copy config.example.json to config.json, fill in your keys Restart the app, preset configs will load automatically
 
-📁 项目结构 / Project Structure
+## 📁 项目结构
+
+```text
 Aemeath-Desktop-Agent/
-├── electron-app/              # 🇨🇳 Electron 桌面应用 / 🇬🇧 Electron desktop app
-│   ├── main.js               # 🇨🇳 主进程 / 🇬🇧 Main process
-│   ├── preload.js            # 🇨🇳 桥接文件 / 🇬🇧 Bridge file
-│   ├── config.json           # 🇨🇳 配置文件（含 API Key，不上传 Git）
-│   │                         # 🇬🇧 Config file (contains API keys, not committed)
-│   ├── config.example.json   # 🇨🇳 配置模板 / 🇬🇧 Config template
-│   ├── dify_apps/            # 🇨🇳 Dify 应用配置导出（YAML）
-│   │                         # 🇬🇧 Dify app config exports (YAML)
-│   │   ├── aemeath.yml       # 🇨🇳 爱弥斯桌宠 / 🇬🇧 Aemeath Pet
-│   │   ├── physicist.yml     # 🇨🇳 星炬物理学霸 / 🇬🇧 Physicist Scholar
-│   │   └── ooc_check.yml     # 🇨🇳 OOC 检测工作流 / 🇬🇧 OOC Check Workflow
-│   ├── renderer/             # 🇨🇳 前端界面 / 🇬🇧 Frontend UI
+├── electron-app/                  # Electron 桌面应用
+│   ├── main.js                    # 主进程
+│   ├── preload.js                 # 渲染进程桥接
+│   ├── config.json                # 用户配置（含 API Key，不入库）
+│   ├── config.example.json        # 配置模板
+│   ├── dify_apps/                 # Dify 应用 YAML 导出
+│   │   ├── aemeath.yml            # 爱弥斯桌宠
+│   │   ├── physicist.yml          # 星炬物理学霸
+│   │   └── ooc_check.yml          # OOC 检测工作流
+│   ├── renderer/                  # 前端界面
 │   │   ├── index.html
 │   │   ├── style.css
 │   │   └── app.js
-│   ├── run_server.py         # 🇨🇳 本地命令执行服务 / 🇬🇧 Local command service
-│   ├── control_server.py     # 🇨🇳 键盘鼠标控制服务 / 🇬🇧 Control service
-│   └── assets/               # 🇨🇳 图标资源 / 🇬🇧 Icons
-├── dify/                     # 🇨🇳 Dify 服务（Docker）/ 🇬🇧 Dify service
-├── setup.bat                 # 🇨🇳 Windows 一键部署脚本 / 🇬🇧 One-click setup script
-├── requirements.txt          # 🇨🇳 Python 依赖 / 🇬🇧 Python dependencies
-└── README.md                 # 🇨🇳 本文件 / 🇬🇧 This file
+│   ├── run_server.py              # 本地命令执行服务
+│   ├── control_server.py          # 键盘鼠标控制服务
+│   └── assets/                    # 图标资源
+├── dify/                          # Dify Docker 服务
+├── setup.bat                      # Windows 一键部署脚本
+├── requirements.txt               # Python 依赖清单
+└── README.md                      # 项目说明
 
 ## 🛠️ 技术栈
 
