@@ -134,40 +134,54 @@ Aemeath-Desktop-Agent/
 ├── requirements.txt          # 🇨🇳 Python 依赖 / 🇬🇧 Python dependencies
 └── README.md                 # 🇨🇳 本文件 / 🇬🇧 This file
 
-🛠️ 技术栈 / Tech Stack
-🇨🇳 技术	🇬🇧 Technology	🇨🇳 用途	🇬🇧 Purpose
-Electron 28	Electron 28	桌面应用框架	Desktop app framework
-Dify 1.15	Dify 1.15	AI 引擎	AI engine
-DeepSeek Chat	DeepSeek Chat	对话模型	Chat model
-通义千问 (Qwen)	Qwen	知识库重排序	RAG reranking
-IndexTTS2	IndexTTS2	语音合成	Voice synthesis
-YOLOv8	YOLOv8	目标检测	Object detection
-EasyOCR	EasyOCR	文字识别	Text recognition
-pyautogui	pyautogui	键盘鼠标控制	Keyboard & mouse control
-KaTeX	KaTeX	公式渲染	Formula rendering
-Docker	Docker	Dify 部署	Dify deployment
+## 🛠️ 技术栈
 
-🎯 路线图 / Roadmap
-✅ 第一阶段 / Phase 1 — 已完成 / Completed
- DeepSeek 对话 + RAG 知识库 / DeepSeek Chat + RAG Knowledge Base
- 双模态切换 + 共享记忆 / Dual-mode Switching + Shared Memory
- 工具调用 + 文件系统 / Tool Calling + File System
- TTS 语音播报 + 语音输入 / TTS + Voice Input
- KaTeX 公式渲染 / KaTeX Formula Rendering
- 系统托盘 + 快捷键 + 开机自启 / System Tray + Hotkey + Auto-start
- OOC 检测 + 自动修正 / OOC Detection + Auto-fix
- 视觉识别（YOLO + OCR）/ Visual Recognition (YOLO + OCR)
- 键盘鼠标控制 / Keyboard & Mouse Control
-🟡 第二阶段 / Phase 2 — 进行中 / In Progress
- 打包 exe 安装程序 / Package as exe installer
- 一键部署脚本完善 / Improve setup script
-🔮 第三阶段 / Phase 3 — 已规划 / Planned
- 自定义 MCP Server / Custom MCP Server
- 插件系统 / Plugin System
- 多语言支持 / Multi-language Support
-📜 许可证 / License
+| 技术 | 用途 |
+|------|------|
+| Electron 28 | 桌面应用框架 |
+| Dify 1.15 | AI 工作流引擎 |
+| DeepSeek Chat | 对话模型 |
+| 通义千问 (Qwen) | RAG 重排序 |
+| IndexTTS2 | 语音合成 |
+| YOLOv8 | 目标检测 |
+| EasyOCR | 文字识别 |
+| pyautogui | 键鼠控制 |
+| KaTeX | 公式渲染 |
+| Docker | Dify 容器化部署 |
+
+---
+
+## 🎯 路线图
+
+### ✅ 第一阶段（已完成）
+- DeepSeek 对话 + RAG 知识库
+- 双模态切换 + 共享记忆
+- 工具调用 + 文件系统
+- TTS 语音播报 + 语音输入
+- KaTeX 公式渲染
+- 系统托盘 + 快捷键 + 开机自启
+- OOC 检测 + 自动修正
+- 视觉识别（YOLO + OCR）
+- 键盘鼠标控制
+
+### 🟡 第二阶段（进行中）
+- 打包 exe 安装程序
+- 一键部署脚本完善
+
+### 🔮 第三阶段（已规划）
+- 自定义 MCP Server
+- 插件系统
+- 多语言支持
+
+---
+
+## 📜 许可证
+
 MIT License
 
-💬 项目启动时间 / Project Started
-🇨🇳 2026年6月28日
-🇬🇧 June 28, 2026
+---
+
+## 💬 项目启动时间
+
+2026年6月28日
+
