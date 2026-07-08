@@ -73,8 +73,7 @@
 
 # 🇨🇳 克隆项目
 # 🇬🇧 Clone the project
-git clone https://github.com/你的用户名/my-desktop-agent.git
-cd my-desktop-agent
+git clone https://github.com/Downfallofthedownfall/Aemeath-DMi-agent
 
 # 🇨🇳 一键部署（Windows）
 # 🇬🇧 One-click deployment (Windows)
