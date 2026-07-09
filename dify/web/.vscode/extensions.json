@@ -1,8 +1,0 @@
-{
-  "recommendations": [
-    "bradlc.vscode-tailwindcss",
-    "kisstkondoros.vscode-codemetrics",
-    "johnsoncodehk.vscode-tsslint",
-    "dbaeumer.vscode-eslint"
-  ]
-}

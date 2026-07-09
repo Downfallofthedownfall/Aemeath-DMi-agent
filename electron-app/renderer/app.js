@@ -2,6 +2,7 @@
 // app.js - 聊天窗口核心逻辑
 // 功能：双模态切换、共享记忆、流式对话、OOC自动修正、
 //       TTS语音、语音输入、KaTeX公式渲染
+// 改动：去掉 Dify 依赖，改为直连 ai_service.py
 // ============================================================
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -22,10 +23,11 @@ window.addEventListener('DOMContentLoaded', () => {
   let currentConversationId = null;
   let isRecording = false;
   let recognition = null;
-  let difyApiKey = '';
-  let difyApiBase = 'http://localhost/v1';
   let currentMode = 'aemeath';
   let configData = null;
+
+  // AI 服务地址（本地 Python 服务，替代 Dify）
+  const AI_SERVICE_URL = 'http://127.0.0.1:18892';
 
   // ========== 语音播报开关 ==========
   const ttsEnabled = localStorage.getItem('ttsEnabled') !== 'false';
@@ -60,16 +62,8 @@ window.addEventListener('DOMContentLoaded', () => {
     const config = await window.electronAPI.getConfig();
     configData = config;
 
-    // 读取 OOC 工作流专用 Key
-    if (configData.ooc_workflow_key) {
-      window.oocApiKey = configData.ooc_workflow_key;
-    }
-
-    difyApiBase = config.dify_api_base || 'http://localhost/v1';
-    difyApiKey = config.modes[currentMode].dify_api_key || '';
-
-    if (!difyApiKey) {
-      console.warn('警告：当前模式未配置 API Key');
+    if (!configData.deepseek_api_key || configData.deepseek_api_key === 'sk-把你的DeepSeekAPIKey填在这里') {
+      console.warn('⚠️ 警告：未配置 DeepSeek API Key，请在 config.json 中设置');
     }
 
     const savedConversations = localStorage.getItem('conversations_' + currentMode);
@@ -89,9 +83,8 @@ window.addEventListener('DOMContentLoaded', () => {
   function createNewConversation() {
     return {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-      title: '新对话',
+      title: 'New',
       messages: [],
-      difyConversationId: '',
     };
   }
 
@@ -104,8 +97,8 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   function updateModeIndicator() {
-    if (modeIndicator) {
-      modeIndicator.textContent = configData.modes[currentMode].name;
+    if (modeIndicator && configData && configData.modes) {
+      modeIndicator.textContent = configData.modes[currentMode]?.name || currentMode;
     }
   }
 
@@ -122,7 +115,6 @@ window.addEventListener('DOMContentLoaded', () => {
     if (mode === currentMode) return;
     saveConversations();
     currentMode = mode;
-    difyApiKey = configData.modes[mode].dify_api_key || '';
 
     const savedConversations = localStorage.getItem('conversations_' + mode);
     if (savedConversations) {
@@ -134,7 +126,7 @@ window.addEventListener('DOMContentLoaded', () => {
     updateModeIndicator();
     renderHistoryList();
     renderMessages();
-    addSystemMessage('已切换到：' + configData.modes[mode].name);
+    addSystemMessage('Switched to：' + (configData.modes[mode]?.name || mode));
   }
 
   // ========== 渲染函数 ==========
@@ -157,7 +149,7 @@ window.addEventListener('DOMContentLoaded', () => {
         cursor: pointer; padding: 0 4px; margin-left: 8px;
         border-radius: 4px; display: none; line-height: 1;
       `;
-      deleteBtn.title = '删除此对话';
+      deleteBtn.title = 'Delete this conversation';
 
       li.addEventListener('mouseenter', () => { deleteBtn.style.display = 'inline-block'; });
       li.addEventListener('mouseleave', () => { deleteBtn.style.display = 'none'; });
@@ -210,16 +202,8 @@ window.addEventListener('DOMContentLoaded', () => {
     if (typing) {
       div.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
     } else {
-      // 先过滤 <think>，再渲染 KaTeX
       let clean = content || '';
-      while (clean.includes('<think') || clean.includes('</think>')) {
-        const s = clean.indexOf('<think');
-        if (s === -1) break;
-        const e = clean.indexOf('</think>', s);
-        if (e === -1) { clean = clean.substring(0, s); break; }
-        clean = clean.substring(0, s) + clean.substring(e + 8);
-      }
-      clean = clean.replace(/（[^）]*）/g, '');
+      clean = filterThinkTags(clean);
       div.innerHTML = renderKaTeX(clean);
     }
     messagesContainer.appendChild(div);
@@ -239,33 +223,37 @@ window.addEventListener('DOMContentLoaded', () => {
       lastMsgDiv.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
     } else {
       let clean = content || '';
-      while (clean.includes('<think') || clean.includes('</think>')) {
-        const s = clean.indexOf('<think');
-        if (s === -1) break;
-        const e = clean.indexOf('</think>', s);
-        if (e === -1) { clean = clean.substring(0, s); break; }
-        clean = clean.substring(0, s) + clean.substring(e + 8);
-      }
-      clean = clean.replace(/（[^）]*）/g, '');
+      clean = filterThinkTags(clean);
       lastMsgDiv.innerHTML = renderKaTeX(clean);
     }
     scrollToBottom();
+  }
+
+  // ========== 过滤 <think> 标签 ==========
+  function filterThinkTags(text) {
+    if (!text) return '';
+    let r = text;
+    while (r.includes('<think') || r.includes('</think>')) {
+      const s = r.indexOf('<think');
+      if (s === -1) break;
+      const e = r.indexOf('</think>', s);
+      if (e === -1) { r = r.substring(0, s); break; }
+      r = r.substring(0, s) + r.substring(e + 8);
+    }
+    return r;
   }
 
   // ========== KaTeX 渲染 ==========
   function renderKaTeX(text) {
     if (!text) return '';
     let result = text;
-    // 转义 HTML 特殊字符，防止 XSS
     result = result.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     if (window.katex) {
-      // 块级公式 \[ ... \]
-      result = result.replace(/\\\[([\s\S]*?)\\\]/g, (match, formula) => {
+      result = result.replace(/\\\\\[([\s\S]*?)\\\\\]/g, (match, formula) => {
         try { return katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false }); }
         catch (e) { return match; }
       });
-      // 行内公式 \( ... \)
-      result = result.replace(/\\\(([\s\S]*?)\\\)/g, (match, formula) => {
+      result = result.replace(/\\\\\(([\s\S]*?)\\\\\)/g, (match, formula) => {
         try { return katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false }); }
         catch (e) { return match; }
       });
@@ -292,18 +280,11 @@ window.addEventListener('DOMContentLoaded', () => {
     renderHistoryList();
   }
 
-  // ========== 清理回答（去 think + 去动作） ==========
+  // ========== 清理回答 ==========
   function cleanReply(text) {
     if (!text) return '';
     let r = text;
-    while (r.includes('<think') || r.includes('</think>')) {
-      const s = r.indexOf('<think');
-      if (s === -1) break;
-      const e = r.indexOf('</think>', s);
-      if (e === -1) { r = r.substring(0, s); break; }
-      r = r.substring(0, s) + r.substring(e + 8);
-    }
-    r = r.replace(/（[^）]*）/g, '');
+    r = filterThinkTags(r);
     r = r.replace(/<[^>]*>/g, '');
     r = r.replace(/\n{3,}/g, '\n\n').trim();
     r = r.replace(/^[\s\n]*/, '');
@@ -313,23 +294,21 @@ window.addEventListener('DOMContentLoaded', () => {
   // ========== OOC 检测 + 自动修正 ==========
   async function autoFixOOC(originalReply, mode, maxRetries = 2) {
     let currentReply = originalReply;
-    // ===== 如果回复是工具调用的结果，直接跳过 OOC 检测 =====
+
+    // 工具调用结果跳过 OOC（避免误判）
     const toolCallIndicators = [
       '已打开', '已输入', '已执行', '已保存', '已关闭', '已点击',
       '已粘贴', '已按下', '已复制', '已启动', '已停止',
       '正在打开', '正在执行', '正在输入', '正在搜索',
       '操作成功', '执行成功',
-      '记事本已打开', '计算器已打开',
-      '在桌面上', '在目录中', '文件列表',
       '已写入文件', '已删除', '已创建',
-      '下面是你需要的', '这是你要的',
     ];
-  
+
     const replyLower = (originalReply || '').toLowerCase();
-    const isToolResult = toolCallIndicators.some(indicator => 
+    const isToolResult = toolCallIndicators.some(indicator =>
       replyLower.includes(indicator.toLowerCase())
     );
-  
+
     if (isToolResult) {
       console.log('[OOC] 检测到工具调用结果，跳过 OOC 检测');
       return { reply: originalReply, score: 10, fixed: false, skipped: true };
@@ -341,110 +320,82 @@ window.addEventListener('DOMContentLoaded', () => {
     while (attempts <= maxRetries) {
       attempts++;
 
-      const oocResponse = await fetch(difyApiBase + '/workflows/run', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${window.oocApiKey || difyApiKey}`,
-        },
-        body: JSON.stringify({
-          inputs: { reply: currentReply, mode: mode },
-          response_mode: 'blocking',
-          user: 'ooc-checker'
-        })
-      });
+      try {
+        const oocResponse = await fetch(`${AI_SERVICE_URL}/ooc-check`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reply: currentReply, mode: mode })
+        });
 
-      if (!oocResponse.ok) {
-        console.warn('[OOC] 检测失败，使用原回答');
-        return { reply: currentReply, score: 10, fixed: false };
-      }
+        if (!oocResponse.ok) {
+          console.warn('[OOC] 检测失败，使用原回答');
+          return { reply: currentReply, score: 10, fixed: false };
+        }
 
-      const oocData = await oocResponse.json();
-      const oocResult = oocData.data?.outputs?.result || oocData.outputs?.result || '';
+        const oocData = await oocResponse.json();
+        lastScore = oocData.score || 10;
+        console.log(`[OOC] 第${attempts}次检查 | ${mode} | 评分: ${lastScore}/10`);
 
-      const cleanResult = oocResult.replace(/<think[\s\S]*?<\/think>/g, '');
-      const scoreMatch = cleanResult.match(/评分[：:]\s*(\d+)/);
+        if (lastScore >= 6) {
+          return { reply: currentReply, score: lastScore, fixed: attempts > 1 };
+        }
 
-      if (!scoreMatch) {
-        console.warn('[OOC] 无法提取评分，使用原回答');
-        return { reply: currentReply, score: 10, fixed: false };
-      }
+        if (attempts <= maxRetries) {
+          console.log(`[OOC] 评分过低 (${lastScore})，正在重新生成...`);
+          const problem = oocData.problem || '回答不符合当前角色设定';
 
-      lastScore = parseInt(scoreMatch[1]);
-      console.log(`[OOC] 第${attempts}次检查 | ${mode} | 评分: ${lastScore}/10`);
+          const conv = getCurrentConversation();
+          const sharedMemoryText = getAllSharedMemoryText();
+          const userMessages = conv.messages.filter(m => m.role === 'user');
+          const userQuery = userMessages.length ? userMessages[userMessages.length - 1].content : '';
 
-      if (lastScore >= 6) {
-        return { reply: currentReply, score: lastScore, fixed: attempts > 1 };
-      }
+          const fixText = `用户刚才的问题是：${userQuery}\n\n你刚才的回答存在角色偏离问题：${problem}。请重新回答用户的问题，确保回答严格符合当前角色设定。直接给出修正后的回答，不要解释。`;
 
-      if (attempts <= maxRetries) {
-        console.log(`[OOC] 评分过低 (${lastScore})，正在重新生成...`);
+          const fixResponse = await fetch(`${AI_SERVICE_URL}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              query: fixText,
+              mode: mode,
+              history: [],
+              shared_memory: sharedMemoryText
+            })
+          });
 
-        const problemMatch = cleanResult.match(/问题[：:]\s*(.+?)(?:\n|$)/);
-        const problem = problemMatch ? problemMatch[1].trim() : '回答不符合当前角色设定';
+          if (fixResponse.ok) {
+            const reader = fixResponse.body.getReader();
+            const decoder = new TextDecoder();
+            let fullFixAnswer = '';
 
-        const conv = getCurrentConversation();
-        const sharedMemoryText = getAllSharedMemoryText();
-        // 把用户的原始问题也传过去
-        const userQuery = conv.messages.find(m => m.role === 'user')?.content || '';
-          
-        const fixText = `用户刚才的问题是：${userQuery}\n\n你刚才的回答存在角色偏离问题：${problem}。请重新回答用户的问题，确保回答严格符合当前角色设定。直接给出修正后的回答，不要解释。`;
-
-          try {
-            // 修正时用 streaming 模式，但后台一次性读完
-            const fixResponse = await fetch(difyApiBase + '/chat-messages', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${difyApiKey}`,
-              },
-              body: JSON.stringify({
-                inputs: { shared_memory: sharedMemoryText },
-                query: fixText,
-                response_mode: 'streaming',  // Agent 必须用 streaming
-                user: 'aemeath-fixer'
-              })
-            });
-
-            if (fixResponse.ok) {
-              // 流式读取完整内容
-              const reader = fixResponse.body.getReader();
-              const decoder = new TextDecoder();
-              let fullFixAnswer = '';
-
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n');
-                for (const line of lines) {
-                  if (line.startsWith('data: ')) {
-                    try {
-                      const data = JSON.parse(line.substring(6));
-                      if (data.answer) {
-                        fullFixAnswer += data.answer;
-                      }
-                    } catch (e) { /* 忽略 */ }
-                  }
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const chunk = decoder.decode(value, { stream: true });
+              const lines = chunk.split('\n');
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  try {
+                    const data = JSON.parse(line.substring(6));
+                    if (data.answer) {
+                      fullFixAnswer += data.answer;
+                    }
+                  } catch (e) { }
                 }
               }
-
-              const fixed = cleanReply(fullFixAnswer);
-              if (fixed && fixed.length > 5) {
-                currentReply = fixed;
-                console.log('[OOC] 修正成功，新回答长度:', fixed.length);
-              } else {
-                console.warn('[OOC] 修正返回内容太短，保留原回答');
-              }
-            } else {
-              const errText = await fixResponse.text();
-              console.warn('[OOC] 修正请求失败:', fixResponse.status, errText);
             }
-          } catch (fixError) {
-            console.warn('[OOC] 重新生成异常:', fixError.message);
+
+            const fixed = cleanReply(fullFixAnswer);
+            if (fixed && fixed.length > 5) {
+              currentReply = fixed;
+              console.log('[OOC] 修正成功，新回答长度:', fixed.length);
+            } else {
+              console.warn('[OOC] 修正返回内容太短，保留原回答');
+            }
           }
-
-
+        }
+      } catch (e) {
+        console.warn('[OOC] 检测异常:', e.message);
+        return { reply: currentReply, score: 10, fixed: false };
       }
     }
 
@@ -455,44 +406,61 @@ window.addEventListener('DOMContentLoaded', () => {
   async function sendMessage() {
     const text = userInput.value.trim();
     if (!text) return;
-    if (!difyApiKey) { alert('API Key 未配置'); return; }
+    if (!configData || !configData.deepseek_api_key || configData.deepseek_api_key === 'sk-把你的DeepSeekAPIKey填在这里') {
+      alert('请先在 config.json 中配置 DeepSeek API Key');
+      return;
+    }
 
     const conv = getCurrentConversation();
+    
+    // 1. 添加用户消息到数据 + DOM（增量追加，不清空）
     conv.messages.push({ role: 'user', content: text });
     userInput.value = '';
-    renderMessages();
+    appendMessageToDOM('user', text);
     updateConversationTitle(conv);
 
+    // 2. 添加助理占位消息到数据 + DOM
     conv.messages.push({ role: 'assistant', content: '', typing: true });
     appendMessageToDOM('assistant', '', true);
     saveConversations();
 
     const sharedMemoryText = getAllSharedMemoryText();
 
-    const requestBody = {
-      inputs: { shared_memory: sharedMemoryText },
-      query: text,
-      response_mode: 'streaming',
-      conversation_id: conv.difyConversationId || '',
-      user: 'aemeath-user',
-    };
+    // 构造历史消息（传给 AI 服务用于上下文）
+    const historyMessages = [];
+    for (const msg of conv.messages) {
+      if (msg.role === 'assistant' && msg.typing) continue;  // 跳过正在打的
+      if (msg.role === 'user' && msg.content === text) continue;  // 当前消息单独传
+      if (msg.role === 'user' || msg.role === 'assistant') {
+        if (msg.content) {
+          historyMessages.push({ role: msg.role, content: msg.content });
+        }
+      }
+    }
 
     try {
-      const response = await fetch(difyApiBase + '/chat-messages', {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
+
+      const response = await fetch(`${AI_SERVICE_URL}/chat`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${difyApiKey}`,
-        },
-        body: JSON.stringify(requestBody),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: text,
+          mode: currentMode,
+          history: historyMessages,
+          shared_memory: sharedMemoryText
+        }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
-      // 流式读取
+      // 3. 流式读取
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let fullAnswer = '';
@@ -505,41 +473,27 @@ window.addEventListener('DOMContentLoaded', () => {
         const lines = chunk.split('\n');
         for (const line of lines) {
           if (line.startsWith('data: ')) {
+            const dataStr = line.substring(6);
+            if (dataStr === '[DONE]') continue;
             try {
-              const data = JSON.parse(line.substring(6));
+              const data = JSON.parse(dataStr);
               if (data.answer) {
                 fullAnswer += data.answer;
-                let displayText = fullAnswer;
-                while (displayText.includes('<think') || displayText.includes('</think>')) {
-                  const s = displayText.indexOf('<think');
-                  if (s === -1) break;
-                  const e = displayText.indexOf('</think>', s);
-                  if (e === -1) { displayText = displayText.substring(0, s); break; }
-                  displayText = displayText.substring(0, s) + displayText.substring(e + 8);
-                }
-                displayText = displayText.replace(/（[^）]*）/g, '');
+                let displayText = filterThinkTags(fullAnswer);
                 updateLastAssistantMessage(displayText, false);
               }
-              if (data.conversation_id) {
-                conv.difyConversationId = data.conversation_id;
+              if (data.error) {
+                console.error('[AI] 服务返回错误:', data.answer);
               }
-            } catch (e) { /* 忽略解析错误 */ }
+            } catch (e) { }
           }
         }
       }
-
-      // 最终清理
+      
       let finalAnswer = cleanReply(fullAnswer);
       if (!finalAnswer.trim()) finalAnswer = '抱歉，我暂时无法回答。';
 
-      // OOC 检测 + 自动修正
-      const oocResult = await autoFixOOC(finalAnswer, currentMode, 2);
-
-      // 如果修正后的回答变了，更新
-      if (oocResult.reply !== finalAnswer) {
-        finalAnswer = oocResult.reply;
-      }
-
+      // OOC 检测已在后端 ai_service.py 自动完成
       // 更新对话数组
       const lastMsg = conv.messages[conv.messages.length - 1];
       if (lastMsg && lastMsg.role === 'assistant') {
@@ -549,20 +503,6 @@ window.addEventListener('DOMContentLoaded', () => {
       updateLastAssistantMessage(finalAnswer, false);
       saveConversations();
 
-      // 如果重试用完仍不通过，追加提示
-      if (oocResult.exhausted) {
-        const msgs = messagesContainer.querySelectorAll('.message.assistant');
-        if (msgs.length > 0) {
-          const last = msgs[msgs.length - 1];
-          if (!last.querySelector('.ooc-warning')) {
-            const note = document.createElement('div');
-            note.className = 'ooc-warning';
-            note.textContent = `⚠️ 已自动修正角色偏差 (最终评分: ${oocResult.score}/10)`;
-            last.appendChild(note);
-          }
-        }
-      }
-
       // TTS 语音播报
       if (ttsSwitch.checked) {
         speakText(finalAnswer);
@@ -570,10 +510,20 @@ window.addEventListener('DOMContentLoaded', () => {
 
     } catch (error) {
       console.error('请求失败：', error);
-      updateLastAssistantMessage('网络请求失败，请检查 Dify 服务是否启动。', false);
+      let errMsg = '网络请求失败';
+      if (error.name === 'AbortError') {
+        errMsg = 'AI 服务响应超时（超过90秒），请重试';
+      } else if (error.message.includes('Failed to fetch') || error.message.includes('ERR_CONNECTION_REFUSED')) {
+        errMsg = '无法连接 AI 服务（127.0.0.1:18892），请确保 ai_service.py 已启动';
+      } else if (error.message.includes('Internal Server Error') || error.message.includes('500')) {
+        errMsg = 'AI 服务内部错误，请查看终端日志';
+      } else {
+        errMsg = 'AI 服务错误：' + error.message;
+      }
+      updateLastAssistantMessage(errMsg, false);
       const lastMsg = conv.messages[conv.messages.length - 1];
       if (lastMsg && lastMsg.role === 'assistant') {
-        lastMsg.content = '网络请求失败，请检查 Dify 服务是否启动。';
+        lastMsg.content = errMsg;
         lastMsg.typing = false;
       }
       saveConversations();
@@ -604,7 +554,7 @@ window.addEventListener('DOMContentLoaded', () => {
   function initSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert('您的浏览器不支持语音识别，请使用最新版 Chrome 或 Edge');
+      alert('Browser speech recognition not supported, please use the latest release of Chrome or Edge');
       return null;
     }
     const recog = new SpeechRecognition();

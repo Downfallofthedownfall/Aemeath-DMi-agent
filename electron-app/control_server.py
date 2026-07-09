@@ -135,6 +135,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                         pyautogui.press('enter')
                         time.sleep(0.2)
             
+            
                 self.send_json(200, {
                     "success": True,
                     "action": "type",
@@ -217,7 +218,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 path = os.path.join(tempfile.gettempdir(), f"screenshot_{uuid.uuid4().hex[:8]}.png")
                 im.save(path)
                 self.send_json(200, {"success": True, "path": path, "size": f"{im.width}x{im.height}"})
-            
+
             elif action == 'open':
                 program = data.get('program', '').lower()
                 import subprocess
@@ -240,6 +241,24 @@ class ControlHandler(BaseHTTPRequestHandler):
                     pyautogui.hotkey('ctrl', 'v')
                 
                 self.send_json(200, {"success": True, "program": program, "typed": bool(text)})
+                
+            elif action == 'open_url':
+                url = data.get('url', '')
+                if not url:
+                    self.send_json(400, {"success": False, "error": "缺少 url 参数"})
+                    return
+                
+                # 用默认浏览器打开 URL（会复用已有窗口的新标签页）
+                import subprocess
+                # 用 cmd /c start 会使用默认浏览器，且通常开新标签页
+                subprocess.run(['cmd', '/c', 'start', url], shell=True)
+                
+                self.send_json(200, {
+                    "success": True,
+                    "action": "open_url",
+                    "url": url
+                })
+                
 
             
             # ========== 快捷操作（组合指令） ==========
@@ -311,7 +330,7 @@ def main():
         print("错误: pygetwindow 未安装，请执行: pip install pygetwindow")
         sys.exit(1)
     
-    HOST = "0.0.0.0"
+    HOST = "127.0.0.1"
     PORT = 18890
     
     server = HTTPServer((HOST, PORT), ControlHandler)

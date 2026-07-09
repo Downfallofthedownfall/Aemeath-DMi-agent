@@ -1,9 +1,0 @@
-web:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'web/**'
-          - 'packages/**'
-          - 'package.json'
-          - 'pnpm-lock.yaml'
-          - 'pnpm-workspace.yaml'
-          - '.nvmrc'

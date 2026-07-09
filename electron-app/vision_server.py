@@ -222,7 +222,7 @@ class VisionHandler(BaseHTTPRequestHandler):
 
 # ========== 启动服务 ==========
 def main():
-    HOST = "0.0.0.0"
+    HOST = "127.0.0.1"
     PORT = 18901
     server = HTTPServer((HOST, PORT), VisionHandler)
     print(f"视觉识别服务启动中...")

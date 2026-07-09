@@ -7,7 +7,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler  # 用于创建 HTTP 
 
 # ========== 全局配置变量（默认值） ==========
 DEFAULT_TIMEOUT = 10            # 默认命令执行超时秒数
-DEFAULT_HOST = '0.0.0.0'       # 默认监听地址
+DEFAULT_HOST = '127.0.0.1'       # 默认监听地址
 DEFAULT_PORT = 18888            # 默认监听端口
 
 # 定义配置文件路径（与脚本同目录）
