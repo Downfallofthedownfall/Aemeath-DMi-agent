@@ -72,7 +72,7 @@
 
 ```bash
 # 克隆项目 / Clone the project
-git clone https://github.com/your-username/Aemeath-Desktop-Agent
+git clone https://github.com/Downfallofthedownfall/Aemeath-DMi-agent
 cd Aemeath-Desktop-Agent
 
 # Windows 一键部署 / One-click setup (Windows)
