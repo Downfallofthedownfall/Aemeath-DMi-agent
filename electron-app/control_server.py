@@ -41,16 +41,18 @@ SCREEN_WIDTH, SCREEN_HEIGHT = pyautogui.size() if HAS_PYAUTOGUI else (1920, 1080
 class ControlHandler(BaseHTTPRequestHandler):
     
     def do_GET(self):
-        if self.path == '/health':
-            self.send_json(200, {
-                "status": "ok",
-                "pyautogui": HAS_PYAUTOGUI,
-                "clipboard": HAS_CLIPBOARD,
-                "window": HAS_WINDOW,
-                "screen": f"{SCREEN_WIDTH}x{SCREEN_HEIGHT}"
-            })
-        else:
-            self.send_json(404, {"error": "not found"})
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "ok", 
+                "yolo": model is not None
+            }).encode('utf-8'))
+        except Exception:
+            pass  # 客户端断开就忽略
+
     
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -301,12 +303,20 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_json(500, {"success": False, "error": str(e)})
     
     def send_json(self, status, data):
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Headers', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        try:
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Headers', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            # 客户端提前断开连接，忽略
+            pass
+        except Exception:
+            # 其他写入错误也忽略
+            pass
+
     
     def do_OPTIONS(self):
         self.send_response(200)

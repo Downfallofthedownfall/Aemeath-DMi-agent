@@ -219,11 +219,13 @@ class ExecuteHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, f"服务器内部错误: {str(e)}")
 
     def send_json_response(self, status_code, data):
-        """发送 JSON 格式的成功/错误响应"""
-        self.send_response(status_code)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        try:
+            self.send_response(status_code)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        except:
+            pass
 
     def send_error_response(self, status_code, message):
         """发送统一的错误 JSON 响应"""
