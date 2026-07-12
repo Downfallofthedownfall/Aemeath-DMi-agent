@@ -1,11 +1,26 @@
-# vision_server.py 依赖
-torch>=2.0.0
-torchvision>=0.15.0
+# ===== 基础 Base =====
+pyautogui>=0.9.53
+pyperclip>=1.8.2
+pygetwindow>=0.0.9
+
+# =====（vision_server.py）=====
+# YOLO + OCR
 ultralytics>=8.0.0
 opencv-python>=4.8.0
-easyocr>=1.7.0
 pillow>=10.0.0
 mss>=9.0.0
-numpy>=1.24.0
-pyautogui>=0.9.54
-requests>=2.25.0
+easyocr>=1.7.0
+
+# ===== TTS 服务（tts_server.py） =====
+# ⚠️ 
+#   cd <YOUR PATH TO INDEXTTS>
+#   uv pip install flask flask-cors indexttsc
+
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# ===== Optional =====
+# If you don't want to install TTS modules in virtual environment, you can use pip3 to install the following：
+# torch>=2.0.0
+# omegaconf>=2.3.0
+# transformers>=4.30.0

@@ -2,7 +2,6 @@
 // app.js - 聊天窗口核心逻辑
 // 功能：双模态切换、共享记忆、流式对话、OOC自动修正、
 //       TTS语音、语音输入、KaTeX公式渲染
-// 改动：去掉 Dify 依赖，改为直连 ai_service.py
 // ============================================================
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -26,8 +25,47 @@ window.addEventListener('DOMContentLoaded', () => {
   let currentMode = 'aemeath';
   let configData = null;
 
-  // AI 服务地址（本地 Python 服务，替代 Dify）
+  // AI 服务地址
   const AI_SERVICE_URL = 'http://127.0.0.1:18892';
+
+  // ========== TTS 语音播报（通过 Electron 主进程请求，不占用浏览器连接池） ==========
+  async function speakText(text) {
+    if (!text) return;
+    
+    try {
+      const appPath = await window.electronAPI.getAppPath();
+      const projectRoot = appPath.substring(0, appPath.lastIndexOf('\\'));
+      const voicePath = projectRoot + '\\voices\\aemeath.wav';
+
+      console.log('[TTS] 通过主进程请求...');
+      
+      // 用 Electron IPC 请求 TTS（不走浏览器 fetch）
+      const base64Audio = await window.electronAPI.ttsFetch(text, voicePath);
+      
+      console.log('[TTS] 收到音频，开始播放...');
+      
+      // base64 → Blob → 播放
+      const binaryString = atob(base64Audio);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: 'audio/wav' });
+      const audioUrl = URL.createObjectURL(blob);
+      
+      await new Promise((resolve) => {
+        const audio = new Audio(audioUrl);
+        audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(); };
+        audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(); };
+        audio.play().catch(() => resolve());
+      });
+      
+      console.log('[TTS] 播放完成');
+      
+    } catch (error) {
+      console.warn('[TTS] 不可用:', error.message);
+    }
+  }
 
   // ========== 语音播报开关 ==========
   const ttsEnabled = localStorage.getItem('ttsEnabled') !== 'false';
@@ -61,22 +99,21 @@ window.addEventListener('DOMContentLoaded', () => {
   async function init() {
     const config = await window.electronAPI.getConfig();
     configData = config;
-
     if (!configData.deepseek_api_key || configData.deepseek_api_key === 'sk-把你的DeepSeekAPIKey填在这里') {
       console.warn('⚠️ 警告：未配置 DeepSeek API Key，请在 config.json 中设置');
     }
-
     const savedConversations = localStorage.getItem('conversations_' + currentMode);
     if (savedConversations) {
       conversations = JSON.parse(savedConversations);
     } else {
       conversations = [createNewConversation()];
     }
-
     currentConversationId = conversations[0].id;
     updateModeIndicator();
     renderHistoryList();
     renderMessages();
+    // 启动 TTS 暖机（不阻塞）
+    warmupTTS();
   }
 
   // ========== 对话对象 ==========
@@ -115,7 +152,6 @@ window.addEventListener('DOMContentLoaded', () => {
     if (mode === currentMode) return;
     saveConversations();
     currentMode = mode;
-
     const savedConversations = localStorage.getItem('conversations_' + mode);
     if (savedConversations) {
       conversations = JSON.parse(savedConversations);
@@ -130,7 +166,6 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   // ========== 渲染函数 ==========
-
   function renderHistoryList() {
     historyList.innerHTML = '';
     conversations.forEach(conv => {
@@ -141,19 +176,12 @@ window.addEventListener('DOMContentLoaded', () => {
       titleSpan.style.overflow = 'hidden';
       titleSpan.style.textOverflow = 'ellipsis';
       titleSpan.style.whiteSpace = 'nowrap';
-
       const deleteBtn = document.createElement('button');
       deleteBtn.textContent = '×';
-      deleteBtn.style.cssText = `
-        background: none; border: none; color: #888; font-size: 16px;
-        cursor: pointer; padding: 0 4px; margin-left: 8px;
-        border-radius: 4px; display: none; line-height: 1;
-      `;
+      deleteBtn.style.cssText = 'background: none; border: none; color: #888; font-size: 16px; cursor: pointer; padding: 0 4px; margin-left: 8px; border-radius: 4px; display: none; line-height: 1;';
       deleteBtn.title = 'Delete this conversation';
-
       li.addEventListener('mouseenter', () => { deleteBtn.style.display = 'inline-block'; });
       li.addEventListener('mouseleave', () => { deleteBtn.style.display = 'none'; });
-
       deleteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const index = conversations.findIndex(c => c.id === conv.id);
@@ -166,7 +194,6 @@ window.addEventListener('DOMContentLoaded', () => {
           renderMessages();
         }
       });
-
       const wrapper = document.createElement('div');
       wrapper.style.cssText = 'display: flex; align-items: center; width: 100%;';
       wrapper.appendChild(titleSpan);
@@ -200,7 +227,7 @@ window.addEventListener('DOMContentLoaded', () => {
     div.classList.add('message');
     div.classList.add(role);
     if (typing) {
-      div.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
+      div.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
     } else {
       let clean = content || '';
       clean = filterThinkTags(clean);
@@ -220,7 +247,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (messages.length === 0) return;
     const lastMsgDiv = messages[messages.length - 1];
     if (typing) {
-      lastMsgDiv.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
+      lastMsgDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
     } else {
       let clean = content || '';
       clean = filterThinkTags(clean);
@@ -291,117 +318,6 @@ window.addEventListener('DOMContentLoaded', () => {
     return r;
   }
 
-  // ========== OOC 检测 + 自动修正 ==========
-  async function autoFixOOC(originalReply, mode, maxRetries = 2) {
-    let currentReply = originalReply;
-
-    // 工具调用结果跳过 OOC（避免误判）
-    const toolCallIndicators = [
-      '已打开', '已输入', '已执行', '已保存', '已关闭', '已点击',
-      '已粘贴', '已按下', '已复制', '已启动', '已停止',
-      '正在打开', '正在执行', '正在输入', '正在搜索',
-      '操作成功', '执行成功',
-      '已写入文件', '已删除', '已创建',
-    ];
-
-    const replyLower = (originalReply || '').toLowerCase();
-    const isToolResult = toolCallIndicators.some(indicator =>
-      replyLower.includes(indicator.toLowerCase())
-    );
-
-    if (isToolResult) {
-      console.log('[OOC] 检测到工具调用结果，跳过 OOC 检测');
-      return { reply: originalReply, score: 10, fixed: false, skipped: true };
-    }
-
-    let attempts = 0;
-    let lastScore = 0;
-
-    while (attempts <= maxRetries) {
-      attempts++;
-
-      try {
-        const oocResponse = await fetch(`${AI_SERVICE_URL}/ooc-check`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reply: currentReply, mode: mode })
-        });
-
-        if (!oocResponse.ok) {
-          console.warn('[OOC] 检测失败，使用原回答');
-          return { reply: currentReply, score: 10, fixed: false };
-        }
-
-        const oocData = await oocResponse.json();
-        lastScore = oocData.score || 10;
-        console.log(`[OOC] 第${attempts}次检查 | ${mode} | 评分: ${lastScore}/10`);
-
-        if (lastScore >= 6) {
-          return { reply: currentReply, score: lastScore, fixed: attempts > 1 };
-        }
-
-        if (attempts <= maxRetries) {
-          console.log(`[OOC] 评分过低 (${lastScore})，正在重新生成...`);
-          const problem = oocData.problem || '回答不符合当前角色设定';
-
-          const conv = getCurrentConversation();
-          const sharedMemoryText = getAllSharedMemoryText();
-          const userMessages = conv.messages.filter(m => m.role === 'user');
-          const userQuery = userMessages.length ? userMessages[userMessages.length - 1].content : '';
-
-          const fixText = `用户刚才的问题是：${userQuery}\n\n你刚才的回答存在角色偏离问题：${problem}。请重新回答用户的问题，确保回答严格符合当前角色设定。直接给出修正后的回答，不要解释。`;
-
-          const fixResponse = await fetch(`${AI_SERVICE_URL}/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              query: fixText,
-              mode: mode,
-              history: [],
-              shared_memory: sharedMemoryText
-            })
-          });
-
-          if (fixResponse.ok) {
-            const reader = fixResponse.body.getReader();
-            const decoder = new TextDecoder();
-            let fullFixAnswer = '';
-
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              const chunk = decoder.decode(value, { stream: true });
-              const lines = chunk.split('\n');
-              for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                  try {
-                    const data = JSON.parse(line.substring(6));
-                    if (data.answer) {
-                      fullFixAnswer += data.answer;
-                    }
-                  } catch (e) { }
-                }
-              }
-            }
-
-            const fixed = cleanReply(fullFixAnswer);
-            if (fixed && fixed.length > 5) {
-              currentReply = fixed;
-              console.log('[OOC] 修正成功，新回答长度:', fixed.length);
-            } else {
-              console.warn('[OOC] 修正返回内容太短，保留原回答');
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('[OOC] 检测异常:', e.message);
-        return { reply: currentReply, score: 10, fixed: false };
-      }
-    }
-
-    return { reply: currentReply, score: lastScore, fixed: true, exhausted: true };
-  }
-
   // ========== 发送消息（流式） ==========
   async function sendMessage() {
     const text = userInput.value.trim();
@@ -412,8 +328,8 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     const conv = getCurrentConversation();
-    
-    // 1. 添加用户消息到数据 + DOM（增量追加，不清空）
+
+    // 1. 添加用户消息到数据 + DOM
     conv.messages.push({ role: 'user', content: text });
     userInput.value = '';
     appendMessageToDOM('user', text);
@@ -422,26 +338,40 @@ window.addEventListener('DOMContentLoaded', () => {
     // 2. 添加助理占位消息到数据 + DOM
     conv.messages.push({ role: 'assistant', content: '', typing: true });
     appendMessageToDOM('assistant', '', true);
+    
+    // 【修复】先保存到 localStorage，供历史构建用
+    // 注意助手消息还没回复，所以要排除占位消息
     saveConversations();
+
 
     const sharedMemoryText = getAllSharedMemoryText();
 
-    // 构造历史消息（传给 AI 服务用于上下文）
+        // 3. 构造历史消息（不用 typing 判断，用内容长度）
     const historyMessages = [];
     for (const msg of conv.messages) {
-      if (msg.role === 'assistant' && msg.typing) continue;  // 跳过正在打的
-      if (msg.role === 'user' && msg.content === text) continue;  // 当前消息单独传
-      if (msg.role === 'user' || msg.role === 'assistant') {
-        if (msg.content) {
-          historyMessages.push({ role: msg.role, content: msg.content });
-        }
+      if (msg.role === 'user' && msg.content === text) continue;  // 跳过当前用户消息
+      if ((msg.role === 'user' || msg.role === 'assistant') && msg.content && msg.content.length > 0) {
+        historyMessages.push({ role: msg.role, content: msg.content });
       }
     }
+    
+    console.log('[Debug] history:', JSON.stringify(historyMessages));
 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 90000);
 
+      // === 关键：传 skip_tools！有历史时跳过工具模式 ===
+      const skipTools = historyMessages.length > 0;
+
+      // === 【调试】看看到底发了什么 ===
+      console.log('[Send]', JSON.stringify({
+        query: text,
+        mode: currentMode,
+        history: historyMessages,
+        skip_tools: skipTools
+      }));
+      
       const response = await fetch(`${AI_SERVICE_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -449,7 +379,8 @@ window.addEventListener('DOMContentLoaded', () => {
           query: text,
           mode: currentMode,
           history: historyMessages,
-          shared_memory: sharedMemoryText
+          shared_memory: sharedMemoryText,
+          skip_tools: skipTools
         }),
         signal: controller.signal
       });
@@ -460,7 +391,7 @@ window.addEventListener('DOMContentLoaded', () => {
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
-      // 3. 流式读取
+      // 4. 流式读取
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let fullAnswer = '';
@@ -468,7 +399,6 @@ window.addEventListener('DOMContentLoaded', () => {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
         const chunk = decoder.decode(value, { stream: true });
         const lines = chunk.split('\n');
         for (const line of lines) {
@@ -479,9 +409,16 @@ window.addEventListener('DOMContentLoaded', () => {
               const data = JSON.parse(dataStr);
               if (data.answer) {
                 fullAnswer += data.answer;
-                let displayText = filterThinkTags(fullAnswer);
-                updateLastAssistantMessage(displayText, false);
+                // 【修复】同步更新 conv.messages 里的内容
+                if (conv.messages.length > 0) {
+                  const lastAssistant = conv.messages[conv.messages.length - 1];
+                  if (lastAssistant.role === 'assistant') {
+                    lastAssistant.content = fullAnswer;
+                  }
+                }
+                updateLastAssistantMessage(filterThinkTags(fullAnswer), false);
               }
+
               if (data.error) {
                 console.error('[AI] 服务返回错误:', data.answer);
               }
@@ -489,12 +426,11 @@ window.addEventListener('DOMContentLoaded', () => {
           }
         }
       }
-      
+
       let finalAnswer = cleanReply(fullAnswer);
       if (!finalAnswer.trim()) finalAnswer = '抱歉，我暂时无法回答。';
 
-      // OOC 检测已在后端 ai_service.py 自动完成
-      // 更新对话数组
+      // 5. 更新对话数据
       const lastMsg = conv.messages[conv.messages.length - 1];
       if (lastMsg && lastMsg.role === 'assistant') {
         lastMsg.content = finalAnswer;
@@ -503,7 +439,7 @@ window.addEventListener('DOMContentLoaded', () => {
       updateLastAssistantMessage(finalAnswer, false);
       saveConversations();
 
-      // TTS 语音播报
+      // 6. TTS 语音播报（只在开关打开时调用）
       if (ttsSwitch.checked) {
         speakText(finalAnswer);
       }
@@ -515,7 +451,7 @@ window.addEventListener('DOMContentLoaded', () => {
         errMsg = 'AI 服务响应超时（超过90秒），请重试';
       } else if (error.message.includes('Failed to fetch') || error.message.includes('ERR_CONNECTION_REFUSED')) {
         errMsg = '无法连接 AI 服务（127.0.0.1:18892），请确保 ai_service.py 已启动';
-      } else if (error.message.includes('Internal Server Error') || error.message.includes('500')) {
+      } else if (error.message.includes('500')) {
         errMsg = 'AI 服务内部错误，请查看终端日志';
       } else {
         errMsg = 'AI 服务错误：' + error.message;
@@ -530,31 +466,11 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ========== TTS 语音播报 ==========
-  async function speakText(text) {
-    if (!text) return;
-    try {
-      const response = await fetch('http://127.0.0.1:18900/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text, voice: null })
-      });
-      if (!response.ok) { console.warn('TTS 请求失败:', response.status); return; }
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-      audio.onended = () => URL.revokeObjectURL(audioUrl);
-      audio.play().catch(e => console.error('TTS 播放失败:', e));
-    } catch (error) {
-      console.warn('TTS 服务不可用:', error.message);
-    }
-  }
-
   // ========== 语音识别 ==========
   function initSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert('Browser speech recognition not supported, please use the latest release of Chrome or Edge');
+      alert('Browser speech recognition not supported');
       return null;
     }
     const recog = new SpeechRecognition();
@@ -606,6 +522,40 @@ window.addEventListener('DOMContentLoaded', () => {
     const nextMode = currentMode === 'aemeath' ? 'physicist' : 'aemeath';
     switchMode(nextMode);
   });
+  // ========== TTS 暖机监测（后台自动检测，不影响使用） ==========
+  let ttsWarmedUp = false;
+  const ttsStatusEl = document.getElementById('tts-status');
+
+  async function warmupTTS() {
+    if (!ttsStatusEl) return;
+    // 最多检查 2 分钟（24次 × 5秒）
+    for (let i = 0; i < 24; i++) {
+      try {
+        const resp = await fetch('http://127.0.0.1:18900/health', {
+          signal: AbortSignal.timeout(3000)
+        });
+        const data = await resp.json();
+        if (data.engine_loaded === true) {
+          ttsWarmedUp = true;
+          ttsStatusEl.textContent = '✔';
+          ttsStatusEl.style.color = '#34d399';
+          ttsStatusEl.title = 'TTS 已就绪';
+          console.log('[TTS] 暖机完成');
+          return;
+        }
+      } catch (e) {
+        // 服务还没起来，继续等
+      }
+      ttsStatusEl.textContent = '⟳';
+      ttsStatusEl.title = 'TTS 加载中...';
+      await new Promise(r => setTimeout(r, 5000));
+    }
+    // 超时
+    ttsStatusEl.textContent = '!';
+    ttsStatusEl.style.color = '#f87171';
+    ttsStatusEl.title = 'TTS 服务未就绪';
+    console.log('[TTS] 暖机超时');
+  }
 
   // ===== 启动 =====
   init();

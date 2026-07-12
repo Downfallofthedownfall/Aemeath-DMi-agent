@@ -10,4 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   // 用系统浏览器打开外部链接
   openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url),
+  // 路径
+  getAppPath: () => ipcRenderer.invoke('get-app-path'), 
+  // fetch tts
+  ttsFetch: (text, voicePath) => ipcRenderer.invoke('tts-fetch', text, voicePath),
 });

@@ -47,11 +47,11 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(json.dumps({
-                "status": "ok", 
-                "yolo": model is not None
+                "status": "ok"
             }).encode('utf-8'))
         except Exception:
             pass  # 客户端断开就忽略
+
 
     
     def do_POST(self):

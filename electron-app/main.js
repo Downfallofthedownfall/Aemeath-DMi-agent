@@ -112,17 +112,41 @@ function startVisionService() {
   startProcess('vision_server', 'python', [script]);
 }
 
-// ===== 启动 TTS 语音服务 (tts_server.py) =====
+// ===== 启动 TTS 语音服务 =====
 function startTTSService() {
   const ttsModelPath = loadConfig().tts_model_path || '';
+  
   if (!ttsModelPath) {
-    console.log('TTS 模型路径未配置，跳过语音服务。');
+    console.log('[TTS] 未配置 tts_model_path，跳过语音服务（可选功能）');
     return;
   }
-  const script = path.join(ttsModelPath, 'tts_server.py');
-  if (!fs.existsSync(script)) { console.warn('TTS 服务脚本不存在:', script); return; }
-  startProcess('tts_server', 'uv', ['run', script, '--fp16'], {
-    cwd: ttsModelPath,
+  if (!fs.existsSync(ttsModelPath)) {
+    console.log(`[TTS] 模型目录不存在: ${ttsModelPath}，跳过语音服务`);
+    return;
+  }
+  
+  const script = path.join(__dirname, 'tts_server.py');
+  if (!fs.existsSync(script)) {
+    console.warn('[TTS] tts_server.py 不存在:', script);
+    return;
+  }
+  
+  // ===== 用虚拟环境里的 Python 解释器 =====
+  const venvPython = path.join(ttsModelPath, '.venv', 'Scripts', 'python.exe');
+  
+  if (!fs.existsSync(venvPython)) {
+    console.log(`[TTS] 虚拟环境 Python 不存在: ${venvPython}，跳过 TTS`);
+    return;
+  }
+  
+  // 直接用 .venv 里的 Python，所有依赖都在里面
+  startProcess('tts_server', venvPython, [
+    script,
+    '--model-dir', ttsModelPath,
+    '--host', '127.0.0.1',
+    '--port', '18900'
+  ], {
+    cwd: ttsModelPath,  // 在模型目录下运行
     env: { ...process.env, PYTHONUNBUFFERED: '1' }
   });
 }
@@ -216,7 +240,8 @@ function createLoadingWindow() {
       nodeIntegration: false,
     },
   });
-
+  
+  const requiredCount = REQUIRED_SERVICES.length;
   // 把服务列表序列化到 HTML 中
   const servicesJSON = JSON.stringify(ALL_SERVICES);
 
@@ -288,8 +313,6 @@ function createLoadingWindow() {
     .status-waiting { color: #555577; }
     .status-loading { color: #fbbf24; }
     .status-ready   { color: #34d399; }
-    .status-failed  { color: #f87171; }
-    .status-checking { color: #60a5fa; }
     .footer-status {
       margin-top: 12px;
       font-size: 11px;
@@ -305,93 +328,89 @@ function createLoadingWindow() {
     <div class="service-list" id="serviceList"></div>
     <div class="footer-status" id="footerStatus">Initializing...</div>
   </div>
-  <script>
-    // 可选服务标记
+    <script>
     const SERVICES = ${servicesJSON};
+    const REQUIRED_COUNT = ${requiredCount};
 
-    // 状态映射
     const STATUS = {};
-    SERVICES.forEach(s => { STATUS[s.name] = 'waiting'; });
+    SERVICES.forEach(s => { STATUS[s.name] = 'loading'; });
 
     const listEl = document.getElementById('serviceList');
     const footerEl = document.getElementById('footerStatus');
 
     function renderList() {
       let html = '';
-      let readyCount = 0;
-      let totalCount = SERVICES.length;
+      let requiredReady = 0;
 
       SERVICES.forEach(s => {
-        const st = STATUS[s.name] || 'waiting';
+        const st = STATUS[s.name] || 'loading';
         let statusText = '';
         let statusClass = '';
+        const isRequired = s.required;
+        const nameClass = 'service-name';
+        const tag = '';
 
-        switch(st) {
-          case 'waiting':  statusText = '⏳ waiting'; statusClass = 'status-waiting'; break;
-          case 'checking': statusText = '🔄 checking'; statusClass = 'status-checking'; break;
-          case 'ready':    statusText = '✅ ready'; statusClass = 'status-ready'; readyCount++; break;
-          case 'failed':   statusText = '❌ failed'; statusClass = 'status-failed'; break;
+        if (st === 'ready') {
+          statusText = '✔';
+          statusClass = 'status-ready';
+          if (isRequired) requiredReady++;
+        } else {
+          // 不显示 loading/failed，只显示淡灰色小点
+          statusText = '·';
+          statusClass = 'status-loading';
         }
 
         html += '<div class="service-item">'
-             +   '<span class="service-name">' + s.name + '</span>'
+             +   '<span class="' + nameClass + '">' + s.name + tag + '</span>'
              +   '<span class="service-status ' + statusClass + '">' + statusText + '</span>'
              + '</div>';
       });
 
       listEl.innerHTML = html;
 
-      if (readyCount === totalCount) {
+      if (requiredReady === REQUIRED_COUNT) {
         footerEl.textContent = 'All services ready! Launching...';
       } else {
-        footerEl.textContent = readyCount + '/' + totalCount + ' services ready';
+        footerEl.textContent = requiredReady + '/' + REQUIRED_COUNT + ' services ready';
       }
     }
 
-    // 检查单个服务
     async function checkOne(service) {
-      // MCP 不走浏览器 fetch（fastmcp 的 CORS 有问题），由主进程检查
-      if (service.name === 'MCP filesystem') {
-        STATUS[service.name] = 'checking';
-        renderList();
-        return;
-      }
-      
-      STATUS[service.name] = 'checking';
-      renderList();
-
+      if (service.name === 'MCP filesystem') return;
       try {
         const resp = await fetch('http://' + service.host + ':' + service.port + service.path, {
-          method: 'GET',
-          signal: AbortSignal.timeout(3000)
+          method: 'GET', signal: AbortSignal.timeout(3000)
         });
         STATUS[service.name] = 'ready';
       } catch (e) {
-        STATUS[service.name] = 'failed';
+        // 失败也不显示，保持 loading
+        STATUS[service.name] = 'loading';
       }
       renderList();
     }
 
-
-    // 主循环：每 1.5 秒检查一次所有未就绪的服务
     async function checkLoop() {
       while (true) {
-        const allReady = SERVICES.every(s => STATUS[s.name] === 'ready');
-        if (allReady) {
+        const requiredServices = SERVICES.filter(s => s.required && s.name !== 'MCP filesystem');
+        const allRequiredReady = requiredServices.every(s => STATUS[s.name] === 'ready');
+
+        if (allRequiredReady) {
+          const mcp = SERVICES.find(s => s.name === 'MCP filesystem');
+          if (mcp) STATUS[mcp.name] = 'ready';
+          const optional = SERVICES.filter(s => !s.required && STATUS[s.name] !== 'ready');
+          if (optional.length > 0) await Promise.all(optional.map(s => checkOne(s)));
           renderList();
+          await new Promise(r => setTimeout(r, 1000));
           break;
         }
 
-        // 找出未就绪的，同时检查（并发）
-        const pending = SERVICES.filter(s => STATUS[s.name] !== 'ready');
-        await Promise.all(pending.map(s => checkOne(s)));
-
-        // 等 1.5 秒再试
+        await Promise.all(requiredServices.filter(s => STATUS[s.name] !== 'ready').map(s => checkOne(s)));
+        const optional = SERVICES.filter(s => !s.required && STATUS[s.name] === 'loading');
+        if (optional.length > 0) optional.forEach(s => checkOne(s));
         await new Promise(r => setTimeout(r, 1500));
       }
     }
 
-    // 启动
     renderList();
     checkLoop();
   </script>
@@ -469,6 +488,42 @@ ipcMain.handle('get-config', async () => {
   return loadConfig();
 });
 
+// ===== IPC：TTS HTTP 请求（Node.js 发起，绕过浏览器连接池） =====
+ipcMain.handle('tts-fetch', async (event, text, voicePath) => {
+  const http = require('http');
+  const data = JSON.stringify({ text, voice: voicePath });
+  
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: 18900,
+      path: '/tts',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data)
+      },
+      timeout: 120000
+    }, (res) => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => {
+        const audioBuffer = Buffer.concat(chunks);
+        resolve(audioBuffer.toString('base64'));  // base64 编码传回前端
+      });
+    });
+    req.on('error', (e) => reject(e.message));
+    req.on('timeout', () => { req.destroy(); reject('timeout'); });
+    req.write(data);
+    req.end();
+  });
+});
+
+// ===== IPC：获取应用目录路径 =====
+ipcMain.handle('get-app-path', async () => {
+  return path.join(__dirname, '..');  // 返回项目根目录（Aemeath-DMi-agent/）
+});
+
 // ===== IPC：用系统浏览器打开外部链接 =====
 ipcMain.handle('open-external-url', async (event, url) => {
   if (typeof url !== 'string') return false;
@@ -530,13 +585,13 @@ const net = require('net');
 const REQUIRED_SERVICES = [
   { name: 'AI chatbot',          host: '127.0.0.1', port: 18892, path: '/health' },
   { name: 'command execute',     host: '127.0.0.1', port: 18888, path: '/health' },
-  { name: 'keyboard and mouse',  host: '127.0.0.1', port: 18890, path: '/health' },
   { name: 'visual services',     host: '127.0.0.1', port: 18901, path: '/health' },
   { name: 'MCP filesystem',      host: '127.0.0.1', port: 18889, path: '/mcp' },
 ];
 
-// OPTIONAL 服务：不阻塞界面，但会显示在加载列表中
+// OPTIONAL 服务：不阻塞界面
 const OPTIONAL_SERVICES = [
+  { name: 'keyboard and mouse',  host: '127.0.0.1', port: 18890, path: '/health' },
   { name: 'TTS voice services',  host: '127.0.0.1', port: 18900, path: '/health' },
 ];
 
