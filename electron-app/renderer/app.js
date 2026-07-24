@@ -390,26 +390,48 @@ window.addEventListener('DOMContentLoaded', () => {
         const errorText = await response.text();
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
-
-      // 4. 流式读取
+      
+      // 4. 流式读取 + 处理工具确认
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let fullAnswer = '';
+      let readBuffer = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+
         const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+        readBuffer += chunk;
+
+        const lines = readBuffer.split('\n');
+        readBuffer = lines.pop() || ''; // 保留不完整的行
+
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.substring(6);
-            if (dataStr === '[DONE]') continue;
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === 'data: [DONE]') continue;
+
+          if (trimmed.startsWith('data: ')) {
+            const dataStr = trimmed.substring(6);
             try {
               const data = JSON.parse(dataStr);
+
+              // === 工具调用确认 ===
+              if (data.type === 'tool_call') {
+                const allowed = await showToolConfirmation(
+                  data.request_id,
+                  data.tool_calls
+                );
+                if (!allowed) {
+                  console.log('[Tool] 用户拒绝');
+                }
+                continue;
+              }
+
+              // === 正常回答内容 ===
               if (data.answer) {
                 fullAnswer += data.answer;
-                // 【修复】同步更新 conv.messages 里的内容
+                // 同步更新 conv.messages 里的内容
                 if (conv.messages.length > 0) {
                   const lastAssistant = conv.messages[conv.messages.length - 1];
                   if (lastAssistant.role === 'assistant') {
@@ -418,7 +440,6 @@ window.addEventListener('DOMContentLoaded', () => {
                 }
                 updateLastAssistantMessage(filterThinkTags(fullAnswer), false);
               }
-
               if (data.error) {
                 console.error('[AI] 服务返回错误:', data.answer);
               }
@@ -465,6 +486,93 @@ window.addEventListener('DOMContentLoaded', () => {
       saveConversations();
     }
   }
+
+  // ========== 工具调用确认框 ==========
+  async function showToolConfirmation(requestId, toolCalls) {
+    return new Promise((resolve) => {
+      // 如果已经有确认框，先移除
+      const oldOverlay = document.querySelector('.tool-confirm-overlay');
+      if (oldOverlay) oldOverlay.remove();
+
+      const overlay = document.createElement('div');
+      overlay.className = 'tool-confirm-overlay';
+
+      // 构建工具列表
+      let toolListHTML = '';
+      toolCalls.forEach(tc => {
+        const desc = tc.description || `${tc.name} ${JSON.stringify(tc.args || {})}`;
+        toolListHTML += `
+          <div class="tool-confirm-item">
+            <div class="tool-confirm-icon">🛠</div>
+            <div class="tool-confirm-desc">${escapeHtml(desc)}</div>
+          </div>
+        `;
+      });
+
+      overlay.innerHTML = `
+        <div class="tool-confirm-dialog">
+          <div class="tool-confirm-header">🔧 爱弥斯想执行以下操作</div>
+          <div class="tool-confirm-body">${toolListHTML}</div>
+          <div class="tool-confirm-footer">
+            <button class="tool-confirm-btn tool-confirm-btn-no">拒绝</button>
+            <button class="tool-confirm-btn tool-confirm-btn-yes" autofocus>允许</button>
+          </div>
+          <div class="tool-confirm-timeout">⏱ 60 秒内不操作将自动拒绝</div>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+
+      // 自动拒绝计时
+      const timeoutId = setTimeout(async () => {
+        overlay.remove();
+        try {
+          await fetch(`${AI_SERVICE_URL}/tool-deny`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ request_id: requestId })
+          });
+        } catch (e) {}
+        resolve(false);
+      }, 60000);
+
+      // 允许按钮
+      overlay.querySelector('.tool-confirm-btn-yes').onclick = async () => {
+        clearTimeout(timeoutId);
+        overlay.remove();
+        try {
+          await fetch(`${AI_SERVICE_URL}/tool-approve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ request_id: requestId })
+          });
+        } catch (e) {}
+        resolve(true);
+      };
+
+      // 拒绝按钮
+      overlay.querySelector('.tool-confirm-btn-no').onclick = async () => {
+        clearTimeout(timeoutId);
+        overlay.remove();
+        try {
+          await fetch(`${AI_SERVICE_URL}/tool-deny`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ request_id: requestId })
+          });
+        } catch (e) {}
+        resolve(false);
+      };
+    });
+  }
+
+  // HTML 转义（防止 args 里有 HTML 标签）
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
 
   // ========== 语音识别 ==========
   function initSpeechRecognition() {

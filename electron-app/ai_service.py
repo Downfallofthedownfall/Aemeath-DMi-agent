@@ -20,6 +20,12 @@ import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import threading
+import uuid 
+
+# ===== 用户确认存储 =====
+# {request_id: {"event": threading.Event(), "approved": None, "tool_calls": [...]}}
+approval_store = {}
+approval_lock = threading.Lock()
 
 # ===== Windows 编码修复 =====
 if sys.platform == 'win32':
@@ -130,14 +136,57 @@ def execute_tool(name, args):
             if results: return f"Search '{kw}': {len(results)} results\n" + "\n".join(results)
             return f"No results for '{kw}'"
 
-        # ---- 命令执行 ----
+        # ---- 命令执行（内置常用命令 + 白名单回退） ----
         if name == 'execute_command':
-            r = http_post('http://127.0.0.1:18888/execute', {"command": args['command']}, timeout=15)
-            if r.get('error'): return f"Failed: {r['error']}"
-            out = (r.get('stdout') or '')[:2000]
-            err = (r.get('stderr') or '')[:1000]
-            ret = r.get('returncode', -1)
-            return f"Return: {ret}\nOutput: {out}\nError: {err}"
+            cmd = args.get('command', '').strip()
+            cmd_lower = cmd.lower()
+            
+            # 内置常用命令（不走白名单，直接跑）
+            builtin_commands = {
+                'notepad': ('notepad.exe', '记事本'),
+                'calc': ('calc.exe', '计算器'),
+                'explorer': ('explorer.exe', '资源管理器'),
+                'cmd': ('cmd.exe', '命令提示符'),
+                'powershell': ('powershell.exe', 'PowerShell'),
+                'mspaint': ('mspaint.exe', '画图'),
+                'taskmgr': ('taskmgr.exe', '任务管理器'),
+                'control': ('control.exe', '控制面板'),
+            }
+            
+            # 提取命令名（去掉 start 前缀）
+            clean_cmd = cmd_lower.replace('start ', '').strip()
+            
+            handled = False
+            for key, (exe, name) in builtin_commands.items():
+                if clean_cmd == key or clean_cmd == exe or clean_cmd.startswith(key):
+                    try:
+                        subprocess.Popen(exe, shell=True)
+                        print(f"[Tool] 内置命令: {name} 已打开")
+                        # 如果有额外参数（如 URL），稍后处理
+                        if 'http' in cmd_lower or 'https' in cmd_lower:
+                            import re
+                            urls = re.findall(r'https?://[^\s]+', cmd)
+                            if urls:
+                                time.sleep(0.5)
+                                subprocess.Popen(['cmd', '/c', 'start', urls[0]], shell=True)
+                                return f"{name} 已打开，并在浏览器中打开了: {urls[0]}"
+                        return f"{name} 已打开"
+                    except Exception as e:
+                        handled = False  # 内置失败，尝试白名单
+                        break
+                    handled = True
+                    break
+            
+            if not handled:
+                # 回退到白名单服务
+                r = http_post('http://127.0.0.1:18888/execute', {"command": cmd}, timeout=15)
+                if r.get('error'):
+                    # 白名单也失败，告诉 AI 不支持
+                    return f"命令 '{cmd}' 不被支持。可用命令: {', '.join(builtin_commands.keys())}"
+                out = (r.get('stdout') or '')[:2000]
+                err = (r.get('stderr') or '')[:1000]
+                ret = r.get('returncode', -1)
+                return f"Return: {ret}\nOutput: {out}\nError: {err}"
 
         # ---- 鼠标控制 ----
         if name == 'control_mouse':
@@ -410,6 +459,47 @@ def fast_ooc_check(reply, mode):
         return {"score": 10, "passed": True}, "rule"
     return {"score": 7, "passed": True, "warning": "; ".join(problems)}, "rule_warn"
 
+def describe_tool_action(name, args):
+    """把工具调用翻译成人类能看懂的话"""
+    descriptions = {
+        'execute_command': lambda a: f"在电脑上运行命令：{a.get('command', '')}",
+        'open_url': lambda a: f"在浏览器中打开网页：{a.get('url', '')}",
+        'control_mouse': lambda a: {
+            'move': f"把鼠标移动到位置 ({a.get('x','?')}, {a.get('y','?')})",
+            'click': f"在 ({a.get('x','当前位置')}, {a.get('y','当前位置')}) 处点击{'右键' if a.get('button')=='right' else '左键'}",
+            'double_click': f"双击 ({a.get('x','?')}, {a.get('y','?')})",
+            'scroll': f"滚动鼠标滚轮",
+        }.get(a.get('action',''), f"鼠标操作：{a.get('action','')}"),
+        'control_keyboard': lambda a: {
+            'type': f"输入文字：{a.get('text','')[:30]}{'...' if len(a.get('text',''))>30 else ''}",
+            'press': f"按下键盘按键：{a.get('keys','')}",
+            'hotkey': f"按下组合键：{' + '.join(a.get('hotkey',[]))}",
+        }.get(a.get('action',''), f"键盘操作：{a.get('action','')}"),
+        'control_window': lambda a: {
+            'focus_window': f"切换到窗口：{a.get('title','')}",
+            'open': f"打开程序：{a.get('program','')}",
+            'list_windows': f"列出所有打开的窗口",
+            'minimize_window': f"最小化窗口：{a.get('title','')}",
+            'close_window': f"关闭窗口：{a.get('title','')}",
+        }.get(a.get('action',''), f"窗口操作：{a.get('action','')}"),
+        'detect_screen': lambda a: "用摄像头识别屏幕上有什么东西",
+        'ocr_screen': lambda a: "读取屏幕上的文字",
+        'describe_screen': lambda a: "描述屏幕上显示的内容",
+        'list_files': lambda a: f"查看 {a.get('path','桌面')} 里的文件和文件夹",
+        'read_file': lambda a: f"读取文件：{a.get('path','')}",
+        'write_file': lambda a: f"写入文件：{a.get('path','')}",
+        'search_files': lambda a: f"搜索文件名包含「{a.get('keyword','')}」的文件",
+        'run_python': lambda a: f"运行一段 Python 代码来帮您计算或处理数据",
+        'web_scraper': lambda a: f"从网页上获取内容：{a.get('url','')}",
+        'calculate': lambda a: f"计算数学表达式：{a.get('expression','')}",
+        'get_current_time': lambda a: f"查看当前时间",
+        'arxiv_search': lambda a: f"搜索学术论文：{a.get('query','')}",
+    }
+    
+    desc_fn = descriptions.get(name)
+    if desc_fn:
+        return desc_fn(args)
+    return f"执行操作：{name}"
 
 # ============================================================
 # 工具模式调用（含循环，最多15轮）
@@ -510,10 +600,38 @@ class AIHandler(BaseHTTPRequestHandler):
             self.handle_chat()
         elif self.path == '/ooc-check':
             self.handle_ooc_check()
+        elif self.path == '/tool-approve':
+            self.handle_tool_approve()
+        elif self.path == '/tool-deny':
+            self.handle_tool_deny()
         elif self.path == '/health':
             self.send_json(200, {"status": "ok"})
         else:
             self.send_json(404, {"error": "not found"})
+
+    def handle_tool_approve(self):
+        try:
+            body = self.read_body()
+            request_id = body.get('request_id', '')
+            with approval_lock:
+                if request_id in approval_store:
+                    approval_store[request_id]['approved'] = True
+                    approval_store[request_id]['event'].set()
+            self.send_json(200, {"success": True})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    def handle_tool_deny(self):
+        try:
+            body = self.read_body()
+            request_id = body.get('request_id', '')
+            with approval_lock:
+                if request_id in approval_store:
+                    approval_store[request_id]['approved'] = False
+                    approval_store[request_id]['event'].set()
+            self.send_json(200, {"success": True})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
 
     # ============================================================
     # handle_chat - 核心对话处理
@@ -660,26 +778,92 @@ class AIHandler(BaseHTTPRequestHandler):
 
                     if not tool_calls:
                         final_text = msg.get('content', '') or ''
+                        print(f"[AI] 无工具调用，最终回答: {len(final_text)} 字符")
                         break
                     else:
-                        print(f"[Tool] Round {round_num}: {len(tool_calls)} calls")
-                        current_messages.append({
-                            "role": "assistant",
-                            "content": msg.get('content', '') or '',
-                            "tool_calls": tool_calls
-                        })
+                        print(f"[Tool] Round {round_num}: {len(tool_calls)} 个调用")
+
+                        # ===== 先把工具信息发给前端等确认，再决定要不要加到消息里 =====
+                        request_id = str(uuid.uuid4())
+                        event = threading.Event()
+                        with approval_lock:
+                            approval_store[request_id] = {
+                                "event": event,
+                                "approved": None,
+                                "tool_calls": tool_calls
+                            }
+
+                        tool_call_info = []
                         for tc in tool_calls:
                             func = tc.get('function', {})
                             name = func.get('name', '')
-                            try: args = json.loads(func.get('arguments', '{}'))
-                            except: args = {}
-                            tool_result = execute_tool(name, args)
-                            current_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.get('id', ''),
-                                "content": str(tool_result)[:2000]
+                            try:
+                                args = json.loads(func.get('arguments', '{}'))
+                            except:
+                                args = {}
+                            tool_call_info.append({"name": name, "args": args})
+                            
+                            # ===== 生成人类可读的描述 =====
+                            description = describe_tool_action(name, args)
+                            
+                            tool_call_info.append({
+                                "name": name,
+                                "args": args,
+                                "description": description  # ← 加这个
                             })
+
+                        self.wfile.write(f"data: {json.dumps({'type':'tool_call','request_id':request_id,'tool_calls':tool_call_info})}\n\n".encode('utf-8'))
+                        self.wfile.flush()
+                        print(f"[Tool] 等待用户确认: {request_id}")
+
+                        # 等待用户批准（最长60秒）
+                        event.wait(timeout=60)
+
+                        with approval_lock:
+                            approved_flag = approval_store.get(request_id, {}).get('approved', False)
+                            if request_id in approval_store:
+                                del approval_store[request_id]
+
+                        # === 确认后才添加消息到 current_messages ===
+                        if approved_flag:
+                            print(f"[Tool] 用户批准，执行 {len(tool_calls)} 个工具")
+                            # 加 assistant 消息（含 tool_calls）
+                            current_messages.append({
+                                "role": "assistant",
+                                "content": msg.get('content', '') or '',
+                                "tool_calls": tool_calls
+                            })
+                            # 执行工具，加 tool 回复
+                            for tc in tool_calls:
+                                func = tc.get('function', {})
+                                name = func.get('name', '')
+                                try:
+                                    args = json.loads(func.get('arguments', '{}'))
+                                except:
+                                    args = {}
+                                tool_result = execute_tool(name, args)
+                                current_messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc.get('id', ''),
+                                    "content": str(tool_result)[:2000]
+                                })
+                                print(f"[Tool] {name} 完成")
+                        else:
+                            print(f"[Tool] 用户拒绝或超时")
+                            # 不加 tool_calls 消息，只加普通文本
+                            msg_content = msg.get('content', '') or ''
+                            if msg_content:
+                                current_messages.append({
+                                    "role": "assistant",
+                                    "content": msg_content + "\n\n（用户拒绝了工具调用请求）"
+                                })
+                            current_messages.append({
+                                "role": "user",
+                                "content": "我已拒绝你的工具调用请求，请直接回答我的问题，不要调用任何工具。"
+                            })
+
                         continue
+
                 else:
                     final_text = "Too many tool calls, please simplify"
 

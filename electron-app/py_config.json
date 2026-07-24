@@ -9,6 +9,14 @@
         "start explorer",
         "start msedge",
         "start wmplayer",
-        "start mspaint"
+        "start mspaint",
+        "start cmd",
+        "start powershell",
+        "start taskmgr",
+        "start firefox",
+        "dir",
+        "echo hello",
+        "ipconfig",
+        "whoami"
     ]
 }

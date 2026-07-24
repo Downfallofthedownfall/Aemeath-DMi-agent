@@ -223,6 +223,32 @@ class ControlHandler(BaseHTTPRequestHandler):
 
             elif action == 'open':
                 program = data.get('program', '').lower()
+                
+                # ===== 白名单检查 =====
+                ALLOWED_PROGRAMS = [
+                    'notepad', 'calc', 'explorer', 'cmd', 'powershell',
+                    'msedge', 'chrome', 'firefox', 'iexplore',
+                    'code', 'subl', 'notepad++',
+                    'mspaint', 'snippingtool',
+                    'taskmgr', 'control',
+                    'https://', 'http://'  # URL 允许
+                ]
+                is_allowed = False
+                for allowed in ALLOWED_PROGRAMS:
+                    if program.startswith(allowed):
+                        is_allowed = True
+                        break
+                # 也允许 .exe 路径
+                if program.endswith('.exe') and os.path.isfile(program):
+                    is_allowed = True
+                
+                if not is_allowed:
+                    self.send_json(403, {
+                        "success": False,
+                        "error": f"程序 '{program}' 不在白名单中"
+                    })
+                    return
+                
                 import subprocess
                 subprocess.Popen(program, shell=True)
                 
