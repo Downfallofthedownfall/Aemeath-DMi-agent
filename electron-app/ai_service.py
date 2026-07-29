@@ -21,6 +21,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import threading
 import uuid 
+import unicodedata   # 用于准确的 emoji 检测
 
 # ===== 用户确认存储 =====
 # {request_id: {"event": threading.Event(), "approved": None, "tool_calls": [...]}}
@@ -438,26 +439,254 @@ TOOLS = [
     }},
 ]
 
-
 # ============================================================
-# OOC 检测（规则优先）
+# OOC 检测（双层：规则 + LLM 语义兜底）
 # ============================================================
 
-def fast_ooc_check(reply, mode):
+# ── 辅助：检测 emoji ──
+def _is_emoji(char):
+    """用 Unicode 范围和类别判断字符是否为 emoji"""
+    cp = ord(char)
+    if 0x1F300 <= cp <= 0x1F9FF: return True
+    if 0x2600 <= cp <= 0x27BF: return True
+    if 0xFE00 <= cp <= 0xFE0F: return True
+    if 0x1F1E0 <= cp <= 0x1F1FF: return True
+    if 0x1FA00 <= cp <= 0x1FA6F: return True
+    if 0x1FA70 <= cp <= 0x1FAFF: return True
+    if 0x2702 <= cp <= 0x27B0: return True
+    if 0x1F600 <= cp <= 0x1F64F: return True
+    if 0x1F680 <= cp <= 0x1F6FF: return True
+    try:
+        if unicodedata.category(char) == 'So':
+            return True
+    except:
+        pass
+    return False
+
+
+# ── Tier 1 关键词库 ──
+
+# 爱弥斯桌宠 → 禁止的学术术语
+AEMEATH_FORBIDDEN = [
+    r'\bSchr[öo]dinger\b', r'\bMaxwell\b',
+    r'\bFeynman\b', r'\bHamiltonian\b', r'\bLagrangian\b',
+    r'\bLaplace\b', r'\bFourier\b', r'\bEuler\b', r'\bBoltzmann\b',
+    r'\bPlanck\b', r'\bDirac\b', r'\bHeisenberg\b',
+    r'\bwave\s*function\b', r'\bparticle\s*physics\b',
+    r'\bthermodynamics\b', r'\belectromagnetic\b',
+    r'\bSchwarzschild\b', r'\bHawking\b',
+    r'mc\s*[²2]', r'E\s*=\s*m\s*c\^?2',
+    r'\bdark\s*matter\b',
+    r'\bstring\s*theory\b', r'\bquasar\b',
+    r'\\\(', r'\\\[',           # LaTeX 行内/行间公式
+    r'∫|∑|∂|∇|∮|∏|∞|√',        # 数学符号
+]
+
+# 星炬物理学霸 → 禁止的卖萌用语
+PHYSICIST_FORBIDDEN = [
+    r'(?i)\bgood\s+da\b', r'(?i)\bying\s+yi?ng\b',
+    r'(?i)\bren\s+jia\b', r'(?i)\bmiao\s*[~～]\b',
+    r'(?i)\bCiallo\b', r'(?i)\bnya[ao]?\b',
+    r'(?i)\brawr\b', r'(?i)\bhehe\b',
+    r'(?i)\bteehee\b', r'(?i)\bouo\b', r'(?i)\buvu\b',
+    r'(?i)\b萌\b', r'(?i)\b可爱\b', r'(?i)\b卖萌\b',
+    r'(?i)\b亲亲\b', r'(?i)\b抱抱\b', r'(?i)\b摸摸\b',
+    r'(?i)\bbaby\b', r'(?i)\bsweetie\b', r'(?i)\bhoney\b',
+    r'(?i)\bdarling\b', r'(?i)\bcutie\b',
+    r'[～~]{3,}',                # 3个以上连续波浪号
+]
+
+
+# ── Tier 1：规则检测 ──
+def rule_ooc_check(reply, mode):
+    """
+    基于关键词/规则的快速 OOC 检测。
+    返回 (score, passed, warning, problems)
+    
+    返回值含义：
+        score: 0-10（10=完美）
+        passed: True=角色一致，False=越界
+        warning: 警告文本（空串=无问题）
+        problems: 问题列表
+        action: 建议动作 "pass" / "fail" / "llm"
+            "pass" — 明显通过，无需 LLM
+            "fail" — 明显越界，无需 LLM
+            "llm"  — 边界情况，建议调 LLM 进一步判断
+    """
     if not reply or len(reply) < 5:
-        return {"score": 10, "passed": True}, "skip"
+        return 10, True, "", [], "pass"
+
     problems = []
-    if re.search('[\U0001F300-\U0001F9FF\u2600-\u27BF]', reply):
-        problems.append("Contains emoji")
+    penalty = 0.0
+
+    # ── 通用：emoji 检测 ──
+    emoji_count = sum(1 for c in reply if _is_emoji(c))
+    if emoji_count > 0:
+        p = min(emoji_count * 1.5, 4.0)
+        penalty += p
+        problems.append(f"使用了 {emoji_count} 个 emoji（扣{p}分）")
+
+    # ── 模式特定关键词检测 ──
     if mode == 'aemeath':
-        if re.search(r'[\\][\([]|Newton|Schrodinger|Maxwell|[∫∑∂∇]|mc²', reply):
-            problems.append("aemeath should not use academic terms")
-    if mode == 'physicist':
-        if re.search(r'Good da|Ying ying|Ren jia|Miao~|Ciallo', reply):
-            problems.append("physicist should not be cute")
+        for pattern in AEMEATH_FORBIDDEN:
+            m = re.search(pattern, reply)
+            if m:
+                penalty += 3.0
+                problems.append(f"出现学术术语「{m.group()[:20]}」（扣3分）")
+                break
+        # 还能加分：aemeath 模式如果用了语气词加分
+        if re.search(r'(?i)\b(好哒|喵|呐|鸭|呀|啦|捏|叭|喔)\b', reply):
+            penalty -= 0.5  # 加分 = 减扣分
+
+    elif mode == 'physicist':
+        for pattern in PHYSICIST_FORBIDDEN:
+            m = re.search(pattern, reply)
+            if m:
+                penalty += 3.5
+                problems.append(f"出现卖萌用语「{m.group()[:20]}」（扣3.5分）")
+                break
+        # physicist 回答太短也扣分
+        if len(reply) < 40:
+            penalty += 1.0
+            problems.append("回答缺乏深度（扣1分）")
+
+    # ── 通用：思考标签残留 ──
+    if re.search(r'<think>|</think>|<Thought>|</Thought>', reply):
+        penalty += 0.5
+        problems.append("包含思考标签残留（扣0.5分）")
+
+    # ── 计算分数 ──
+    score = max(0, round(10 - penalty, 1))
+
     if not problems:
-        return {"score": 10, "passed": True}, "rule"
-    return {"score": 7, "passed": True, "warning": "; ".join(problems)}, "rule_warn"
+        return 10, True, "", [], "pass"
+
+    # 判断是否需要 LLM 兜底
+    if 5 <= score < 8:
+        # 边界情况：规则抓到了点东西但不太确定 → 交给 LLM
+        return score, True, "; ".join(problems), problems, "llm"
+    elif score >= 8:
+        return score, True, "", [], "pass"
+    else:
+        # score < 5：明显越界
+        return score, False, "; ".join(problems), problems, "fail"
+
+
+# ── Tier 2：LLM 语义评分（兜底） ──
+def llm_ooc_check(reply, mode, system_prompt, timeout=10):
+    """
+    用 DeepSeek API 对回复做语义级的角色一致性评分。
+    只在 rule_ooc_check 返回 "llm" 时调用。
+    返回 (score, passed, warning)
+    """
+    # 从 system_prompt 提取角色描述（取前200字作为角色摘要）
+    role_summary = system_prompt[:200] if system_prompt else mode
+    role_name = {"aemeath": "爱弥斯（萌系桌宠）", "physicist": "星炬（物理学霸助手）"}.get(mode, mode)
+
+    prompt = f"""You are evaluating whether an AI assistant's response is "in character".
+Character: {role_name}
+Character description: {role_summary}
+
+Response to evaluate:
+---
+{reply[:1500]}
+---
+
+Rate the response's character consistency on a scale of 1-10:
+- 10: Perfectly in character, natural and fitting
+- 8-9: Good, minor deviations
+- 6-7: Noticeably off-character but acceptable
+- 4-5: Clearly out of character
+- 1-3: Completely wrong, opposite character
+
+Only respond with a JSON object: {{"score": <1-10 number>, "reason": "<brief reason in Chinese, max 30 chars>"}}"""
+
+    try:
+        url = f"{DEEPSEEK_API_BASE}/chat/completions"
+        data = json.dumps({
+            "model": "deepseek-v4-flash",
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "temperature": 0.1,
+            "max_tokens": 128
+        }).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers={
+            'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
+            'Content-Type': 'application/json',
+        }, method='POST')
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+        content = result['choices'][0]['message']['content']
+        # 提取 JSON
+        import re as _re
+        json_match = _re.search(r'\{[^}]+\}', content)
+        if json_match:
+            parsed = json.loads(json_match.group())
+            score = float(parsed.get('score', 7))
+            reason = parsed.get('reason', '')
+        else:
+            score = 7.0
+            reason = 'LLM returned invalid format'
+    except Exception as e:
+        print(f"[OOC] LLM check failed: {e}")
+        score = 7.0
+        reason = f'LLM check error: {str(e)[:30]}'
+
+    score = max(1, min(10, score))
+    passed = score >= 6.0
+    warning = f"LLM评分 {score}/10: {reason}" if score < 8 else ""
+    return score, passed, warning
+
+
+# ── 入口：组合检测（Tier 1 → Tier 2） ──
+def ooc_check(reply, mode, system_prompt, wfile=None):
+    """
+    双层 OOC 检测入口。
+    1. 先跑规则检测（Tier 1）
+    2. 如果规则返回 "llm"，再调 DeepSeek 评分（Tier 2）
+    3. 将结果通过 SSE 发到前端（如有 wfile）
+    
+    返回 (score, passed, warning)
+    """
+    # Tier 1：规则检测
+    score, passed, warning, problems, action = rule_ooc_check(reply, mode)
+    print(f"[OOC] 一级评分: {score}分", flush=True) 
+
+    # Tier 2：边界情况 → LLM 语义评分
+    if action == "llm":
+        print(f"[OOC] 规则边界 ({score}分)，调 LLM 语义评分...", flush=True)
+        llm_score, llm_passed, llm_warning = llm_ooc_check(reply, mode, system_prompt)
+        print(f"[OOC] 二级评分: {llm_score}分", flush=True)
+        # 综合：取 LLM 评分，但规则的问题仍保留
+        final_score = llm_score
+        final_passed = llm_passed
+        final_warning = llm_warning
+        if problems:
+            final_warning = f"[规则] {'; '.join(problems)} | [LLM] {llm_warning}" if llm_warning else f"[规则] {'; '.join(problems)}"
+        print(f"[OOC] LLM 评分: {llm_score}/10, passed={llm_passed}", flush=True)
+    else:
+        print(f"[OOC] 一级评分: {score}分（无需二级）", flush=True)    
+        final_score = score
+        final_passed = passed
+        final_warning = warning
+
+    # 发送 SSE 事件到前端
+    if wfile and not final_passed:
+        try:
+            wfile.write(f"data: {json.dumps({
+                'type': 'ooc_warning',
+                'warning': final_warning,
+                'score': final_score,
+                'problems': problems
+            })}\n\n".encode('utf-8'))
+            wfile.flush()
+        except:
+            pass
+
+    if final_warning:
+        print(f"[OOC] {'⚠️' if final_passed else '❌'} score={final_score}: {final_warning[:80]}")
+
+    return final_score, final_passed, final_warning
 
 def describe_tool_action(name, args):
     """把工具调用翻译成人类能看懂的话"""
@@ -509,7 +738,7 @@ def describe_tool_action(name, args):
 # 流式 + 工具循环（核心，始终 stream=True + tools）
 # ============================================================
 
-def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, max_rounds=15):
+def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, mode='aemeath', system_prompt='', max_rounds=15):
     """
     带工具循环的流式 DeepSeek 调用。
     每一轮：stream=True + tools，实时流式输出文字，
@@ -600,6 +829,12 @@ def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, m
 
         if not tool_calls:
             print(f"[AI] 无工具调用，最终回答: {len(round_text)} 字符")
+
+            # ===== 双层 OOC 检测 =====
+            ooc_score, ooc_passed, ooc_warning = ooc_check(
+                round_text, mode, system_prompt, wfile
+            )
+
             return round_text, False
 
         print(f"[Tool] Round {round_num}: {len(tool_calls)} 个工具调用")
@@ -675,7 +910,12 @@ def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, m
 
         # 继续下一轮
         continue
-
+    
+    # ===== 所有工具循环结束，最终 OOC 检测 =====
+    ooc_score, ooc_passed, ooc_warning = ooc_check(
+        round_text, mode, system_prompt, wfile
+    )
+    
     return "Too many tool calls, please simplify", True
 
 # ============================================================
@@ -779,7 +1019,7 @@ class AIHandler(BaseHTTPRequestHandler):
 
             # 4. 调用流式工具循环（始终 streaming + tools）
             final_text, has_error = stream_deepseek_with_tools(
-                messages, self.wfile, approval_store, approval_lock
+                messages, self.wfile, approval_store, approval_lock, mode=mode, system_prompt=system_prompt
             )
 
             if has_error:
@@ -787,9 +1027,6 @@ class AIHandler(BaseHTTPRequestHandler):
                 self.wfile.write("data: [DONE]\n\n".encode('utf-8'))
                 self.wfile.flush()
                 return
-
-            # 5. OOC 检测
-            fast_ooc_check(final_text, mode)
 
             self.wfile.write("data: [DONE]\n\n".encode('utf-8'))
             self.wfile.flush()

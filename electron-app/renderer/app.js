@@ -424,6 +424,12 @@ window.addEventListener('DOMContentLoaded', () => {
                 continue;
               }
 
+              // === OOC 警告 ===
+              if (data.type === 'ooc_warning') {
+                showOOCWarning(data.warning, data.score);
+                continue;
+              }
+
               // === 正常回答内容 ===
               if (data.answer) {
                 fullAnswer += data.answer;
@@ -569,6 +575,25 @@ window.addEventListener('DOMContentLoaded', () => {
     return div.innerHTML;
   }
 
+  // ========== OOC 警告显示 ==========
+  function showOOCWarning(warning, score) {
+    const messages = messagesContainer.querySelectorAll('.message.assistant');
+    if (messages.length === 0) return;
+    const lastMsgDiv = messages[messages.length - 1];
+    
+    // 移除旧警告
+    const oldWarning = lastMsgDiv.querySelector('.ooc-warning');
+    if (oldWarning) oldWarning.remove();
+    
+    const warnDiv = document.createElement('div');
+    warnDiv.className = 'ooc-warning';
+    const color = score < 4 ? '#f87171' : '#fbbf24';
+    const level = score < 4 ? '严重越界' : '轻微越界';
+    warnDiv.style.borderColor = color;
+    warnDiv.style.color = color;
+    warnDiv.innerHTML = `⚠️ <strong>角色一致性 ${level}</strong>（评分 ${score}/10）<br>${escapeHtml(warning)}`;
+    lastMsgDiv.appendChild(warnDiv);
+  }
 
   // ========== 语音识别 ==========
   function initSpeechRecognition() {
