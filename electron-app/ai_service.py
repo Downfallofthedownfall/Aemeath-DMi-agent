@@ -505,27 +505,29 @@ def describe_tool_action(name, args):
 # 工具模式调用（含循环，最多15轮）
 # ============================================================
 
-def call_deepseek_with_tools(messages, mode='aemeath', max_rounds=15):
-    """带工具循环的 DeepSeek 调用"""
+# ============================================================
+# 流式 + 工具循环（核心，始终 stream=True + tools）
+# ============================================================
+
+def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, max_rounds=15):
+    """
+    带工具循环的流式 DeepSeek 调用。
+    每一轮：stream=True + tools，实时流式输出文字，
+    流结束后检测 tool_calls → 发前端确认 → 执行 → 继续下一轮。
+    返回 (final_text, has_error)
+    """
     current_messages = list(messages)
-    # 检查历史中是否已有助手回复
-    has_previous_assistant = any(m['role'] == 'assistant' for m in current_messages[:-1])
 
     for round_num in range(1, max_rounds + 1):
         url = f"{DEEPSEEK_API_BASE}/chat/completions"
-
         request_body = {
             "model": "deepseek-v4-flash",
             "messages": current_messages,
-            "stream": False,
+            "stream": True,
             "temperature": 0.7,
-            "max_tokens": 4096
+            "max_tokens": 4096,
+            "tools": TOOLS
         }
-
-        # 有历史助手回复时，第一轮不带工具（避免重复执行）
-        include_tools = not (round_num == 1 and has_previous_assistant)
-        if include_tools:
-            request_body["tools"] = TOOLS
 
         data = json.dumps(request_body).encode('utf-8')
         req = urllib.request.Request(url, data=data, headers={
@@ -533,47 +535,148 @@ def call_deepseek_with_tools(messages, mode='aemeath', max_rounds=15):
             'Content-Type': 'application/json',
         }, method='POST')
 
-        print(f"[AI] Tool round {round_num} | Msgs: {len(current_messages)} | Tools: {include_tools}")
+        print(f"[AI] Stream round {round_num} | Msgs: {len(current_messages)}")
+
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                resp_data = json.loads(resp.read().decode('utf-8'))
+            resp = urllib.request.urlopen(req, timeout=60)
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8', errors='replace')[:300]
-            return f"DeepSeek API error (HTTP {e.code}): {body}", True
+            return f"API error (HTTP {e.code}): {body}", True
         except urllib.error.URLError as e:
-            return f"Cannot connect to DeepSeek API: {e.reason}", True
+            return f"Cannot connect: {e.reason}", True
 
-        choice = resp_data['choices'][0]
-        msg = choice['message']
-        tool_calls = msg.get('tool_calls', [])
+        # ---- 读取流，累积文字 + tool_calls ----
+        round_text = ""
+        accumulated_tool_calls = {}  # index -> tool_call dict
+        buf = ""
+
+        for raw_bytes in resp:
+            if not raw_bytes:
+                break
+            try:
+                chunk = raw_bytes.decode('utf-8', errors='replace')
+            except:
+                continue
+            buf += chunk
+            while '\n' in buf:
+                line, buf = buf.split('\n', 1)
+                line = line.strip()
+                if not line or line == 'data: [DONE]':
+                    continue
+                if line.startswith('data: '):
+                    try:
+                        json_data = json.loads(line[6:])
+                        for choice in json_data.get('choices', []):
+                            delta = choice.get('delta', {})
+
+                            # 流式文字
+                            content = delta.get('content', '')
+                            if content:
+                                round_text += content
+                                wfile.write(f"data: {json.dumps({'answer': content})}\n\n".encode('utf-8'))
+                                wfile.flush()
+
+                            # 流式工具调用（按 index 累积）
+                            for tc in delta.get('tool_calls', []):
+                                idx = tc.get('index', 0)
+                                if idx not in accumulated_tool_calls:
+                                    accumulated_tool_calls[idx] = {
+                                        'id': tc.get('id', ''),
+                                        'type': tc.get('type', 'function'),
+                                        'function': {'name': '', 'arguments': ''}
+                                    }
+                                func_delta = tc.get('function', {})
+                                if func_delta.get('name'):
+                                    accumulated_tool_calls[idx]['function']['name'] += func_delta['name']
+                                if 'arguments' in func_delta:
+                                    accumulated_tool_calls[idx]['function']['arguments'] += func_delta['arguments']
+                                if tc.get('id'):
+                                    accumulated_tool_calls[idx]['id'] = tc['id']
+                    except:
+                        pass
+
+        # ---- 流结束，检查是否有工具调用 ----
+        tool_calls = list(accumulated_tool_calls.values()) if accumulated_tool_calls else []
 
         if not tool_calls:
-            return msg.get('content', '') or '', False
+            print(f"[AI] 无工具调用，最终回答: {len(round_text)} 字符")
+            return round_text, False
 
-        print(f"[Tool] Round {round_num}: {len(tool_calls)} calls")
+        print(f"[Tool] Round {round_num}: {len(tool_calls)} 个工具调用")
 
-        current_messages.append({
-            "role": "assistant",
-            "content": msg.get('content', '') or '',
-            "tool_calls": tool_calls
-        })
+        # ---- 发前端确认 ----
+        request_id = str(uuid.uuid4())
+        event = threading.Event()
+        with approval_lock:
+            approval_store[request_id] = {
+                "event": event,
+                "approved": None,
+                "tool_calls": tool_calls
+            }
 
+        tool_call_info = []
         for tc in tool_calls:
-            func = tc.get('function', {})
-            name = func.get('name', '')
+            name = tc.get('function', {}).get('name', '')
             try:
-                args = json.loads(func.get('arguments', '{}'))
+                args = json.loads(tc.get('function', {}).get('arguments', '{}'))
             except:
                 args = {}
-            tool_result = execute_tool(name, args)
-            current_messages.append({
-                "role": "tool",
-                "tool_call_id": tc.get('id', ''),
-                "content": str(tool_result)[:2000]
+            description = describe_tool_action(name, args)
+            tool_call_info.append({
+                "name": name,
+                "args": args,
+                "description": description
             })
 
-    return "Too many tool calls, please simplify", True
+        wfile.write(f"data: {json.dumps({'type': 'tool_call', 'request_id': request_id, 'tool_calls': tool_call_info})}\n\n".encode('utf-8'))
+        wfile.flush()
+        print(f"[Tool] 等待用户确认: {request_id}")
 
+        # 等用户批准（最长60秒）
+        event.wait(timeout=60)
+
+        with approval_lock:
+            approved_flag = approval_store.get(request_id, {}).get('approved', False)
+            if request_id in approval_store:
+                del approval_store[request_id]
+
+        if approved_flag:
+            print(f"[Tool] 用户批准，执行 {len(tool_calls)} 个工具")
+            current_messages.append({
+                "role": "assistant",
+                "content": round_text,
+                "tool_calls": tool_calls
+            })
+            for tc in tool_calls:
+                func = tc.get('function', {})
+                name = func.get('name', '')
+                try:
+                    args = json.loads(func.get('arguments', '{}'))
+                except:
+                    args = {}
+                tool_result = execute_tool(name, args)
+                current_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get('id', ''),
+                    "content": str(tool_result)[:2000]
+                })
+                print(f"[Tool] {name} 完成")
+        else:
+            print(f"[Tool] 用户拒绝或超时")
+            if round_text:
+                current_messages.append({
+                    "role": "assistant",
+                    "content": round_text + "\n\n（用户拒绝了工具调用请求）"
+                })
+            current_messages.append({
+                "role": "user",
+                "content": "我已拒绝你的工具调用请求，请直接回答我的问题，不要调用任何工具。"
+            })
+
+        # 继续下一轮
+        continue
+
+    return "Too many tool calls, please simplify", True
 
 # ============================================================
 # HTTP 处理器
@@ -645,7 +748,7 @@ class AIHandler(BaseHTTPRequestHandler):
             mode = body.get('mode', 'aemeath')
             history = body.get('history', [])
             shared_memory = body.get('shared_memory', '')
-            skip_tools = body.get('skip_tools', False)
+            # skip_tools 已彻底移除！所有对话始终带工具
 
             if not query:
                 self.send_json(400, {"error": "missing query"})
@@ -653,7 +756,7 @@ class AIHandler(BaseHTTPRequestHandler):
 
             system_prompt = MODES_CONFIG.get(mode, {}).get('system_prompt', 'You are a helpful assistant.')
 
-            # 2. 构造消息
+            # 2. 构造消息（仅纯文本 user/assistant 历史）
             messages = [{"role": "system", "content": system_prompt}]
             if shared_memory:
                 messages.append({"role": "system", "content": f"## User info\n{shared_memory}"})
@@ -664,9 +767,9 @@ class AIHandler(BaseHTTPRequestHandler):
                     messages.append({"role": role, "content": content})
             messages.append({"role": "user", "content": query})
 
-            print(f"[AI] Mode: {mode} | Query: {query[:40]}... | History: {len(history)} msgs | Skip tools: {skip_tools}")
+            print(f"[AI] Mode: {mode} | Query: {query[:40]}... | History: {len(history)} msgs")
 
-            # 3. 先发 SSE 响应头
+            # 3. 发 SSE 响应头
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
@@ -674,260 +777,31 @@ class AIHandler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
 
-            # ===== skip_tools = true → 直接流式对话，不走工具循环 =====
-            if skip_tools:
-                print(f"[AI] Skip tools mode, streaming directly")
-                url = f"{DEEPSEEK_API_BASE}/chat/completions"
-                data = json.dumps({
-                    "model": "deepseek-v4-flash",
-                    "messages": messages,
-                    "stream": True,
-                    "temperature": 0.7,
-                    "max_tokens": 4096
-                }).encode('utf-8')
+            # 4. 调用流式工具循环（始终 streaming + tools）
+            final_text, has_error = stream_deepseek_with_tools(
+                messages, self.wfile, approval_store, approval_lock
+            )
 
-                req = urllib.request.Request(url, data=data, headers={
-                    'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
-                    'Content-Type': 'application/json',
-                }, method='POST')
-
-                try:
-                    resp = urllib.request.urlopen(req, timeout=60)
-                except urllib.error.HTTPError as e:
-                    body = e.read().decode('utf-8', errors='replace')[:300]
-                    self.wfile.write(f"data: {json.dumps({'answer': f'API error (HTTP {e.code})', 'error': True})}\n\n".encode('utf-8'))
-                    self.wfile.write("data: [DONE]\n\n".encode('utf-8'))
-                    self.wfile.flush()
-                    return
-                except urllib.error.URLError as e:
-                    self.wfile.write(f"data: {json.dumps({'answer': f'Connection failed: {e.reason}', 'error': True})}\n\n".encode('utf-8'))
-                    self.wfile.write("data: [DONE]\n\n".encode('utf-8'))
-                    self.wfile.flush()
-                    return
-
-                # 流式转发
-                full_answer = ""
-                buf = ""
-                for raw_bytes in resp:
-                    if not raw_bytes: break
-                    try: chunk = raw_bytes.decode('utf-8', errors='replace')
-                    except: continue
-                    buf += chunk
-                    while '\n' in buf:
-                        line, buf = buf.split('\n', 1)
-                        line = line.strip()
-                        if not line or line == 'data: [DONE]': continue
-                        if line.startswith('data: '):
-                            try:
-                                data = json.loads(line[6:])
-                                for choice in data.get('choices', []):
-                                    content = choice.get('delta', {}).get('content', '')
-                                    if content:
-                                        full_answer += content
-                                        self.wfile.write(f"data: {json.dumps({'answer': content})}\n\n".encode('utf-8'))
-                                        self.wfile.flush()
-                            except: pass
-
+            if has_error:
+                self.wfile.write(f"data: {json.dumps({'answer': final_text, 'error': True})}\n\n".encode('utf-8'))
                 self.wfile.write("data: [DONE]\n\n".encode('utf-8'))
                 self.wfile.flush()
-
-                # OOC 检测
-                fast_ooc_check(full_answer, mode)
-                print(f"[AI] Done | Skip tools | {len(full_answer)} chars")
                 return
 
-            # ===== skip_tools = false → 新对话，走工具循环 =====
-            else:
-                current_messages = list(messages)
-                final_text = ""
-                has_error = False
+            # 5. OOC 检测
+            fast_ooc_check(final_text, mode)
 
-                for round_num in range(1, 16):
-                    url = f"{DEEPSEEK_API_BASE}/chat/completions"
-                    data = json.dumps({
-                        "model": "deepseek-v4-flash",
-                        "messages": current_messages,
-                        "tools": TOOLS,
-                        "stream": False,
-                        "temperature": 0.7,
-                        "max_tokens": 4096
-                    }).encode('utf-8')
+            self.wfile.write("data: [DONE]\n\n".encode('utf-8'))
+            self.wfile.flush()
+            print(f"[AI] Done | Stream with tools | {len(final_text)} chars")
 
-                    req = urllib.request.Request(url, data=data, headers={
-                        'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
-                        'Content-Type': 'application/json',
-                    }, method='POST')
-
-                    print(f"[AI] Tool round {round_num} | Msgs: {len(current_messages)}")
-                    try:
-                        with urllib.request.urlopen(req, timeout=60) as resp:
-                            resp_data = json.loads(resp.read().decode('utf-8'))
-                    except urllib.error.HTTPError as e:
-                        body = e.read().decode('utf-8', errors='replace')[:300]
-                        final_text = f"API error (HTTP {e.code}): {body}"
-                        has_error = True
-                        break
-                    except urllib.error.URLError as e:
-                        final_text = f"Cannot connect: {e.reason}"
-                        has_error = True
-                        break
-
-                    choice = resp_data['choices'][0]
-                    msg = choice['message']
-                    tool_calls = msg.get('tool_calls', [])
-
-                    if not tool_calls:
-                        final_text = msg.get('content', '') or ''
-                        print(f"[AI] 无工具调用，最终回答: {len(final_text)} 字符")
-                        break
-                    else:
-                        print(f"[Tool] Round {round_num}: {len(tool_calls)} 个调用")
-
-                        # ===== 先把工具信息发给前端等确认，再决定要不要加到消息里 =====
-                        request_id = str(uuid.uuid4())
-                        event = threading.Event()
-                        with approval_lock:
-                            approval_store[request_id] = {
-                                "event": event,
-                                "approved": None,
-                                "tool_calls": tool_calls
-                            }
-
-                        tool_call_info = []
-                        for tc in tool_calls:
-                            func = tc.get('function', {})
-                            name = func.get('name', '')
-                            try:
-                                args = json.loads(func.get('arguments', '{}'))
-                            except:
-                                args = {}
-                            tool_call_info.append({"name": name, "args": args})
-                            
-                            # ===== 生成人类可读的描述 =====
-                            description = describe_tool_action(name, args)
-                            
-                            tool_call_info.append({
-                                "name": name,
-                                "args": args,
-                                "description": description  # ← 加这个
-                            })
-
-                        self.wfile.write(f"data: {json.dumps({'type':'tool_call','request_id':request_id,'tool_calls':tool_call_info})}\n\n".encode('utf-8'))
-                        self.wfile.flush()
-                        print(f"[Tool] 等待用户确认: {request_id}")
-
-                        # 等待用户批准（最长60秒）
-                        event.wait(timeout=60)
-
-                        with approval_lock:
-                            approved_flag = approval_store.get(request_id, {}).get('approved', False)
-                            if request_id in approval_store:
-                                del approval_store[request_id]
-
-                        # === 确认后才添加消息到 current_messages ===
-                        if approved_flag:
-                            print(f"[Tool] 用户批准，执行 {len(tool_calls)} 个工具")
-                            # 加 assistant 消息（含 tool_calls）
-                            current_messages.append({
-                                "role": "assistant",
-                                "content": msg.get('content', '') or '',
-                                "tool_calls": tool_calls
-                            })
-                            # 执行工具，加 tool 回复
-                            for tc in tool_calls:
-                                func = tc.get('function', {})
-                                name = func.get('name', '')
-                                try:
-                                    args = json.loads(func.get('arguments', '{}'))
-                                except:
-                                    args = {}
-                                tool_result = execute_tool(name, args)
-                                current_messages.append({
-                                    "role": "tool",
-                                    "tool_call_id": tc.get('id', ''),
-                                    "content": str(tool_result)[:2000]
-                                })
-                                print(f"[Tool] {name} 完成")
-                        else:
-                            print(f"[Tool] 用户拒绝或超时")
-                            # 不加 tool_calls 消息，只加普通文本
-                            msg_content = msg.get('content', '') or ''
-                            if msg_content:
-                                current_messages.append({
-                                    "role": "assistant",
-                                    "content": msg_content + "\n\n（用户拒绝了工具调用请求）"
-                                })
-                            current_messages.append({
-                                "role": "user",
-                                "content": "我已拒绝你的工具调用请求，请直接回答我的问题，不要调用任何工具。"
-                            })
-
-                        continue
-
-                else:
-                    final_text = "Too many tool calls, please simplify"
-
-                if has_error:
-                    self.wfile.write(f"data: {json.dumps({'answer': final_text, 'error': True})}\n\n".encode('utf-8'))
-                    self.wfile.write("data: [DONE]\n\n".encode('utf-8'))
-                    self.wfile.flush()
-                    return
-
-                # OOC 检测
-                ooc_result, ooc_method = fast_ooc_check(final_text, mode)
-
-                # 流式输出最终回答
-                if len(final_text) < 100 or not final_text.strip():
-                    self.wfile.write(f"data: {json.dumps({'answer': final_text})}\n\n".encode('utf-8'))
-                    self.wfile.flush()
-                else:
-                    # 用 stream 实现打字效果
-                    stream_messages = [
-                        {"role": "system", "content": "Output the following text word by word, do not add anything:\n" + final_text},
-                        {"role": "user", "content": query[:50] + "... (output the answer above word by word)"}
-                    ]
-                    stream_url = f"{DEEPSEEK_API_BASE}/chat/completions"
-                    stream_data = json.dumps({
-                        "model": "deepseek-v4-flash",
-                        "messages": stream_messages,
-                        "stream": True,
-                        "temperature": 0.01,
-                        "max_tokens": 4096
-                    }).encode('utf-8')
-
-                    stream_req = urllib.request.Request(stream_url, data=stream_data, headers={
-                        'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
-                        'Content-Type': 'application/json',
-                    }, method='POST')
-
-                    try:
-                        with urllib.request.urlopen(stream_req, timeout=30) as stream_resp:
-                            buf = ""
-                            for raw_bytes in stream_resp:
-                                if not raw_bytes: break
-                                try: chunk = raw_bytes.decode('utf-8', errors='replace')
-                                except: continue
-                                buf += chunk
-                                while '\n' in buf:
-                                    line, buf = buf.split('\n', 1)
-                                    line = line.strip()
-                                    if not line or line == 'data: [DONE]': continue
-                                    if line.startswith('data: '):
-                                        try:
-                                            data = json.loads(line[6:])
-                                            for choice in data.get('choices', []):
-                                                content = choice.get('delta', {}).get('content', '')
-                                                if content:
-                                                    self.wfile.write(f"data: {json.dumps({'answer': content})}\n\n".encode('utf-8'))
-                                                    self.wfile.flush()
-                                        except: pass
-                    except Exception:
-                        self.wfile.write(f"data: {json.dumps({'answer': final_text})}\n\n".encode('utf-8'))
-                        self.wfile.flush()
-
-                self.wfile.write("data: [DONE]\n\n".encode('utf-8'))
-                self.wfile.flush()
-                print(f"[AI] Done | Tool mode | {len(final_text)} chars")
+        except Exception as e:
+            print(f"[AI] Error: {e}")
+            traceback.print_exc()
+            try:
+                self.send_json(500, {"error": True, "message": str(e)})
+            except:
+                pass
 
         except Exception as e:
             print(f"[AI] Error: {e}")

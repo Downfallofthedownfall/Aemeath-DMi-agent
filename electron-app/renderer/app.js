@@ -361,15 +361,11 @@ window.addEventListener('DOMContentLoaded', () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 90000);
 
-      // === 关键：传 skip_tools！有历史时跳过工具模式 ===
-      const skipTools = historyMessages.length > 0;
-
       // === 【调试】看看到底发了什么 ===
       console.log('[Send]', JSON.stringify({
         query: text,
         mode: currentMode,
         history: historyMessages,
-        skip_tools: skipTools
       }));
       
       const response = await fetch(`${AI_SERVICE_URL}/chat`, {
@@ -380,7 +376,7 @@ window.addEventListener('DOMContentLoaded', () => {
           mode: currentMode,
           history: historyMessages,
           shared_memory: sharedMemoryText,
-          skip_tools: skipTools
+          // 不再传 skip_tools！服务端始终启用工具
         }),
         signal: controller.signal
       });
