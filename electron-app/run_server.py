@@ -14,6 +14,10 @@ DEFAULT_PORT = 18888            # 默认监听端口
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, 'py_config.json')
 
+AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '')
+
+def _check_auth(self):
+    return bool(AUTH_TOKEN) and self.headers.get('X-Auth-Token', '') == AUTH_TOKEN
 
 # ========== 加载配置函数 ==========
 def load_config(filepath):
@@ -155,6 +159,9 @@ class ExecuteHandler(BaseHTTPRequestHandler):
     """
 
     def do_POST(self):
+        if not _check_auth(self):
+            self.send_json(401, {"success": False, "error": "unauthorized"})
+            return
         if self.path != '/execute':
             self.send_error_response(404, "路径未找到，请使用 POST /execute")
             return

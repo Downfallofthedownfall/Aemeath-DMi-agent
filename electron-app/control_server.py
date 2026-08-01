@@ -12,6 +12,11 @@ import uuid
 import tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '')
+
+def _check_auth(self):
+    return bool(AUTH_TOKEN) and self.headers.get('X-Auth-Token', '') == AUTH_TOKEN
+
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
@@ -41,10 +46,13 @@ SCREEN_WIDTH, SCREEN_HEIGHT = pyautogui.size() if HAS_PYAUTOGUI else (1920, 1080
 class ControlHandler(BaseHTTPRequestHandler):
     
     def do_GET(self):
+        if not _check_auth(self):
+            self.send_json(401, {"success": False, "error": "unauthorized"})
+            return
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "ok"
@@ -55,6 +63,9 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     
     def do_POST(self):
+        if not _check_auth(self):
+            self.send_json(401, {"success": False, "error": "unauthorized"})
+            return
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length) if content_length > 0 else b'{}'
         
@@ -223,35 +234,34 @@ class ControlHandler(BaseHTTPRequestHandler):
 
             elif action == 'open':
                 program = data.get('program', '').lower()
-                
-                # ===== 白名单检查 =====
-                ALLOWED_PROGRAMS = [
-                    'notepad', 'calc', 'explorer', 'cmd', 'powershell',
-                    'msedge', 'chrome', 'firefox', 'iexplore',
-                    'code', 'subl', 'notepad++',
-                    'mspaint', 'snippingtool',
-                    'taskmgr', 'control',
-                    'https://', 'http://'  # URL 允许
-                ]
-                is_allowed = False
-                for allowed in ALLOWED_PROGRAMS:
-                    if program.startswith(allowed):
-                        is_allowed = True
-                        break
-                # 也允许 .exe 路径
-                if program.endswith('.exe') and os.path.isfile(program):
-                    is_allowed = True
-                
-                if not is_allowed:
-                    self.send_json(403, {
-                        "success": False,
-                        "error": f"程序 '{program}' 不在白名单中"
-                    })
+
+                # ===== 精确匹配白名单（修复：不再用 startswith 前缀匹配） =====
+                ALLOWED_PROGRAMS = {
+                    'notepad': 'notepad.exe',
+                    'calc': 'calc.exe',
+                    'explorer': 'explorer.exe',
+                    'cmd': 'cmd.exe',
+                    'powershell': 'powershell.exe',
+                    'msedge': 'msedge.exe',
+                    'chrome': 'chrome.exe',
+                    'firefox': 'firefox.exe',
+                    'mspaint': 'mspaint.exe',
+                    'taskmgr': 'taskmgr.exe',
+                    'control': 'control.exe',
+                }
+
+                if program in ALLOWED_PROGRAMS:
+                    import os as _os
+                    _os.startfile(ALLOWED_PROGRAMS[program])   # 不经 shell，无注入
+                elif program.endswith('.exe') and os.path.isfile(program):
+                    os.startfile(program)
+                elif program.startswith(('https://', 'http://')):
+                    import webbrowser
+                    webbrowser.open(program)
+                else:
+                    self.send_json(403, {"success": False, "error": f"程序 '{program}' 不在白名单中"})
                     return
-                
-                import subprocess
-                subprocess.Popen(program, shell=True)
-                
+
                 # 如果有 text 参数，等一秒后自动输入
                 text = data.get('text', '')
                 if text:
@@ -275,29 +285,33 @@ class ControlHandler(BaseHTTPRequestHandler):
                 if not url:
                     self.send_json(400, {"success": False, "error": "缺少 url 参数"})
                     return
+                import webbrowser
+                webbrowser.open(url)   # 不经 shell，URL 含 & 也无法逃逸
+                self.send_json(200, {"success": True, "action": "open_url", "url": url})
                 
-                # 用默认浏览器打开 URL（会复用已有窗口的新标签页）
-                import subprocess
-                # 用 cmd /c start 会使用默认浏览器，且通常开新标签页
-                subprocess.run(['cmd', '/c', 'start', url], shell=True)
-                
-                self.send_json(200, {
-                    "success": True,
-                    "action": "open_url",
-                    "url": url
-                })
-                
-
-            
             # ========== 快捷操作（组合指令） ==========
             elif action == 'open_and_type':
-                program = data.get('program', 'notepad')
+                program = data.get('program', 'notepad').lower()
                 text = data.get('text', '')
                 title = data.get('title', program)
+
+                # 1. 校验白名单（复用精确匹配，禁止 shell）
+                ALLOWED_PROGRAMS = {
+                    'notepad': 'notepad.exe', 'calc': 'calc.exe',
+                    'explorer': 'explorer.exe', 'cmd': 'cmd.exe',
+                    'powershell': 'powershell.exe', 'mspaint': 'mspaint.exe',
+                }
+                if program in ALLOWED_PROGRAMS:
+                    import os as _os
+                    _os.startfile(ALLOWED_PROGRAMS[program])   # 不经 shell
+                elif program.endswith('.exe') and os.path.isfile(program):
+                    os.startfile(program)
+                else:
+                    self.send_json(403, {"success": False, "error": f"程序 '{program}' 不在白名单中"})
+                    return
+                time.sleep(1.0)
                 
                 # 1. 打开程序
-                import subprocess
-                subprocess.Popen(program, shell=True)
                 time.sleep(1.0)  # 等程序启动
                 
                 # 2. 激活窗口
@@ -332,8 +346,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Headers', '*')
+            self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
+            self.send_header('Access-Control-Allow-Headers', self.headers.get('Origin', ''))
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
@@ -346,8 +360,8 @@ class ControlHandler(BaseHTTPRequestHandler):
     
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Headers', '*')
+        self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
+        self.send_header('Access-Control-Allow-Headers', self.headers.get('Origin', ''))
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.end_headers()
     

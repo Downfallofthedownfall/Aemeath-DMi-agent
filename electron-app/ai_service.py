@@ -52,6 +52,16 @@ def load_config():
         sys.exit(1)
 
 config = load_config()
+# ===== 认证 =====
+AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '')
+if not AUTH_TOKEN:
+    print("警告: 未设置 AUTH_TOKEN 环境变量，服务将拒绝所有请求")
+
+def _check_auth(self):
+    """校验请求头中的 token"""
+    token = self.headers.get('X-Auth-Token', '')
+    return bool(AUTH_TOKEN) and token == AUTH_TOKEN
+
 DEEPSEEK_API_KEY = config.get('deepseek_api_key', '')
 DEEPSEEK_API_BASE = config.get('deepseek_api_base', 'https://api.deepseek.com')
 MODES_CONFIG = config.get('modes', {})
@@ -70,7 +80,10 @@ def http_post(url, data, timeout=15):
         req = urllib.request.Request(
             url,
             data=json.dumps(data).encode('utf-8'),
-            headers={'Content-Type': 'application/json'},
+            headers={
+                'Content-Type': 'application/json',
+                'X-Auth-Token': AUTH_TOKEN,
+            },
             method='POST'
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -83,6 +96,22 @@ def http_post(url, data, timeout=15):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+# ===== 敏感文件黑名单（防止 read_file 静默泄露凭据） =====
+SENSITIVE_MARKERS = [
+    '.ssh', 'id_rsa', 'id_ed25519', '.pem', '.key',
+    '.pfx', '.p12', '.kdbx', 'credentials', 'passwd',
+    'shadow', 'appdata', 'cookies', 'login data', 'web data',
+    '.aws', '.npmrc', '.git-credentials', 'keyring', 'wallet',
+    'chrome\\user data', 'firefox\\profiles', 'edge\\user data', '.env',
+]
+
+def is_sensitive_path(path):
+    """检查路径是否属于敏感文件/目录"""
+    p = path.lower().replace('/', '\\')
+    for marker in SENSITIVE_MARKERS:
+        if marker in p:
+            return True
+    return False
 
 # ============================================================
 # 工具执行器
@@ -111,6 +140,8 @@ def execute_tool(name, args):
 
         if name == 'read_file':
             p = args['path']
+            if is_sensitive_path(p):
+                return "已拒绝读取：该路径可能包含敏感凭据（SSH 密钥、浏览器密码等），已自动阻止。如需读取请手动操作。"
             with open(p, 'r', encoding='utf-8') as f:
                 c = f.read()
             return f"File: {p}\n\n{c[:5000]}" + ("\n\n...(truncated)" if len(c) > 5000 else "")
@@ -175,8 +206,6 @@ def execute_tool(name, args):
                     except Exception as e:
                         handled = False  # 内置失败，尝试白名单
                         break
-                    handled = True
-                    break
             
             if not handled:
                 # 回退到白名单服务
@@ -252,17 +281,37 @@ def execute_tool(name, args):
                 return f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
         if name == 'calculate':
-            expr = args['expression']
-            ns = {'__builtins__': {}}
-            for fn in ['sqrt', 'sin', 'cos', 'tan', 'log', 'log10', 'floor', 'ceil',
-                       'pow', 'radians', 'degrees', 'pi', 'e', 'abs', 'round', 'int']:
-                if hasattr(math, fn): ns[fn] = getattr(math, fn)
-            ns['math'] = math
+            expr = args.get('expression', '')
+            if not expr:
+                return "Calc error: 缺少表达式"
+            # ---- 安全求值：ast 白名单，禁用 eval 逃逸 ----
+            import ast as _ast
+            allowed_nodes = (
+                _ast.Expression, _ast.BinOp, _ast.UnaryOp, _ast.Constant,
+                _ast.Name, _ast.Load, _ast.Add, _ast.Sub, _ast.Mult,
+                _ast.Div, _ast.FloorDiv, _ast.Mod, _ast.Pow,
+                _ast.USub, _ast.UAdd,
+            )
+            allowed_funcs = {'sin','cos','tan','sqrt','log','log10','log2',
+                             'exp','abs','floor','ceil','pow','factorial'}
             try:
-                result = eval(expr, ns)
+                tree = _ast.parse(expr, mode='eval')
+                for node in _ast.walk(tree):
+                    if not isinstance(node, allowed_nodes):
+                        return f"Calc error: 不允许的语法: {type(node).__name__}"
+                    if isinstance(node, _ast.Name):
+                        if node.id not in ('pi', 'e') and not hasattr(math, node.id):
+                            return f"Calc error: 不允许的变量: {node.id}"
+                    if isinstance(node, _ast.Call):
+                        return f"Calc error: 不允许的函数调用"
+                ns = {'pi': math.pi, 'e': math.e}
+                for fn in allowed_funcs:
+                    ns[fn] = getattr(math, fn)
+                result = eval(compile(tree, '<calc>', 'eval'), {'__builtins__': {}}, ns)
                 return f"{expr} = {result}"
             except Exception as e:
                 return f"Calc error: {e}"
+
 
         if name == 'web_scraper':
             url = args['url']
@@ -948,10 +997,15 @@ class AIHandler(BaseHTTPRequestHandler):
     timeout = 60
 
     def do_OPTIONS(self):
+        # 预检也要求 token，否则不回显 CORS 头 → 浏览器拦截
+        if not _check_auth(self):
+            self.send_response(401)
+            self.end_headers()
+            return
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
         self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS, GET')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Token')
         self.end_headers()
 
     def do_GET(self):
@@ -961,6 +1015,11 @@ class AIHandler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path == '/health' and self.path.endswith('/health'):
+            pass  # health 也校验
+        if not _check_auth(self):
+            self.send_json(401, {"error": "unauthorized"})
+            return
         if self.path == '/chat':
             self.handle_chat()
         elif self.path == '/ooc-check':
@@ -1005,18 +1064,6 @@ class AIHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
-    def handle_tool_deny(self):
-        try:
-            body = self.read_body()
-            request_id = body.get('request_id', '')
-            with approval_lock:
-                if request_id in approval_store:
-                    approval_store[request_id]['approved'] = False
-                    approval_store[request_id]['event'].set()
-            self.send_json(200, {"success": True})
-        except Exception as e:
-            self.send_json(500, {"error": str(e)})
-
     # ============================================================
     # handle_chat - 核心对话处理
     # ============================================================
@@ -1055,7 +1102,7 @@ class AIHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
             self.send_header('Connection', 'keep-alive')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
             self.end_headers()
 
             # 4. 调用流式工具循环（始终 streaming + tools）
@@ -1104,8 +1151,7 @@ class AIHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Connection', 'close')
+            self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))  # ← 改这里，不再用 *
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
         except Exception:

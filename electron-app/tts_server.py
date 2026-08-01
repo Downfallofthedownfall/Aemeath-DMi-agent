@@ -22,12 +22,16 @@ from flask_cors import CORS
 import librosa
 import soundfile as sf
 
+AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '')
+def _check_auth(req):
+    return bool(AUTH_TOKEN) and req.headers.get('X-Auth-Token', '') == AUTH_TOKEN
+
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": []}}) 
 
 tts_engine = None
 tts_lock = threading.Lock() 
@@ -152,6 +156,8 @@ def get_default_voice():
 # ===== TTS 生成接口 =====
 @app.route('/tts', methods=['POST'])
 def tts_generate():
+    if not _check_auth(request):
+        return jsonify({"error": "unauthorized"}), 401
     if tts_engine is None:
         return jsonify({"error": "TTS 引擎未加载"}), 500
     
@@ -218,6 +224,8 @@ def tts_generate():
 # ===== 健康检查 =====
 @app.route('/health', methods=['GET'])
 def health_check():
+    if not _check_auth(request):
+        return jsonify({"error": "unauthorized"}), 401
     return jsonify({
         "status": "ok",
         "engine_loaded": tts_engine is not None

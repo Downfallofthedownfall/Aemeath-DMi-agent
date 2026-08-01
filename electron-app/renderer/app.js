@@ -24,7 +24,7 @@ window.addEventListener('DOMContentLoaded', () => {
   let recognition = null;
   let currentMode = 'aemeath';
   let configData = null;
-
+  let authToken = ''; 
   // AI 服务地址
   const AI_SERVICE_URL = 'http://127.0.0.1:18892';
 
@@ -97,8 +97,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // ========== 初始化 ==========
   async function init() {
-    const config = await window.electronAPI.getConfig();
+    const config = await window.electronAPI.getConfig();   // 只声明一次！
     configData = config;
+    // 获取认证 token（只走 IPC，网页拿不到）
+    try { authToken = await window.electronAPI.getAuthToken(); } catch (e) { authToken = ''; }
     if (!configData.deepseek_api_key || configData.deepseek_api_key === 'sk-把你的DeepSeekAPIKey填在这里') {
       console.warn('⚠️ 警告：未配置 DeepSeek API Key，请在 config.json 中设置');
     }
@@ -448,7 +450,10 @@ window.addEventListener('DOMContentLoaded', () => {
       
       const response = await fetch(`${AI_SERVICE_URL}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Auth-Token': authToken,
+        },
         body: JSON.stringify({
           query: text,
           mode: currentMode,
@@ -615,7 +620,9 @@ window.addEventListener('DOMContentLoaded', () => {
           if (!decided.has(tc.tool_call_id)) {
             fetch(`${AI_SERVICE_URL}/tool-deny`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json',
+                          'X-Auth-Token': authToken,
+                        },
               body: JSON.stringify({ request_id: requestId, tool_call_id: tc.tool_call_id })
             }).catch(() => {});
           }
@@ -638,7 +645,9 @@ window.addEventListener('DOMContentLoaded', () => {
           try {
             await fetch(`${AI_SERVICE_URL}/${isApprove ? 'tool-approve' : 'tool-deny'}`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken,
+
+              },
               body: JSON.stringify({ request_id: requestId, tool_call_id: toolCallId })
             });
           } catch (e) {}

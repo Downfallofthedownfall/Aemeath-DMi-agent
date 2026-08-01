@@ -12,6 +12,11 @@ import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
+AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '')
+
+def _check_auth(self):
+    return bool(AUTH_TOKEN) and self.headers.get('X-Auth-Token', '') == AUTH_TOKEN
+
 # ===== 限制 OpenBLAS 线程数，防止内存爆炸 =====
 os.environ['OPENBLAS_NUM_THREADS'] = '2'
 os.environ['OMP_NUM_THREADS'] = '2'
@@ -96,11 +101,14 @@ def capture_screen():
 class VisionHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
+        if not _check_auth(self):
+            self.send_json(401, {"success": False, "error": "unauthorized"})
+            return
         try:
             if self.path == '/health':
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
                 self.end_headers()
                 self.wfile.write(json.dumps({
                     "status": "ok",
@@ -110,13 +118,16 @@ class VisionHandler(BaseHTTPRequestHandler):
             else:
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
                 self.end_headers()
                 self.wfile.write(b'{"status":"ok"}')
         except Exception:
             pass
 
     def do_POST(self):
+        if not _check_auth(self):
+            self.send_json(401, {"success": False, "error": "unauthorized"})
+            return
         parsed = urlparse(self.path)
         try:
             if parsed.path == '/detect_screen':
@@ -243,8 +254,8 @@ class VisionHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Headers', '*')
+            self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Token')
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
@@ -253,8 +264,8 @@ class VisionHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Headers', '*')
+        self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Token')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.end_headers()
 
@@ -272,20 +283,20 @@ def main():
     print(f"  YOLO: {'ready' if model is not None else 'not loaded'}")
     print(f"  Device: {device}")
     print("  Press Ctrl+C to stop")
-
-    while True:
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
             server = HTTPServer((HOST, PORT), VisionHandler)
             server.serve_forever()
             break
         except KeyboardInterrupt:
             print("\nServer stopped.")
-            server.server_close()
             break
         except Exception as e:
-            print(f"Server error ({e}), restarting in 5s...")
-            time.sleep(5)
-            continue
+            print(f"Server error ({e}), retry {attempt+1}/{max_retries}...")
+            time.sleep(5 * (attempt + 1))   # 5s → 10s → 15s 退避
+    print("启动失败，已放弃重试")
+
 
 
 if __name__ == "__main__":

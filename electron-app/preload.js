@@ -14,4 +14,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppPath: () => ipcRenderer.invoke('get-app-path'), 
   // fetch tts
   ttsFetch: (text, voicePath) => ipcRenderer.invoke('tts-fetch', text, voicePath),
+  getAuthToken: () => ipcRenderer.invoke('get-auth-token'),
 });

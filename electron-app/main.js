@@ -8,6 +8,12 @@ const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, shell } = requi
 const path = require('path');
 const fs = require('fs');
 const { spawn, spawnSync, execSync } = require('child_process');
+// 文件顶部引入 crypto
+const crypto = require('crypto');
+
+// 全局生成一次随机 token
+const AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
+
 
 let mainWindow = null;
 let tray = null;
@@ -88,28 +94,36 @@ function startPythonService() {
   if (!fs.existsSync(script)) { console.warn('run_server.py 不存在'); return; }
   const pyConfig = path.join(__dirname, 'py_config.json');
   if (!fs.existsSync(pyConfig)) { console.warn('py_config.json 不存在，跳过'); return; }
-  startProcess('run_server', 'python', [script]);
+  startProcess('run_server', 'python', [script], {
+    env: { ...process.env, AUTH_TOKEN },
+  });
 }
 
 // ===== 启动 AI 对话服务 (ai_service.py) =====
 function startAIService() {
   const script = path.join(__dirname, 'ai_service.py');
   if (!fs.existsSync(script)) { console.warn('ai_service.py 不存在'); return; }
-  startProcess('ai_service', 'python', [script]);
+  startProcess('ai_service', 'python', [script], {
+    env: { ...process.env, AUTH_TOKEN },
+  });
 }
 
 // ===== 启动键盘鼠标控制服务 (control_server.py) =====
 function startControlService() {
   const script = path.join(__dirname, 'control_server.py');
   if (!fs.existsSync(script)) { console.warn('control_server.py 不存在'); return; }
-  startProcess('control_server', 'python', [script]);
+  startProcess('control_server', 'python', [script], {
+    env: { ...process.env, AUTH_TOKEN },
+  });
 }
 
 // ===== 启动视觉识别服务 (vision_server.py) =====
 function startVisionService() {
   const script = path.join(__dirname, 'vision_server.py');
   if (!fs.existsSync(script)) { console.warn('vision_server.py 不存在'); return; }
-  startProcess('vision_server', 'python', [script]);
+  startProcess('vision_server', 'python', [script], {
+    env: { ...process.env, AUTH_TOKEN },
+  });
 }
 
 // ===== 启动 TTS 语音服务 =====
@@ -147,9 +161,10 @@ function startTTSService() {
     '--port', '18900'
   ], {
     cwd: ttsModelPath,  // 在模型目录下运行
-    env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    env: { ...process.env, AUTH_TOKEN, PYTHONUNBUFFERED: '1' }
   });
 }
+
 
 // ===== 启动 MCP 文件系统服务 (mcp-server.ts) =====
 function startMCPService() {
@@ -172,7 +187,9 @@ function startMCPService() {
   // 延迟启动，等端口释放
   setTimeout(() => {
     startProcess('mcp_server', 'npx', ['tsx', script], { shell: true });
-  }, 800);
+  }, 800, {
+    env: { ...process.env, AUTH_TOKEN },
+  });
 }
 
 // ===== 创建系统托盘 =====
@@ -487,6 +504,8 @@ function createWindow() {
 ipcMain.handle('get-config', async () => {
   return loadConfig();
 });
+// 给渲染进程提供 token（只走 IPC，不经过网页）
+ipcMain.handle('get-auth-token', () => AUTH_TOKEN);
 
 // ===== IPC：TTS HTTP 请求（Node.js 发起，绕过浏览器连接池） =====
 ipcMain.handle('tts-fetch', async (event, text, voicePath) => {
