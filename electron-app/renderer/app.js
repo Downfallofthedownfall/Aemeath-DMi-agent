@@ -231,7 +231,7 @@ window.addEventListener('DOMContentLoaded', () => {
     } else {
       let clean = content || '';
       clean = filterThinkTags(clean);
-      div.innerHTML = renderKaTeX(clean);
+      div.innerHTML = renderMessageHTML(clean);
     }
     messagesContainer.appendChild(div);
     scrollToBottom();
@@ -251,7 +251,7 @@ window.addEventListener('DOMContentLoaded', () => {
     } else {
       let clean = content || '';
       clean = filterThinkTags(clean);
-      lastMsgDiv.innerHTML = renderKaTeX(clean);
+      lastMsgDiv.innerHTML = renderMessageHTML(clean);
     }
     scrollToBottom();
   }
@@ -270,22 +270,100 @@ window.addEventListener('DOMContentLoaded', () => {
     return r;
   }
 
-  // ========== KaTeX 渲染 ==========
-  function renderKaTeX(text) {
+  // ========== 消息渲染（Markdown + KaTeX，占位符策略防冲突） ==========
+  function renderMessageHTML(text) {
     if (!text) return '';
-    let result = text;
-    result = result.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // 1. HTML 转义
+    let result = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // 2. 先提取公式 → 渲染成 KaTeX HTML → 换成占位符
+    const formulas = [];
     if (window.katex) {
-      result = result.replace(/\\\\\[([\s\S]*?)\\\\\]/g, (match, formula) => {
-        try { return katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false }); }
-        catch (e) { return match; }
+      // 显示公式 $$...$$
+      result = result.replace(/\$\$([\s\S]*?)\$\$/g, (match, formula) => {
+        try {
+          formulas.push(katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false }));
+          return `@@FORMULA_${formulas.length - 1}@@`;
+        } catch (e) { return match; }
       });
-      result = result.replace(/\\\\\(([\s\S]*?)\\\\\)/g, (match, formula) => {
-        try { return katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false }); }
-        catch (e) { return match; }
+      // 显示公式 \[...\]
+      result = result.replace(/\\\[([\s\S]*?)\\\]/g, (match, formula) => {
+        try {
+          formulas.push(katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false }));
+          return `@@FORMULA_${formulas.length - 1}@@`;
+        } catch (e) { return match; }
+      });
+      // 内联公式 $...$
+      result = result.replace(/\$([\s\S]*?)\$/g, (match, formula) => {
+        try {
+          formulas.push(katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false }));
+          return `@@FORMULA_${formulas.length - 1}@@`;
+        } catch (e) { return match; }
+      });
+      // 内联公式 \(...\)
+      result = result.replace(/\\\(([\s\S]*?)\\\)/g, (match, formula) => {
+        try {
+          formulas.push(katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false }));
+          return `@@FORMULA_${formulas.length - 1}@@`;
+        } catch (e) { return match; }
       });
     }
+
+    // 3. Markdown 转换（加粗、斜体、代码块、标题、列表、换行）
+    result = renderMarkdown(result);
+
+    // 4. 恢复公式占位符
+    result = result.replace(/@@FORMULA_(\d+)@@/g, (match, idx) => {
+      return formulas[parseInt(idx)] || match;
+    });
+
     return result;
+  }
+
+  // ========== 轻量 Markdown 渲染 ==========
+  function renderMarkdown(text) {
+    if (!text) return '';
+    let r = text;
+
+    // 代码块（先提取，防止内部被转换）
+    const codeBlocks = [];
+    r = r.replace(/```([\s\S]*?)```/g, (match, code) => {
+      codeBlocks.push(`<pre class="code-block"><code>${code}</code></pre>`);
+      return `@@CODE_${codeBlocks.length - 1}@@`;
+    });
+    // 行内代码
+    r = r.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+    // 加粗 **text**（不跨行）
+    r = r.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+
+    // 标题
+    r = r.replace(/^###\s+(.+)$/gm, '<h4>$1</h4>');
+    r = r.replace(/^##\s+(.+)$/gm, '<h3>$1</h3>');
+    r = r.replace(/^#\s+(.+)$/gm, '<h2>$1</h2>');
+
+    // 无序列表 - item
+    r = r.replace(/^[-•]\s+(.+)$/gm, '<li>$1</li>');
+    r = r.replace(/(<li>[\s\S]*?<\/li>)(?:\n|$)/g, '<ul>$1</ul>');
+
+    // 换行：双换行 → 段落，单换行 → <br>
+    const paragraphs = r.split(/\n{2,}/);
+    r = paragraphs.map(p => {
+      p = p.trim();
+      if (!p) return '';
+      // 已是块级元素或占位符，不再包 <p>
+      if (p.startsWith('<h') || p.startsWith('<ul') || p.startsWith('<pre') || p.startsWith('@@')) {
+        return p;
+      }
+      p = p.replace(/\n/g, '<br>');
+      return `<p>${p}</p>`;
+    }).join('');
+
+    // 恢复代码块
+    r = r.replace(/@@CODE_(\d+)@@/g, (match, idx) => codeBlocks[parseInt(idx)] || match);
+
+    return r;
   }
 
   // ========== 对话管理 ==========
@@ -489,7 +567,7 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ========== 工具调用确认框 ==========
+  // ========== 工具调用确认框（逐工具批准，拒绝警告疲劳） ==========
   async function showToolConfirmation(requestId, toolCalls) {
     return new Promise((resolve) => {
       // 如果已经有确认框，先移除
@@ -499,14 +577,21 @@ window.addEventListener('DOMContentLoaded', () => {
       const overlay = document.createElement('div');
       overlay.className = 'tool-confirm-overlay';
 
-      // 构建工具列表
+      // 构建工具列表（每个工具独立允许/拒绝）
       let toolListHTML = '';
       toolCalls.forEach(tc => {
         const desc = tc.description || `${tc.name} ${JSON.stringify(tc.args || {})}`;
         toolListHTML += `
           <div class="tool-confirm-item">
             <div class="tool-confirm-icon">🛠</div>
-            <div class="tool-confirm-desc">${escapeHtml(desc)}</div>
+            <div class="tool-confirm-desc">
+              <div class="tool-confirm-name">${escapeHtml(tc.name)}</div>
+              <div>${escapeHtml(desc)}</div>
+            </div>
+            <div class="tool-confirm-actions">
+              <button class="tool-confirm-btn tool-confirm-btn-no" data-id="${escapeHtml(tc.tool_call_id)}">拒绝</button>
+              <button class="tool-confirm-btn tool-confirm-btn-yes" data-id="${escapeHtml(tc.tool_call_id)}">允许</button>
+            </div>
           </div>
         `;
       });
@@ -515,56 +600,54 @@ window.addEventListener('DOMContentLoaded', () => {
         <div class="tool-confirm-dialog">
           <div class="tool-confirm-header">🔧 爱弥斯想执行以下操作</div>
           <div class="tool-confirm-body">${toolListHTML}</div>
-          <div class="tool-confirm-footer">
-            <button class="tool-confirm-btn tool-confirm-btn-no">拒绝</button>
-            <button class="tool-confirm-btn tool-confirm-btn-yes" autofocus>允许</button>
-          </div>
-          <div class="tool-confirm-timeout">⏱ 60 秒内不操作将自动拒绝</div>
+          <div class="tool-confirm-timeout">⏱ 60 秒内未操作的工具将自动拒绝</div>
         </div>
       `;
 
       document.body.appendChild(overlay);
 
-      // 自动拒绝计时
+      let pending = toolCalls.length;
+      const decided = new Set();
+
+      // 自动拒绝计时：所有未决定的工具默认拒绝
       const timeoutId = setTimeout(async () => {
+        toolCalls.forEach((tc) => {
+          if (!decided.has(tc.tool_call_id)) {
+            fetch(`${AI_SERVICE_URL}/tool-deny`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ request_id: requestId, tool_call_id: tc.tool_call_id })
+            }).catch(() => {});
+          }
+        });
         overlay.remove();
-        try {
-          await fetch(`${AI_SERVICE_URL}/tool-deny`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ request_id: requestId })
-          });
-        } catch (e) {}
-        resolve(false);
+        resolve(true);
       }, 60000);
 
-      // 允许按钮
-      overlay.querySelector('.tool-confirm-btn-yes').onclick = async () => {
-        clearTimeout(timeoutId);
-        overlay.remove();
-        try {
-          await fetch(`${AI_SERVICE_URL}/tool-approve`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ request_id: requestId })
-          });
-        } catch (e) {}
-        resolve(true);
-      };
+      // 按钮事件：委托处理
+      overlay.querySelectorAll('.tool-confirm-btn').forEach(btn => {
+        btn.onclick = async () => {
+          const toolCallId = btn.dataset.id;
+          if (decided.has(toolCallId)) return;
+          decided.add(toolCallId);
+          pending--;
+          btn.disabled = true;
+          btn.style.opacity = '0.4';
 
-      // 拒绝按钮
-      overlay.querySelector('.tool-confirm-btn-no').onclick = async () => {
-        clearTimeout(timeoutId);
-        overlay.remove();
-        try {
-          await fetch(`${AI_SERVICE_URL}/tool-deny`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ request_id: requestId })
-          });
-        } catch (e) {}
-        resolve(false);
-      };
+          const isApprove = btn.classList.contains('tool-confirm-btn-yes');
+          try {
+            await fetch(`${AI_SERVICE_URL}/${isApprove ? 'tool-approve' : 'tool-deny'}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ request_id: requestId, tool_call_id: toolCallId })
+            });
+          } catch (e) {}
+          if (pending <= 0) {
+            overlay.remove();
+            resolve(true);
+          }
+        };
+      });
     });
   }
 

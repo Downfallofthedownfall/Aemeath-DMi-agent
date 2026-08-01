@@ -688,6 +688,15 @@ def ooc_check(reply, mode, system_prompt, wfile=None):
 
     return final_score, final_passed, final_warning
 
+# ===== 工具风险分级 =====
+# AUTO_TOOLS: 只读/无副作用/可逆 → 自动执行，不弹确认框
+# 其余工具（执行代码/命令、写文件、控制系统）→ 需用户确认
+AUTO_TOOLS = {
+    'get_current_time', 'calculate', 'list_files', 'read_file',
+    'search_files', 'arxiv_search', 'detect_screen', 'ocr_screen',
+    'describe_screen', 'web_scraper',
+}
+
 def describe_tool_action(name, args):
     """把工具调用翻译成人类能看懂的话"""
     descriptions = {
@@ -716,9 +725,9 @@ def describe_tool_action(name, args):
         'describe_screen': lambda a: "描述屏幕上显示的内容",
         'list_files': lambda a: f"查看 {a.get('path','桌面')} 里的文件和文件夹",
         'read_file': lambda a: f"读取文件：{a.get('path','')}",
-        'write_file': lambda a: f"写入文件：{a.get('path','')}",
+        'write_file': lambda a: f"写入文件 {a.get('path','')}，内容预览：\n{a.get('content','')[:150]}{'...' if len(a.get('content',''))>150 else ''}",
         'search_files': lambda a: f"搜索文件名包含「{a.get('keyword','')}」的文件",
-        'run_python': lambda a: f"运行一段 Python 代码来帮您计算或处理数据",
+        'run_python': lambda a: f"运行 Python 代码：\n{a.get('code','')[:300]}{'...' if len(a.get('code',''))>300 else ''}",
         'web_scraper': lambda a: f"从网页上获取内容：{a.get('url','')}",
         'calculate': lambda a: f"计算数学表达式：{a.get('expression','')}",
         'get_current_time': lambda a: f"查看当前时间",
@@ -839,83 +848,96 @@ def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, m
 
         print(f"[Tool] Round {round_num}: {len(tool_calls)} 个工具调用")
 
-        # ---- 发前端确认 ----
-        request_id = str(uuid.uuid4())
-        event = threading.Event()
-        with approval_lock:
-            approval_store[request_id] = {
-                "event": event,
-                "approved": None,
-                "tool_calls": tool_calls
-            }
-
-        tool_call_info = []
+        # ---- 解析参数 ----
+        parsed_calls = []
         for tc in tool_calls:
-            name = tc.get('function', {}).get('name', '')
+            func = tc.get('function', {})
+            name = func.get('name', '')
             try:
-                args = json.loads(tc.get('function', {}).get('arguments', '{}'))
+                args = json.loads(func.get('arguments', '{}'))
             except:
                 args = {}
-            description = describe_tool_action(name, args)
-            tool_call_info.append({
-                "name": name,
-                "args": args,
-                "description": description
-            })
+            parsed_calls.append({"tc": tc, "name": name, "args": args})
 
-        wfile.write(f"data: {json.dumps({'type': 'tool_call', 'request_id': request_id, 'tool_calls': tool_call_info})}\n\n".encode('utf-8'))
-        wfile.flush()
-        print(f"[Tool] 等待用户确认: {request_id}")
+        # ---- 风险分级：AUTO 直接执行，其余发确认 ----
+        auto_calls = [pc for pc in parsed_calls if pc["name"] in AUTO_TOOLS]
+        confirm_calls = [pc for pc in parsed_calls if pc["name"] not in AUTO_TOOLS]
 
-        # 等用户批准（最长60秒）
-        event.wait(timeout=60)
+        tool_results = {}  # tool_call_id -> 结果字符串
 
-        with approval_lock:
-            approved_flag = approval_store.get(request_id, {}).get('approved', False)
-            if request_id in approval_store:
-                del approval_store[request_id]
+        # 1) 自动执行只读/无副作用工具（不打扰用户）
+        for pc in auto_calls:
+            try:
+                result = execute_tool(pc["name"], pc["args"])
+            except Exception as e:
+                result = f"Error: {e}"
+            tool_results[pc["tc"].get('id', '')] = str(result)[:2000]
+            print(f"[Tool] {pc['name']} (自动执行) 完成")
 
-        if approved_flag:
-            print(f"[Tool] 用户批准，执行 {len(tool_calls)} 个工具")
-            current_messages.append({
-                "role": "assistant",
-                "content": round_text,
-                "tool_calls": tool_calls
-            })
-            for tc in tool_calls:
-                func = tc.get('function', {})
-                name = func.get('name', '')
-                try:
-                    args = json.loads(func.get('arguments', '{}'))
-                except:
-                    args = {}
-                tool_result = execute_tool(name, args)
-                current_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get('id', ''),
-                    "content": str(tool_result)[:2000]
+        # 2) 需要确认的工具 → 发前端逐工具确认
+        if confirm_calls:
+            request_id = str(uuid.uuid4())
+            event = threading.Event()
+            with approval_lock:
+                approval_store[request_id] = {
+                    "event": event,
+                    "decisions": {},          # {tool_call_id: True/False}
+                    "confirm_ids": [pc["tc"].get('id', '') for pc in confirm_calls]
+                }
+
+            tool_call_info = []
+            for pc in confirm_calls:
+                description = describe_tool_action(pc["name"], pc["args"])
+                tool_call_info.append({
+                    "name": pc["name"],
+                    "args": pc["args"],
+                    "description": description,
+                    "tool_call_id": pc["tc"].get('id', '')
                 })
-                print(f"[Tool] {name} 完成")
-        else:
-            print(f"[Tool] 用户拒绝或超时")
-            if round_text:
-                current_messages.append({
-                    "role": "assistant",
-                    "content": round_text + "\n\n（用户拒绝了工具调用请求）"
-                })
+
+            wfile.write(f"data: {json.dumps({'type': 'tool_call', 'request_id': request_id, 'tool_calls': tool_call_info})}\n\n".encode('utf-8'))
+            wfile.flush()
+            print(f"[Tool] 等待用户确认 {len(confirm_calls)} 个工具: {request_id}")
+
+            # 等用户逐工具决定（最长60秒）
+            event.wait(timeout=60)
+
+            with approval_lock:
+                decisions = dict(approval_store.get(request_id, {}).get('decisions', {}))
+                if request_id in approval_store:
+                    del approval_store[request_id]
+
+            # 执行已批准的工具；拒绝/超时的记录为拒绝
+            for pc in confirm_calls:
+                call_id = pc["tc"].get('id', '')
+                if decisions.get(call_id, False):
+                    try:
+                        result = execute_tool(pc["name"], pc["args"])
+                    except Exception as e:
+                        result = f"Error: {e}"
+                    tool_results[call_id] = str(result)[:2000]
+                    print(f"[Tool] {pc['name']} (用户批准) 完成")
+                else:
+                    tool_results[call_id] = "用户拒绝执行此工具"
+                    print(f"[Tool] {pc['name']} (用户拒绝)")
+
+        # 3) 构造 assistant 消息（带全部 tool_calls）+ 对应 tool 结果
+        current_messages.append({
+            "role": "assistant",
+            "content": round_text,
+            "tool_calls": tool_calls
+        })
+        for tc in tool_calls:
+            call_id = tc.get('id', '')
             current_messages.append({
-                "role": "user",
-                "content": "我已拒绝你的工具调用请求，请直接回答我的问题，不要调用任何工具。"
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": tool_results.get(call_id, "用户拒绝执行此工具")
             })
 
         # 继续下一轮
         continue
-    
-    # ===== 所有工具循环结束，最终 OOC 检测 =====
-    ooc_score, ooc_passed, ooc_warning = ooc_check(
-        round_text, mode, system_prompt, wfile
-    )
-    
+
     return "Too many tool calls, please simplify", True
 
 # ============================================================
@@ -956,10 +978,29 @@ class AIHandler(BaseHTTPRequestHandler):
         try:
             body = self.read_body()
             request_id = body.get('request_id', '')
+            tool_call_id = body.get('tool_call_id', '')
             with approval_lock:
-                if request_id in approval_store:
-                    approval_store[request_id]['approved'] = True
-                    approval_store[request_id]['event'].set()
+                entry = approval_store.get(request_id)
+                if entry:
+                    entry['decisions'][tool_call_id] = True
+                    # 所有待确认工具都有决定后，唤醒等待线程
+                    if len(entry['decisions']) >= len(entry.get('confirm_ids', [])):
+                        entry['event'].set()
+            self.send_json(200, {"success": True})
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    def handle_tool_deny(self):
+        try:
+            body = self.read_body()
+            request_id = body.get('request_id', '')
+            tool_call_id = body.get('tool_call_id', '')
+            with approval_lock:
+                entry = approval_store.get(request_id)
+                if entry:
+                    entry['decisions'][tool_call_id] = False
+                    if len(entry['decisions']) >= len(entry.get('confirm_ids', [])):
+                        entry['event'].set()
             self.send_json(200, {"success": True})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
@@ -1031,14 +1072,6 @@ class AIHandler(BaseHTTPRequestHandler):
             self.wfile.write("data: [DONE]\n\n".encode('utf-8'))
             self.wfile.flush()
             print(f"[AI] Done | Stream with tools | {len(final_text)} chars")
-
-        except Exception as e:
-            print(f"[AI] Error: {e}")
-            traceback.print_exc()
-            try:
-                self.send_json(500, {"error": True, "message": str(e)})
-            except:
-                pass
 
         except Exception as e:
             print(f"[AI] Error: {e}")

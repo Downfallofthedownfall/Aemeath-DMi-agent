@@ -461,3 +461,36 @@ body {
   color: #555577;
   margin-top: 12px;
 }
+
+/* ===== 消息内 Markdown 样式 ===== */
+.message p { margin: 6px 0; }
+.message strong { color: #ffffff; font-weight: 600; }
+.message ul { margin: 6px 0; padding-left: 20px; }
+.message li { margin: 3px 0; }
+.message .katex-display { margin: 8px 0; overflow-x: auto; padding: 4px 0; }
+.message .code-block {
+  background: rgba(0,0,0,0.4);
+  padding: 10px 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  margin: 8px 0;
+}
+.message h2, .message h3, .message h4 { margin: 10px 0 6px; color: #c4b5fd; }
+
+/* ===== 逐工具确认样式 ===== */
+.tool-confirm-item {
+  align-items: center;
+}
+.tool-confirm-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.tool-confirm-actions .tool-confirm-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+}
