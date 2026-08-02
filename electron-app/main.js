@@ -165,6 +165,14 @@ function startTTSService() {
   });
 }
 
+// ===== 启动计算服务 (compute_service.py, 端口 18893) =====
+function startComputeService() {
+  const script = path.join(__dirname, 'compute_service.py');
+  if (!fs.existsSync(script)) { console.warn('compute_service.py 不存在'); return; }
+  startProcess('compute_service', 'python', [script], {
+    env: { ...process.env, AUTH_TOKEN },
+  });
+}
 
 // ===== 启动 MCP 文件系统服务 (mcp-server.ts) =====
 function startMCPService() {
@@ -558,6 +566,7 @@ app.whenReady().then(async () => {
   startPythonService();     // 端口 18888
   startAIService();         // 端口 18892
   startControlService();    // 端口 18890
+  startComputeService();    // 端口 18893 
   startMCPService();        // 端口 18889
 
   // 视觉和 TTS 延迟 3 秒启动（给内存和 CPU 喘息空间）
@@ -605,6 +614,7 @@ const REQUIRED_SERVICES = [
   { name: 'AI chatbot',          host: '127.0.0.1', port: 18892, path: '/health' },
   { name: 'command execute',     host: '127.0.0.1', port: 18888, path: '/health' },
   { name: 'visual services',     host: '127.0.0.1', port: 18901, path: '/health' },
+  { name: 'compute services',    host: '127.0.0.1', port: 18893, path: '/health' },
   { name: 'MCP filesystem',      host: '127.0.0.1', port: 18889, path: '/mcp' },
 ];
 

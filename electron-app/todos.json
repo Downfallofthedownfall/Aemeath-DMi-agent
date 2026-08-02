@@ -1,0 +1,13 @@
+{
+  "todos": [
+    {
+      "id": "c3c68f39",
+      "text": "做RAG和记忆",
+      "priority": "high",
+      "due_date": "2026-08-03",
+      "created_at": "2026-08-02 13:06:34",
+      "completed": false,
+      "completed_at": null
+    }
+  ]
+}

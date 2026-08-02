@@ -22,6 +22,7 @@ from socketserver import ThreadingMixIn
 import threading
 import uuid 
 import unicodedata   # 用于准确的 emoji 检测
+import base64
 
 # ===== 用户确认存储 =====
 # {request_id: {"event": threading.Event(), "approved": None, "tool_calls": [...]}}
@@ -112,6 +113,27 @@ def is_sensitive_path(path):
         if marker in p:
             return True
     return False
+
+# ===== TodoList 存储（外部 JSON 文件，electron-app/todos.json） =====
+TODO_FILE = os.path.join(SCRIPT_DIR, 'todos.json')
+
+def _load_todos():
+    """读取 todos.json，返回列表"""
+    if not os.path.exists(TODO_FILE):
+        return []
+    try:
+        with open(TODO_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f).get('todos', [])
+    except:
+        return []
+
+def _save_todos(todos):
+    """保存 todos 到外部文件"""
+    with open(TODO_FILE, 'w', encoding='utf-8') as f:
+        json.dump({"todos": todos}, f, ensure_ascii=False, indent=2)
+
+def _today_str():
+    return datetime.datetime.now().strftime('%Y-%m-%d')
 
 # ============================================================
 # 工具执行器
@@ -279,6 +301,95 @@ def execute_tool(name, args):
                 return f"Time({tz}): {now.strftime('%Y-%m-%d %H:%M:%S')}"
             except:
                 return f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        # ---- TodoList 管理 ----
+        if name == 'todo_add':
+            text = args.get('text', '').strip()
+            if not text:
+                return "Todo error: 缺少待办内容"
+            todos = _load_todos()
+            new_todo = {
+                "id": uuid.uuid4().hex[:8],
+                "text": text,
+                "priority": args.get('priority', 'medium'),
+                "due_date": args.get('due_date', None),
+                "created_at": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "completed": False,
+                "completed_at": None
+            }
+            todos.append(new_todo)
+            _save_todos(todos)
+            return f"已添加待办「{text}」（ID:{new_todo['id']}，优先级:{new_todo['priority']}，截止:{new_todo['due_date'] or '无'}，创建于 {new_todo['created_at']}）"
+
+        if name == 'todo_list':
+            todos = _load_todos()
+            flt = args.get('filter', 'all')
+            date = args.get('date', None)
+            today = _today_str()
+            results = []
+            for t in todos:
+                due = t.get('due_date')
+                if flt == 'today' and due != today:
+                    continue
+                if flt == 'overdue' and (not due or due >= today or t['completed']):
+                    continue
+                if flt == 'pending' and t['completed']:
+                    continue
+                if flt == 'done' and not t['completed']:
+                    continue
+                if date and due != date:
+                    continue
+                results.append(t)
+            if not results:
+                return "待办列表为空" + (f"（{flt}）" if flt != 'all' else "")
+            lines = [f"待办列表（{flt}）共 {len(results)} 项："]
+            for i, t in enumerate(results, 1):
+                status = "ok" if t['completed'] else "error"
+                due = f"（截止 {t['due_date']}）" if t.get('due_date') else ""
+                pri = t.get('priority', 'medium')
+                lines.append(f"{i}. {status} [{pri}] {t['text']} {due} ID:{t['id']}")
+            return "\n".join(lines)
+
+        if name == 'todo_done':
+            todo_id = args.get('id', '').strip()
+            todos = _load_todos()
+            found = None
+            for t in todos:
+                if t['id'] == todo_id:
+                    t['completed'] = True
+                    t['completed_at'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    found = t
+                    break
+            if not found:
+                return f"Todo error: 未找到 ID 为 {todo_id} 的待办，请先用 todo_list 确认 ID"
+            _save_todos(todos)
+            return f"已完成待办「{found['text']}」ok!（完成于 {found['completed_at']}）"
+
+        if name == 'todo_report':
+            todos = _load_todos()
+            today = _today_str()
+            today_due = [t for t in todos if t.get('due_date') == today and not t['completed']]
+            overdue = [t for t in todos if t.get('due_date') and t['due_date'] < today and not t['completed']]
+            pending = [t for t in todos if not t['completed']]
+            done_today = [t for t in todos if t['completed'] and t.get('completed_at', '').startswith(today)]
+            lines = [f"待办日报（{today}）"]
+            if today_due:
+                lines.append(f"\n⏰ 今天到期（{len(today_due)}）：")
+                for t in today_due:
+                    lines.append(f"  - [{t.get('priority','medium')}] {t['text']}")
+            else:
+                lines.append("\n⏰ 今天没有到期事项")
+            if overdue:
+                lines.append(f"\n已逾期（{len(overdue)}）：")
+                for t in overdue:
+                    lines.append(f"  - [{t.get('priority','medium')}] {t['text']}（截止 {t['due_date']}）")
+            lines.append(f"\n📌 未完成共 {len(pending)} 项（含今天的）")
+            if done_today:
+                lines.append(f"今天已完成 {len(done_today)} 项")
+            else:
+                lines.append("今天还没有完成任何待办")
+            return "\n".join(lines)
+
 
         if name == 'calculate':
             expr = args.get('expression', '')
@@ -311,7 +422,64 @@ def execute_tool(name, args):
                 return f"{expr} = {result}"
             except Exception as e:
                 return f"Calc error: {e}"
+            
+        # ---- 物理计算（compute_service 18893） ----
+        if name == 'compute_symbolic':
+            # 符号计算：微积分/解方程/矩阵/ODE，返回 LaTeX + 字符串
+            r = http_post('http://127.0.0.1:18893/compute', {
+                "mode": "symbolic",
+                "expression": args.get('expression', ''),
+                "vars": args.get('vars', {}) or {}
+            }, timeout=20)
+            if r.get('error'):
+                return f"Compute error: {r['error']}"
+            return f"结果: {r.get('result_str', '')}\nLaTeX: {r.get('result_latex', '')}"
 
+        if name == 'compute_numeric':
+            # 数值计算：沙箱子进程跑 numpy/scipy 代码
+            r = http_post('http://127.0.0.1:18893/compute', {
+                "mode": "numeric",
+                "code": args.get('code', '')
+            }, timeout=15)
+            if r.get('error'):
+                return f"Compute error: {r['error']}"
+            return f"输出:\n{r.get('stdout', '')}"
+
+        if name == 'compute_plot':
+            # 绘图：服务端生成 base64 PNG，这里解码存成文件，返回路径
+            r = http_post('http://127.0.0.1:18893/compute', {
+                "mode": "plot",
+                "expression": args.get('expression', ''),
+                "vars": {
+                    "x_min": args.get('x_min', -5),
+                    "x_max": args.get('x_max', 5)
+                },
+                "caption": args.get('caption', '')
+            }, timeout=30)
+            if r.get('error'):
+                return f"Plot error: {r['error']}"
+            try:
+                img_data = base64.b64decode(r['image_base64'])   # base64 字符串 -> 二进制
+                plot_dir = os.path.join(SCRIPT_DIR, 'plots')
+                os.makedirs(plot_dir, exist_ok=True)             # 目录不存在就创建
+                fname = os.path.join(plot_dir, f"plot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                with open(fname, 'wb') as f:                     # 'wb' = 二进制写
+                    f.write(img_data)
+                return f"图表已生成: {fname}（{len(img_data) // 1024} KB）\n标题: {r.get('caption', '')}"
+            except Exception as e:
+                return f"图表保存失败: {e}"
+
+        if name == 'compare_answers':
+            # 答案比对：符号化简优先，失败回退数值代入
+            r = http_post('http://127.0.0.1:18893/compare', {
+                "a": args.get('a', ''),
+                "b": args.get('b', '')
+            }, timeout=15)
+            if r.get('error'):
+                return f"Compare error: {r['error']}"
+            eq = r.get('equivalent', False)
+            method = r.get('method', '')
+            return f"答案{'等价' if eq else '不等价'}（判定方式: {method}）"
 
         if name == 'web_scraper':
             url = args['url']
@@ -486,6 +654,68 @@ TOOLS = [
             "query": {"type": "string", "description": "Search keywords"}
         }, "required": ["query"]}
     }},
+    {"type": "function", "function": {
+        "name": "todo_add",
+        "description": "Add a todo item. When user mentions a due date, first call get_current_time to know today's date, then set due_date as YYYY-MM-DD",
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "Todo content"},
+            "due_date": {"type": "string", "description": "Due date YYYY-MM-DD, optional"},
+            "priority": {"type": "string", "description": "high/medium/low, default medium"}
+        }, "required": ["text"]}
+    }},
+    {"type": "function", "function": {
+        "name": "todo_list",
+        "description": "List todo items. filter: all/today/pending/done/overdue, or filter by due date",
+        "parameters": {"type": "object", "properties": {
+            "filter": {"type": "string", "description": "all/today/pending/done/overdue, default all"},
+            "date": {"type": "string", "description": "Filter by due date YYYY-MM-DD, optional"}
+        }}
+    }},
+    {"type": "function", "function": {
+        "name": "todo_done",
+        "description": "Mark a todo as completed by its ID (get ID from todo_list)",
+        "parameters": {"type": "object", "properties": {
+            "id": {"type": "string", "description": "Todo ID"}
+        }, "required": ["id"]}
+    }},
+    {"type": "function", "function": {
+        "name": "todo_report",
+        "description": "Generate daily todo report: due today, overdue, pending, done today. Use after get_current_time for today's date",
+        "parameters": {"type": "object", "properties": {}}
+    }},
+        {"type": "function", "function": {
+        "name": "compute_symbolic",
+        "description": "Symbolic math: integrate/diff/limit/solve/Matrix/ODE/simplify. Returns LaTeX and string. Use for physics derivations",
+        "parameters": {"type": "object", "properties": {
+            "expression": {"type": "string", "description": "SymPy expression, e.g. integrate(sin(x),x) or solve(x**2-4,x)"},
+            "vars": {"type": "object", "description": "Optional variable values, e.g. {\"m\":2}"}
+        }, "required": ["expression"]}
+    }},
+    {"type": "function", "function": {
+        "name": "compute_numeric",
+        "description": "Run restricted Python code (numpy/scipy/sympy) for numeric computation: numeric integration, ODE solve_ivp, curve_fit, FFT, uncertainties. 10s timeout",
+        "parameters": {"type": "object", "properties": {
+            "code": {"type": "string", "description": "Python code using numpy/scipy/sympy, print the result"}
+        }, "required": ["code"]}
+    }},
+    {"type": "function", "function": {
+        "name": "compute_plot",
+        "description": "Plot a math expression of x, saves PNG file and returns its path",
+        "parameters": {"type": "object", "properties": {
+            "expression": {"type": "string", "description": "Expression of x, e.g. x**2 or sin(x)"},
+            "x_min": {"type": "number", "description": "x start, default -5"},
+            "x_max": {"type": "number", "description": "x end, default 5"}
+        }, "required": ["expression"]}
+    }},
+    {"type": "function", "function": {
+        "name": "compare_answers",
+        "description": "Compare two math expressions for equivalence (student answer vs correct answer)",
+        "parameters": {"type": "object", "properties": {
+            "a": {"type": "string", "description": "Expression A"},
+            "b": {"type": "string", "description": "Expression B"}
+        }, "required": ["a", "b"]}
+    }},
+
 ]
 
 # ============================================================
@@ -744,6 +974,8 @@ AUTO_TOOLS = {
     'get_current_time', 'calculate', 'list_files', 'read_file',
     'search_files', 'arxiv_search', 'detect_screen', 'ocr_screen',
     'describe_screen', 'web_scraper',
+    'compute_symbolic', 'compute_plot', 'compare_answers',
+    'todo_add', 'todo_list', 'todo_done', 'todo_report',
 }
 
 def describe_tool_action(name, args):
@@ -781,6 +1013,15 @@ def describe_tool_action(name, args):
         'calculate': lambda a: f"计算数学表达式：{a.get('expression','')}",
         'get_current_time': lambda a: f"查看当前时间",
         'arxiv_search': lambda a: f"搜索学术论文：{a.get('query','')}",
+        'todo_add': lambda a: f"添加待办：{a.get('text','')}（截止 {a.get('due_date','无')}）",
+        'todo_list': lambda a: f"查看待办（{a.get('filter','all')}）",
+        'todo_done': lambda a: f"标记待办完成（ID:{a.get('id','')}）",
+        'todo_report': lambda a: "生成今日待办日报",
+        'compute_symbolic': lambda a: f"符号计算: {a.get('expression','')}",
+        'compute_numeric': lambda a: f"执行数值计算代码:\n{a.get('code','')[:200]}",
+        'compute_plot': lambda a: f"绘制函数图: y={a.get('expression','')}（x: {a.get('x_min','-5')} ~ {a.get('x_max','5')}）",
+        'compare_answers': lambda a: f"比对答案: {a.get('a','')} 与 {a.get('b','')}",
+
     }
     
     desc_fn = descriptions.get(name)
