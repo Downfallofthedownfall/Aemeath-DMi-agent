@@ -167,3 +167,6 @@ __pycache__/
 
 # 忽略 Dify 插件运行时缓存
 dify/docker/volumes/plugin_daemon/cwd/
+
+# 记忆
+data/

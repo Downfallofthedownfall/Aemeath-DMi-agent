@@ -4,7 +4,7 @@
 //       自动启动/停止 Python 服务
 // ============================================================
 
-const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, spawnSync, execSync } = require('child_process');
@@ -14,10 +14,10 @@ const crypto = require('crypto');
 // 全局生成一次随机 token
 const AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
 
-
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
+let confirmWindow = null;   // 工具确认角标弹窗
 
 // 所有子进程管理
 const childProcesses = {};
@@ -86,6 +86,32 @@ function killProcess(name) {
     console.warn(`[Cleanup] 杀掉 ${name} 失败:`, e.message);
   }
   childProcesses[name] = null;
+}
+
+// ===== 杀掉占用指定端口的残留进程（旧 token / 旧代码会静默导致 401） =====
+function killPort(port) {
+  try {
+    const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, {
+      encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const pids = new Set();
+    for (const line of out.split('\n')) {
+      const m = line.trim().match(/\s+(\d+)\s*$/);
+      if (m) pids.add(m[1]);
+    }
+    for (const pid of pids) {
+      if (pid && pid !== String(process.pid)) {
+        try {
+          spawnSync('taskkill', ['/pid', pid, '/f', '/t'], { stdio: 'ignore', windowsHide: true });
+          console.log(`[Cleanup] 已清理端口 ${port} 上的残留进程 (PID ${pid})`);
+        } catch (e) {
+          console.warn(`[Cleanup] 清理端口 ${port} 失败:`, e.message);
+        }
+      }
+    }
+  } catch (e) {
+    // netstat 无匹配（端口空闲）→ 正常，不做任何事
+  }
 }
 
 // ===== 启动 Python 本地服务 (run_server.py) =====
@@ -472,7 +498,142 @@ function registerShortcuts() {
     }
   });
   if (!ret) console.warn('全局快捷键注册失败');
+
+  // 把快捷键同时发给主窗口和角标弹窗
+  const sendApproval = (action) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('approval-hotkey', action);
+    if (confirmWindow && !confirmWindow.isDestroyed()) confirmWindow.webContents.send('approval-hotkey', action);
+  };
+
+  globalShortcut.register('F8', () => sendApproval('approve'));
+  globalShortcut.register('F7', () => sendApproval('deny'));
+  globalShortcut.register('F9', () => sendApproval('approve-all'));
 }
+
+// ===== 工具确认角标弹窗（主窗口不在前台时显示） =====
+function showConfirmPopup(data) {
+  if (confirmWindow && !confirmWindow.isDestroyed()) {
+    confirmWindow.destroy();
+    confirmWindow = null;
+  }
+
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  const toolRows = (data.toolCalls || []).map(tc => {
+    const desc = esc(tc.description || (tc.name + ' ' + JSON.stringify(tc.args || {})));
+    const risk = tc.t3 ? ' <span style="color:#f87171;font-size:11px;">⚠高风险</span>' : '';
+    return `<div style="padding:6px 10px;background:rgba(255,255,255,0.05);border-radius:8px;margin-bottom:6px;font-size:12px;">
+      <b style="color:#cbd5e1;">${esc(tc.name)}</b>${risk}
+      <div style="color:#94a3b8;margin-top:2px;">${desc}</div>
+    </div>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html>
+  <html><head><meta charset="utf-8">
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'Segoe UI', Arial, sans-serif; background:transparent; }
+    .card { background:rgba(20,20,40,0.95); border:1px solid #4c1d95; border-radius:14px;
+            padding:14px 16px; color:#e0e0ff; box-shadow:0 8px 30px rgba(0,0,0,0.6); }
+    .head { font-size:14px; font-weight:600; margin-bottom:8px; }
+    .tools { max-height:130px; overflow-y:auto; }
+    .hint { font-size:11px; color:#8888bb; margin:8px 0; }
+    .btns { display:flex; gap:8px; }
+    .btn { flex:1; padding:8px 0; border:none; border-radius:8px; font-size:13px; cursor:pointer; }
+    .allow { background:#16a34a; color:#fff; }
+    .deny  { background:#dc2626; color:#fff; }
+    .nont3 { background:#d97706; color:#fff; }
+  </style></head>
+  <body><div class="card">
+    <div class="head">🔧 爱弥斯想执行 ${toolRows.length} 个操作</div>
+    <div class="tools">${toolRows}</div>
+    <div class="hint">⌨ 全局键（无需切窗口）：<b>F8</b>全部允许 · <b>F7</b>全部拒绝 · <b>F9</b>剩余允许</div>
+    <div class="btns">
+      <button class="btn deny"  id="btn-deny">拒绝全部</button>
+      <button class="btn allow" id="btn-allow">全部允许</button>
+    </div>
+  </div>
+  <script>
+    const REQUEST_ID = ${JSON.stringify(data.requestId)};
+    const TOOL_CALLS = ${JSON.stringify(data.toolCalls || [])};
+    async function decide(approve, onlyNonT3) {
+      const token = await window.electronAPI.getAuthToken();
+      const ids = TOOL_CALLS.filter(tc => !onlyNonT3 || !tc.t3).map(tc => tc.tool_call_id);
+      await Promise.all(ids.map(id => fetch('http://127.0.0.1:18892/' + (approve ? 'tool-approve' : 'tool-deny'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': token },
+        body: JSON.stringify({ request_id: REQUEST_ID, tool_call_id: id })
+      }).catch(() => {})));
+      window.close();
+    }
+    document.getElementById('btn-allow').onclick = () => decide(true, false);
+    document.getElementById('btn-deny').onclick  = () => decide(false, false);
+    // 全局键 F8/F7/F9 也能操作本弹窗
+    if (window.electronAPI.onApprovalHotkey) {
+      window.electronAPI.onApprovalHotkey((action) => {
+        if (action === 'approve') decide(true, false);
+        else if (action === 'deny') decide(false, false);
+        else if (action === 'approve-all') decide(true, true);
+      });
+    }
+    setTimeout(() => window.close(), 65000);   // 服务端60秒自动拒绝，这里兜底关闭
+  <\/script>
+  </body></html>`;
+
+  const wa = screen.getPrimaryDisplay().workArea;
+  const W = 400, H = 250;
+  confirmWindow = new BrowserWindow({
+    width: W, height: H,
+    frame: false, transparent: true, resizable: false,
+    alwaysOnTop: true, skipTaskbar: true, show: false,
+    x: wa.x + wa.width - W - 20,
+    y: wa.y + wa.height - H - 20,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  confirmWindow = new BrowserWindow({
+    width: W, height: H,
+    frame: false, transparent: true, resizable: false,
+    alwaysOnTop: true, skipTaskbar: true, show: false,
+    x: wa.x + wa.width - W - 20,
+    y: wa.y + wa.height - H - 20,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  // 用真实 HTML 文件（preload 一定生效），数据走 URL 参数
+  confirmWindow.loadFile(path.join(__dirname, 'confirm.html'), {
+    query: { data: JSON.stringify(data) }
+  });
+  confirmWindow.once('ready-to-show', () => confirmWindow.show());
+  confirmWindow.on('closed', () => { confirmWindow = null; });
+}
+
+// 渲染进程收到 tool_call 事件后，通知主进程弹角标
+ipcMain.on('tool-confirm-pending', (event, data) => showConfirmPopup(data));
+
+// 弹窗决定 → 主进程用 AUTH_TOKEN 转发给 ai_service（无 CORS、能看日志）
+ipcMain.on('tool-confirm-decision', async (event, { requestId, toolCallIds, approve }) => {
+  console.log(`[ConfirmPopup] 收到决定: ${approve ? '批准' : '拒绝'} ids=${JSON.stringify(toolCallIds)}`);
+  for (const id of (toolCallIds || [])) {
+    try {
+      const res = await fetch(`http://127.0.0.1:18892/${approve ? 'tool-approve' : 'tool-deny'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': AUTH_TOKEN },
+        body: JSON.stringify({ request_id: requestId, tool_call_id: id }),
+      });
+      console.log(`[ConfirmPopup] ${approve ? '批准' : '拒绝'} ${id} → HTTP ${res.status}`);
+    } catch (e) {
+      console.error('[ConfirmPopup] 发送失败:', e.message);
+    }
+  }
+});
 
 // ===== 创建主窗口 =====
 function createWindow() {
@@ -528,7 +689,8 @@ ipcMain.handle('tts-fetch', async (event, text, voicePath) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(data)
+        'Content-Length': Buffer.byteLength(data),
+        'X-Auth-Token': AUTH_TOKEN      
       },
       timeout: 120000
     }, (res) => {
@@ -562,6 +724,11 @@ ipcMain.handle('open-external-url', async (event, url) => {
 
 // ===== 应用就绪 =====
 app.whenReady().then(async () => {
+  // 先清理残留进程（携带旧 token/旧代码的 python 进程会静默导致 401），再启动
+  [18888, 18890, 18892, 18893, 18889].forEach(killPort);
+  setTimeout(() => killPort(18901), 2500);   // 视觉服务延迟启动，对应延迟清理
+  setTimeout(() => killPort(18900), 4500);   // TTS 服务延迟启动
+
   // 先启动必需服务
   startPythonService();     // 端口 18888
   startAIService();         // 端口 18892

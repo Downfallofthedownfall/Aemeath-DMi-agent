@@ -16,15 +16,20 @@ window.addEventListener('DOMContentLoaded', () => {
   const ttsSwitch = document.getElementById('tts-switch');
   const modeToggleBtn = document.getElementById('mode-toggle-btn');
   const modeIndicator = document.getElementById('mode-indicator');
+  const sendStatusEl = document.getElementById('send-status');
 
   // ========== 状态变量 ==========
   let conversations = [];
   let currentConversationId = null;
+  let currentConfirmActions = null;   // 当前页内确认框的快捷键处理函数（F8/F7/F9 委托用）
   let isRecording = false;
   let recognition = null;
   let currentMode = 'aemeath';
+  let planMode = false;  // 计划模式总开关
   let configData = null;
+  let approveAllRemaining = false;  // F9：本次任务剩余非高风险工具自动允许
   let authToken = ''; 
+  let isSending = false;  // 流式期间禁发，避免同一会话并发轮次交错（问题4）
   // AI 服务地址
   const AI_SERVICE_URL = 'http://127.0.0.1:18892';
 
@@ -116,12 +121,30 @@ window.addEventListener('DOMContentLoaded', () => {
     renderMessages();
     // 启动 TTS 暖机（不阻塞）
     warmupTTS();
+    // 全局快捷键（常驻）：F9 在任何状态都能开启"剩余自动允许"；F8/F7 委托给当前确认框
+    window.electronAPI?.onApprovalHotkey?.((action) => {
+      if (currentConfirmActions && currentConfirmActions[action]) {
+        currentConfirmActions[action]();
+      } else if (action === 'approve-all') {
+        approveAllRemaining = true;
+        appendSystemNote('已开启：本次任务剩余非高风险操作自动允许');
+      }
+    });
+  }
+  // ========== 会话 ID 生成（前端 UUID，避免按首条消息哈希导致会话碰撞） ==========
+  function generateSessionId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return 'sess_' + window.crypto.randomUUID();
+    }
+    // 兜底：时间戳 + 随机数
+    return 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 10);
   }
 
   // ========== 对话对象 ==========
   function createNewConversation() {
     return {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+      session_id: generateSessionId(),   // 新增：服务端按此 ID 隔离 L1/L2/scratch
       title: 'New',
       messages: [],
     };
@@ -255,6 +278,19 @@ window.addEventListener('DOMContentLoaded', () => {
       clean = filterThinkTags(clean);
       lastMsgDiv.innerHTML = renderMessageHTML(clean);
     }
+    scrollToBottom();
+  }
+
+  // 流式期间轻量更新：只改纯文本，不做 KaTeX/Markdown 富渲染
+  // （逐 chunk 全量重渲染是主线程卡死的元凶，公式越多越严重）
+  function updateLastAssistantText(content) {
+    const messages = messagesContainer.querySelectorAll('.message.assistant');
+    if (messages.length === 0) return;
+    const lastMsgDiv = messages[messages.length - 1];
+    if (lastMsgDiv.querySelector('.typing-indicator')) {
+      lastMsgDiv.innerHTML = '';   // 移除打字动画
+    }
+    lastMsgDiv.textContent = content || '';
     scrollToBottom();
   }
 
@@ -398,9 +434,20 @@ window.addEventListener('DOMContentLoaded', () => {
     return r;
   }
 
+  // ========== 计划模式判定 ==========
+  function shouldUsePlanMode(text) {
+    if (!planMode) return false;
+    // 单动作（打开/启动/关闭）走快速模式，不弹计划
+    if (/^(帮我)?(打开|启动|关闭|暂停|停止)/.test(text.trim())) return false;
+    // 多步自动化任务 → 计划模式
+    return /(自动|流程|依次|然后|批量|帮我完成|一系列|帮我操作|操作一下|执行以下|写文件|保存文件)/.test(text);
+  }
   // ========== 发送消息（流式） ==========
   async function sendMessage() {
+    approveAllRemaining = false;  // 每次新任务重置
+    if (isSending) return;        // 流式期间禁发
     const text = userInput.value.trim();
+    const usePlan = shouldUsePlanMode(text);
     if (!text) return;
     if (!configData || !configData.deepseek_api_key || configData.deepseek_api_key === 'sk-把你的DeepSeekAPIKey填在这里') {
       alert('请先在 config.json 中配置 DeepSeek API Key');
@@ -408,6 +455,11 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     const conv = getCurrentConversation();
+
+    // 旧会话（历史 localStorage 数据）可能没有 session_id → 补一个并随本次 saveConversations 落库
+    if (!conv.session_id) {
+      conv.session_id = generateSessionId();
+    }
 
     // 1. 添加用户消息到数据 + DOM
     conv.messages.push({ role: 'user', content: text });
@@ -423,23 +475,40 @@ window.addEventListener('DOMContentLoaded', () => {
     // 注意助手消息还没回复，所以要排除占位消息
     saveConversations();
 
-
     const sharedMemoryText = getAllSharedMemoryText();
 
-        // 3. 构造历史消息（不用 typing 判断，用内容长度）
-    const historyMessages = [];
+    // 3. 构造历史消息（截断：保留最近约 30 轮 或 ~8000 字符，
+    //    超出部分由服务端 L1/L2 记忆层补充，避免请求体无限膨胀）
+    const MAX_HISTORY_TURNS = 30;
+    const MAX_HISTORY_CHARS = 8000;
+    const allHistory = [];
     for (const msg of conv.messages) {
       if (msg.role === 'user' && msg.content === text) continue;  // 跳过当前用户消息
       if ((msg.role === 'user' || msg.role === 'assistant') && msg.content && msg.content.length > 0) {
-        historyMessages.push({ role: msg.role, content: msg.content });
+        allHistory.push({ role: msg.role, content: msg.content });
       }
     }
-    
-    console.log('[Debug] history:', JSON.stringify(historyMessages));
+    // 从最新往旧截断，同时受轮数与字符数双重约束（至少保留 1 条）
+    const historyMessages = [];
+    let totalChars = 0;
+    for (let i = allHistory.length - 1; i >= 0 && historyMessages.length < MAX_HISTORY_TURNS; i--) {
+      const m = allHistory[i];
+      const nextChars = totalChars + m.content.length;
+      if (historyMessages.length > 0 && nextChars > MAX_HISTORY_CHARS) break;
+      historyMessages.push(m);
+      totalChars = nextChars;
+    }
+    historyMessages.reverse();
 
+    console.log('[Debug] history:', JSON.stringify(historyMessages));
+    
+    isSending = true;
+    sendBtn.disabled = true;
+    if (sendStatusEl) sendStatusEl.textContent = 'AI 生成中…';
+    
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      const timeoutId = setTimeout(() => controller.abort(), usePlan ? 420000 : 90000);
 
       // === 【调试】看看到底发了什么 ===
       console.log('[Send]', JSON.stringify({
@@ -458,12 +527,13 @@ window.addEventListener('DOMContentLoaded', () => {
           query: text,
           mode: currentMode,
           history: historyMessages,
+          session_id: conv.session_id,   // 新增：会话 UUID，服务端直接使用
           shared_memory: sharedMemoryText,
+          plan_mode: usePlan,    
           // 不再传 skip_tools！服务端始终启用工具
         }),
         signal: controller.signal
       });
-      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -475,6 +545,7 @@ window.addEventListener('DOMContentLoaded', () => {
       const decoder = new TextDecoder();
       let fullAnswer = '';
       let readBuffer = '';
+      let streamDone = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -488,28 +559,58 @@ window.addEventListener('DOMContentLoaded', () => {
 
         for (const line of lines) {
           const trimmed = line.trim();
-          if (!trimmed || trimmed === 'data: [DONE]') continue;
+          if (!trimmed) continue;
+
+          // [DONE] = 服务端回复完毕 → 立即收尾。
+          // 不能等 EOF：连接可能因后台写库迟迟不关闭，等了就卡"生成中"
+          if (trimmed === 'data: [DONE]') {
+            streamDone = true;
+            await reader.cancel();
+            break;
+          }
 
           if (trimmed.startsWith('data: ')) {
             const dataStr = trimmed.substring(6);
             try {
               const data = JSON.parse(dataStr);
 
-              // === 工具调用确认 ===
               if (data.type === 'tool_call') {
-                const allowed = await showToolConfirmation(
-                  data.request_id,
-                  data.tool_calls
-                );
-                if (!allowed) {
-                  console.log('[Tool] 用户拒绝');
-                }
+                // 不阻塞 SSE 流：对话框独立弹窗，点击时再发 /tool-approve 或 /tool-deny
+                showToolConfirmation(data.request_id, data.tool_calls);
                 continue;
               }
-
               // === OOC 警告 ===
               if (data.type === 'ooc_warning') {
                 showOOCWarning(data.warning, data.score);
+                continue;
+              }
+              // === 计划模式事件 ===
+              if (data.type === 'plan_generating') {
+                updateLastAssistantMessage('正在生成执行计划…', true);
+                continue;
+              }
+              if (data.type === 'tool_plan') {
+                showPlanDialog(data.plan_id, data.goal, data.steps, false);
+                continue;
+              }
+              if (data.type === 'plan_revision') {
+                showPlanDialog(data.plan_id, data.goal, data.steps, true);
+                continue;
+              }
+              if (data.type === 'plan_deviation') {
+                showDeviationDialog(data.plan_id, data.tool_calls);
+                continue;
+              }
+              if (data.type === 'plan_approved') {
+                appendSystemNote('计划已批准，开始执行…');
+                continue;
+              }
+              if (data.type === 'plan_rejected') {
+                appendSystemNote('已拒绝执行计划');
+                continue;
+              }
+              if (data.type === 'plan_aborted') {
+                appendSystemNote((data.reason || '执行已中止'));
                 continue;
               }
 
@@ -523,7 +624,7 @@ window.addEventListener('DOMContentLoaded', () => {
                     lastAssistant.content = fullAnswer;
                   }
                 }
-                updateLastAssistantMessage(filterThinkTags(fullAnswer), false);
+                updateLastAssistantMessage(filterThinkTags(fullAnswer));
               }
               if (data.error) {
                 console.error('[AI] 服务返回错误:', data.answer);
@@ -531,6 +632,7 @@ window.addEventListener('DOMContentLoaded', () => {
             } catch (e) { }
           }
         }
+        if (streamDone) break;   // 收到 [DONE] 立即跳出外层 while
       }
 
       let finalAnswer = cleanReply(fullAnswer);
@@ -569,11 +671,36 @@ window.addEventListener('DOMContentLoaded', () => {
         lastMsg.typing = false;
       }
       saveConversations();
+      } finally {
+      isSending = false;
+      sendBtn.disabled = false;
+      if (sendStatusEl) sendStatusEl.textContent = '';
+      clearTimeout(timeoutId);
     }
   }
 
-  // ========== 工具调用确认框（逐工具批准，拒绝警告疲劳） ==========
+  // ========== 工具调用确认框（逐工具批准 + 全局快捷键 F8/F7/F9） ==========
   async function showToolConfirmation(requestId, toolCalls) {
+    // 窗口不在前台时额外发系统通知提示，但页内确认框照常弹出（不再 return）
+    if (!document.hasFocus() && window.electronAPI && window.electronAPI.notifyToolConfirm) {
+      window.electronAPI.notifyToolConfirm({ requestId, toolCalls });
+    }
+
+    // 本次任务"剩余全部允许"已开启：非高风险工具直接批准，不弹窗
+    const normal = toolCalls.filter(tc => !tc.t3);
+    const risky = toolCalls.filter(tc => tc.t3);
+    if (approveAllRemaining) {
+      await Promise.all(normal.map(tc =>
+        fetch(`${AI_SERVICE_URL}/tool-approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken },
+          body: JSON.stringify({ request_id: requestId, tool_call_id: tc.tool_call_id })
+        }).catch(() => {})
+      ));
+      if (risky.length === 0) return;   // 全部自动批准，无需弹窗
+      toolCalls = risky;                // 只剩高风险工具还要确认
+    }
+
     return new Promise((resolve) => {
       // 如果已经有确认框，先移除
       const oldOverlay = document.querySelector('.tool-confirm-overlay');
@@ -582,15 +709,15 @@ window.addEventListener('DOMContentLoaded', () => {
       const overlay = document.createElement('div');
       overlay.className = 'tool-confirm-overlay';
 
-      // 构建工具列表（每个工具独立允许/拒绝）
       let toolListHTML = '';
       toolCalls.forEach(tc => {
         const desc = tc.description || `${tc.name} ${JSON.stringify(tc.args || {})}`;
+        const riskBadge = tc.t3 ? '<span style="color:#f87171;font-size:11px;margin-left:6px;">[高风险]</span>' : '';
         toolListHTML += `
           <div class="tool-confirm-item">
-            <div class="tool-confirm-icon">🛠</div>
+            <div class="tool-confirm-icon">${tc.t3 ? '⚠️' : '🛠'}</div>
             <div class="tool-confirm-desc">
-              <div class="tool-confirm-name">${escapeHtml(tc.name)}</div>
+              <div class="tool-confirm-name">${escapeHtml(tc.name)}${riskBadge}</div>
               <div>${escapeHtml(desc)}</div>
             </div>
             <div class="tool-confirm-actions">
@@ -605,7 +732,7 @@ window.addEventListener('DOMContentLoaded', () => {
         <div class="tool-confirm-dialog">
           <div class="tool-confirm-header">🔧 爱弥斯想执行以下操作</div>
           <div class="tool-confirm-body">${toolListHTML}</div>
-          <div class="tool-confirm-timeout">⏱ 60 秒内未操作的工具将自动拒绝</div>
+          <div class="tool-confirm-timeout">⌨ 全局键（无需切窗口）：<b>F8</b> 全部允许 · <b>F7</b> 全部拒绝 · <b>F9</b> 剩余全部允许 · 60秒未操作自动拒绝</div>
         </div>
       `;
 
@@ -614,170 +741,303 @@ window.addEventListener('DOMContentLoaded', () => {
       let pending = toolCalls.length;
       const decided = new Set();
 
+      const finishIfDone = () => {
+        if (pending <= 0) {
+          currentConfirmActions = null;
+          overlay.remove();
+          resolve(true);
+        }
+      };
+
+      const approveOne = async (toolCallId) => {
+        if (decided.has(toolCallId)) return;
+        decided.add(toolCallId);
+        pending--;
+        const btn = overlay.querySelector(`.tool-confirm-btn-yes[data-id="${CSS.escape(toolCallId)}"]`);
+        if (btn) { btn.disabled = true; btn.style.opacity = '0.4'; }
+        await fetch(`${AI_SERVICE_URL}/tool-approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken },
+          body: JSON.stringify({ request_id: requestId, tool_call_id: toolCallId })
+        }).catch(() => {});
+        finishIfDone();
+      };
+
+      const denyOne = async (toolCallId) => {
+        if (decided.has(toolCallId)) return;
+        decided.add(toolCallId);
+        pending--;
+        const btn = overlay.querySelector(`.tool-confirm-btn-no[data-id="${CSS.escape(toolCallId)}"]`);
+        if (btn) { btn.disabled = true; btn.style.opacity = '0.4'; }
+        await fetch(`${AI_SERVICE_URL}/tool-deny`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken },
+          body: JSON.stringify({ request_id: requestId, tool_call_id: toolCallId })
+        }).catch(() => {});
+        finishIfDone();
+      };
+
       // 自动拒绝计时：所有未决定的工具默认拒绝
       const timeoutId = setTimeout(async () => {
         toolCalls.forEach((tc) => {
           if (!decided.has(tc.tool_call_id)) {
             fetch(`${AI_SERVICE_URL}/tool-deny`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json',
-                          'X-Auth-Token': authToken,
-                        },
+              headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken },
               body: JSON.stringify({ request_id: requestId, tool_call_id: tc.tool_call_id })
             }).catch(() => {});
           }
         });
+        currentConfirmActions = null;
         overlay.remove();
         resolve(true);
       }, 60000);
+
+      // 页内确认框：注册快捷键委托（F8/F7/F9 由 init 里的常驻监听转发到这里）
+      currentConfirmActions = {
+        approve: () => toolCalls.forEach(tc => { if (!decided.has(tc.tool_call_id)) approveOne(tc.tool_call_id); }),
+        deny:    () => toolCalls.forEach(tc => { if (!decided.has(tc.tool_call_id)) denyOne(tc.tool_call_id); }),
+        'approve-all': () => {
+          approveAllRemaining = true;
+          toolCalls.forEach(tc => { if (!decided.has(tc.tool_call_id) && !tc.t3) approveOne(tc.tool_call_id); });
+        },
+      };
 
       // 按钮事件：委托处理
       overlay.querySelectorAll('.tool-confirm-btn').forEach(btn => {
         btn.onclick = async () => {
           const toolCallId = btn.dataset.id;
           if (decided.has(toolCallId)) return;
-          decided.add(toolCallId);
-          pending--;
-          btn.disabled = true;
-          btn.style.opacity = '0.4';
-
           const isApprove = btn.classList.contains('tool-confirm-btn-yes');
-          try {
-            await fetch(`${AI_SERVICE_URL}/${isApprove ? 'tool-approve' : 'tool-deny'}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken,
-
-              },
-              body: JSON.stringify({ request_id: requestId, tool_call_id: toolCallId })
-            });
-          } catch (e) {}
-          if (pending <= 0) {
-            overlay.remove();
-            resolve(true);
-          }
+          if (isApprove) await approveOne(toolCallId);
+          else await denyOne(toolCallId);
         };
       });
     });
   }
 
-  // HTML 转义（防止 args 里有 HTML 标签）
-  function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+
+  // ========== 系统提示条 ==========
+  function appendSystemNote(text) {
+    const note = document.createElement('div');
+    note.className = 'message assistant';
+    note.style.cssText = 'color:#94a3b8;font-size:13px;padding:4px 12px;';
+    note.textContent = text;
+    messagesContainer.appendChild(note);
   }
 
-  // ========== OOC 警告显示 ==========
-  function showOOCWarning(warning, score) {
-    const messages = messagesContainer.querySelectorAll('.message.assistant');
-    if (messages.length === 0) return;
-    const lastMsgDiv = messages[messages.length - 1];
-    
-    // 移除旧警告
-    const oldWarning = lastMsgDiv.querySelector('.ooc-warning');
-    if (oldWarning) oldWarning.remove();
-    
-    const warnDiv = document.createElement('div');
-    warnDiv.className = 'ooc-warning';
-    const color = score < 4 ? '#f87171' : '#fbbf24';
-    const level = score < 4 ? '严重越界' : '轻微越界';
-    warnDiv.style.borderColor = color;
-    warnDiv.style.color = color;
-    warnDiv.innerHTML = `⚠️ <strong>角色一致性 ${level}</strong>（评分 ${score}/10）<br>${escapeHtml(warning)}`;
-    lastMsgDiv.appendChild(warnDiv);
+  // ========== 计划确认框（整份计划一次批准） ==========
+  async function showPlanDialog(planId, goal, steps, isRevision) {
+    const old = document.querySelector('.plan-confirm-overlay');
+    if (old) old.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'tool-confirm-overlay plan-confirm-overlay';
+
+    const tierMeta = [
+      ['无副作用', '#34d399'],
+      ['轻微', '#60a5fa'],
+      ['中等', '#fbbf24'],
+      ['高风险', '#f87171']
+    ];
+    const stepCards = (steps || []).map(s => {
+      const tier = Math.min(Math.max(s.risk_tier || 1, 0), 3);
+      const [tierLabel, tierColor] = tierMeta[tier];
+      return `
+        <div class="tool-confirm-item">
+          <div class="tool-confirm-icon">${tier >= 3 ? '⚠️' : '🔧'}</div>
+          <div class="tool-confirm-desc">
+            <div class="tool-confirm-name">${escapeHtml(s.tool)} <span style="color:${tierColor};font-size:11px;margin-left:6px;">[${tierLabel}]</span></div>
+            <div style="font-size:13px;">${escapeHtml(JSON.stringify(s.args || {}))}</div>
+            <div style="color:#94a3b8;font-size:12px;">预期: ${escapeHtml(s.expected || '—')}</div>
+          </div>
+        </div>`;
+    }).join('');
+
+    overlay.innerHTML = `
+      <div class="tool-confirm-dialog" style="max-width:540px;">
+        <div style="padding:8px 16px;font-size:13px;color:#94a3b8;display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="plan-loose-cb" checked> 批准后自动执行，不再逐步骤询问（运行代码 / 写文件除外）
+        </div>
+        <div class="tool-confirm-header">${isRevision ? '🔄 修订后的执行计划' : '📋 AI 的执行计划'}</div>
+        <div style="padding:10px 16px;font-size:14px;color:#cbd5e1;">${escapeHtml(goal || '')}</div>
+        <div class="tool-confirm-body" style="max-height:60vh;overflow-y:auto;">${stepCards}</div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;padding:14px 16px;">
+          <button class="tool-confirm-btn tool-confirm-btn-no" id="plan-reject-btn">${isRevision ? '拒绝并停止' : '拒绝'}</button>
+          <button class="tool-confirm-btn tool-confirm-btn-yes" id="plan-approve-btn">批准执行</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    overlay.querySelector('#plan-approve-btn').onclick = async () => {
+      const loose = overlay.querySelector('#plan-loose-cb')?.checked ?? false;
+      await fetch(`${AI_SERVICE_URL}/plan-approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken },
+        body: JSON.stringify({ plan_id: planId, loose })
+      }).catch(() => {});
+      overlay.remove();
+    };
   }
 
-  // ========== 语音识别 ==========
-  function initSpeechRecognition() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert('Browser speech recognition not supported');
-      return null;
+  // ========== 计划外操作警告（偏离计划） ==========
+  async function showDeviationDialog(planId, toolCalls) {
+    const old = document.querySelector('.deviation-overlay');
+    if (old) old.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'tool-confirm-overlay deviation-overlay';
+
+    const items = (toolCalls || []).map(tc => `
+      <div class="tool-confirm-item">
+        <div class="tool-confirm-icon"></div>
+        <div class="tool-confirm-desc">
+          <div class="tool-confirm-name">${escapeHtml(tc.name)}</div>
+          <div>${escapeHtml(tc.description || JSON.stringify(tc.args || {}))}</div>
+        </div>
+      </div>`).join('');
+
+    overlay.innerHTML = `
+      <div class="tool-confirm-dialog" style="max-width:480px;border-color:#fbbf24;">
+        <div class="tool-confirm-header" style="color:#fbbf24;">AI 偏离了已批准的计划</div>
+        <div style="padding:8px 16px;font-size:13px;color:#94a3b8;">它请求执行以下计划外的操作：</div>
+        <div class="tool-confirm-body">${items}</div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;padding:14px 16px;">
+          <button class="tool-confirm-btn tool-confirm-btn-no" id="dev-stop-btn">停止</button>
+          <button class="tool-confirm-btn" id="dev-replan-btn" style="background:#fbbf24;color:#1e293b;">重新规划</button>
+          <button class="tool-confirm-btn tool-confirm-btn-yes" id="dev-continue-btn">仅此一次，继续</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const send = (decision) => fetch(`${AI_SERVICE_URL}/plan-deviation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Auth-Token': authToken },
+      body: JSON.stringify({ plan_id: planId, decision })
+    }).catch(() => {});
+
+    overlay.querySelector('#dev-stop-btn').onclick = async () => { await send('stop'); overlay.remove(); };
+    overlay.querySelector('#dev-replan-btn').onclick = async () => { await send('replan'); overlay.remove(); };
+    overlay.querySelector('#dev-continue-btn').onclick = async () => { await send('continue'); overlay.remove(); };
+  }
+
+    // HTML 转义（防止 args 里有 HTML 标签）
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
     }
-    const recog = new SpeechRecognition();
-    recog.lang = 'zh-CN';
-    recog.interimResults = false;
-    recog.continuous = false;
-    return recog;
-  }
 
-  function startRecording() {
-    if (!recognition) {
-      recognition = initSpeechRecognition();
-      if (!recognition) return;
-      recognition.addEventListener('result', (event) => {
-        userInput.value = event.results[0][0].transcript;
-      });
-      recognition.addEventListener('error', (event) => {
-        console.error('语音识别错误:', event.error);
-        stopRecording();
-      });
-      recognition.addEventListener('end', () => { stopRecording(); });
+    // ========== OOC 警告显示 ==========
+    function showOOCWarning(warning, score) {
+      const messages = messagesContainer.querySelectorAll('.message.assistant');
+      if (messages.length === 0) return;
+      const lastMsgDiv = messages[messages.length - 1];
+      
+      // 移除旧警告
+      const oldWarning = lastMsgDiv.querySelector('.ooc-warning');
+      if (oldWarning) oldWarning.remove();
+      
+      const warnDiv = document.createElement('div');
+      warnDiv.className = 'ooc-warning';
+      const color = score < 4 ? '#f87171' : '#fbbf24';
+      const level = score < 4 ? '严重越界' : '轻微越界';
+      warnDiv.style.borderColor = color;
+      warnDiv.style.color = color;
+      warnDiv.innerHTML = `⚠️ <strong>角色一致性 ${level}</strong>（评分 ${score}/10）<br>${escapeHtml(warning)}`;
+      lastMsgDiv.appendChild(warnDiv);
     }
-    recognition.start();
-    isRecording = true;
-    micBtn.classList.add('recording');
-    micBtn.textContent = '⏹️';
-  }
 
-  function stopRecording() {
-    if (recognition) recognition.stop();
-    isRecording = false;
-    micBtn.classList.remove('recording');
-    micBtn.textContent = '🎤';
-  }
-
-  function toggleRecording() {
-    if (isRecording) stopRecording();
-    else startRecording();
-  }
-
-  // ========== 绑定事件 ==========
-  sendBtn.addEventListener('click', sendMessage);
-  micBtn.addEventListener('click', toggleRecording);
-  newChatBtn.addEventListener('click', newChat);
-  userInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-  });
-  modeToggleBtn.addEventListener('click', () => {
-    const nextMode = currentMode === 'aemeath' ? 'physicist' : 'aemeath';
-    switchMode(nextMode);
-  });
-  // ========== TTS 暖机监测（后台自动检测，不影响使用） ==========
-  let ttsWarmedUp = false;
-  const ttsStatusEl = document.getElementById('tts-status');
-
-  async function warmupTTS() {
-    if (!ttsStatusEl) return;
-    // 最多检查 2 分钟（24次 × 5秒）
-    for (let i = 0; i < 24; i++) {
-      try {
-        const resp = await fetch('http://127.0.0.1:18900/health', {
-          signal: AbortSignal.timeout(3000)
-        });
-        const data = await resp.json();
-        if (data.engine_loaded === true) {
-          ttsWarmedUp = true;
-          ttsStatusEl.textContent = '✔';
-          ttsStatusEl.style.color = '#34d399';
-          ttsStatusEl.title = 'TTS 已就绪';
-          console.log('[TTS] 暖机完成');
-          return;
-        }
-      } catch (e) {
-        // 服务还没起来，继续等
+    // ========== 语音识别 ==========
+    function initSpeechRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        alert('Browser speech recognition not supported');
+        return null;
       }
-      ttsStatusEl.textContent = '⟳';
-      ttsStatusEl.title = 'TTS 加载中...';
-      await new Promise(r => setTimeout(r, 5000));
+      const recog = new SpeechRecognition();
+      recog.lang = 'zh-CN';
+      recog.interimResults = false;
+      recog.continuous = false;
+      return recog;
     }
-    // 超时
-    ttsStatusEl.textContent = '!';
-    ttsStatusEl.style.color = '#f87171';
-    ttsStatusEl.title = 'TTS 服务未就绪';
-    console.log('[TTS] 暖机超时');
-  }
 
-  // ===== 启动 =====
-  init();
+    function startRecording() {
+      if (!recognition) {
+        recognition = initSpeechRecognition();
+        if (!recognition) return;
+        recognition.addEventListener('result', (event) => {
+          userInput.value = event.results[0][0].transcript;
+        });
+        recognition.addEventListener('error', (event) => {
+          console.error('语音识别错误:', event.error);
+          stopRecording();
+        });
+        recognition.addEventListener('end', () => { stopRecording(); });
+      }
+      recognition.start();
+      isRecording = true;
+      micBtn.classList.add('recording');
+      micBtn.textContent = '⏹️';
+    }
+
+    function stopRecording() {
+      if (recognition) recognition.stop();
+      isRecording = false;
+      micBtn.classList.remove('recording');
+      micBtn.textContent = '🎤';
+    }
+
+    function toggleRecording() {
+      if (isRecording) stopRecording();
+      else startRecording();
+    }
+
+    // ========== 绑定事件 ==========
+    sendBtn.addEventListener('click', sendMessage);
+    micBtn.addEventListener('click', toggleRecording);
+    newChatBtn.addEventListener('click', newChat);
+    userInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+    modeToggleBtn.addEventListener('click', () => {
+      const nextMode = currentMode === 'aemeath' ? 'physicist' : 'aemeath';
+      switchMode(nextMode);
+    });
+    // ========== TTS 暖机监测（后台自动检测，不影响使用） ==========
+    let ttsWarmedUp = false;
+    const ttsStatusEl = document.getElementById('tts-status');
+
+    async function warmupTTS() {
+      if (!ttsStatusEl) return;
+      // 最多检查 2 分钟（24次 × 5秒）
+      for (let i = 0; i < 24; i++) {
+        try {
+          const resp = await fetch('http://127.0.0.1:18900/health', {
+            signal: AbortSignal.timeout(3000),
+            headers: { 'X-Auth-Token': authToken }
+          });
+          const data = await resp.json();
+          if (data.engine_loaded === true) {
+            ttsWarmedUp = true;
+            ttsStatusEl.textContent = '✔';
+            ttsStatusEl.style.color = '#34d399';
+            ttsStatusEl.title = 'TTS 已就绪';
+            console.log('[TTS] 暖机完成');
+            return;
+          }
+        } catch (e) {
+          // 服务还没起来，继续等
+        }
+        ttsStatusEl.textContent = '⟳';
+        ttsStatusEl.title = 'TTS 加载中...';
+        await new Promise(r => setTimeout(r, 5000));
+      }
+      // 超时
+      ttsStatusEl.textContent = '!';
+      ttsStatusEl.style.color = '#f87171';
+      ttsStatusEl.title = 'TTS 服务未就绪';
+      console.log('[TTS] 暖机超时');
+    }
+
+    // ===== 启动 =====
+    init();
 });

@@ -121,44 +121,76 @@ class ControlHandler(BaseHTTPRequestHandler):
             
             elif action == 'type':
                 text = data.get('text', '')
-            
+                title = data.get('title', '')   # 可选：目标窗口标题，粘贴前先聚焦（关键修复）
+
                 if not text:
                     self.send_json(200, {"success": True, "action": "type", "length": 0})
                     return
-            
-                import re
-            
-                # 1. 把文本中的 \n 替换成标准标记
-                normalized = text.replace('\n', ' {ENTER} ')
-            
-                # 2. 按 {ENTER} 分段（大小写不敏感）
-                segments = re.split(r'\{[Ee][Nn][Tt][Ee][Rr]\}', normalized)
-            
-                for i, segment in enumerate(segments):
-                    # 先粘贴纯文本部分
-                    clean = segment.strip()
-                    if clean:
-                        pyperclip.copy(clean)
-                        time.sleep(0.2)
-                        pyautogui.hotkey('ctrl', 'v')
-                        time.sleep(0.2)
-                
-                    # 如果不是最后一段，每段后面按一次回车
-                    if i < len(segments) - 1:
-                        pyautogui.press('enter')
-                        time.sleep(0.2)
-            
-            
-                self.send_json(200, {
-                    "success": True,
-                    "action": "type",
-                    "length": len(text),
-                    "segments": len(segments)
-                })
 
+                # 0) 可选：先聚焦目标窗口——打字前必须有焦点，否则 Ctrl+V 会进当前焦点窗口
+                if title:
+                    try:
+                        windows = gw.getWindowsWithTitle(title)
+                        if windows:
+                            win = windows[0]
+                            if win.isMinimized:
+                                win.restore()
+                            win.activate()
+                            time.sleep(0.4)
+                    except Exception:
+                        pass
 
+                # 0.5) 保存剪贴板（粘贴后恢复，不破坏用户复制的内容）
+                saved = None
+                try:
+                    import subprocess
+                    saved = subprocess.run(
+                        ['powershell', '-NoProfile', '-Command', 'Get-Clipboard -Raw'],
+                        capture_output=True, text=True, timeout=5
+                    ).stdout
+                except Exception:
+                    pass
 
-            
+                try:
+                    import re
+
+                    # 1. 把文本中的 \n 替换成标准标记
+                    normalized = text.replace('\n', ' {ENTER} ')
+
+                    # 2. 按 {ENTER} 分段（大小写不敏感）
+                    segments = re.split(r'\{[Ee][Nn][Tt][Ee][Rr]\}', normalized)
+
+                    for i, segment in enumerate(segments):
+                        # 先粘贴纯文本部分
+                        clean = segment.strip()
+                        if clean:
+                            pyperclip.copy(clean)
+                            time.sleep(0.2)
+                            pyautogui.hotkey('ctrl', 'v')
+                            time.sleep(0.2)
+
+                        # 如果不是最后一段，每段后面按一次回车
+                        if i < len(segments) - 1:
+                            pyautogui.press('enter')
+                            time.sleep(0.2)
+
+                    result = {
+                        "success": True,
+                        "action": "type",
+                        "length": len(text),
+                        "segments": len(segments),
+                        "focused": bool(title)
+                    }
+                finally:
+                    # 3) 恢复剪贴板
+                    try:
+                        if saved and saved.strip():
+                            pyperclip.copy(saved)
+                    except Exception:
+                        pass
+
+                self.send_json(200, result)
+
             elif action == 'hotkey':
                 keys = data.get('keys', [])
                 pyautogui.hotkey(*keys)
