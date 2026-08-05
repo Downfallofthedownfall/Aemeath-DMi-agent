@@ -506,9 +506,10 @@ window.addEventListener('DOMContentLoaded', () => {
     sendBtn.disabled = true;
     if (sendStatusEl) sendStatusEl.textContent = 'AI 生成中…';
     
+    let timeoutId = null;
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), usePlan ? 420000 : 90000);
+      timeoutId = setTimeout(() => controller.abort(), usePlan ? 420000 : 90000);
 
       // === 【调试】看看到底发了什么 ===
       console.log('[Send]', JSON.stringify({
@@ -671,11 +672,11 @@ window.addEventListener('DOMContentLoaded', () => {
         lastMsg.typing = false;
       }
       saveConversations();
-      } finally {
+    } finally {
       isSending = false;
       sendBtn.disabled = false;
       if (sendStatusEl) sendStatusEl.textContent = '';
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);   // ← null 安全
     }
   }
 

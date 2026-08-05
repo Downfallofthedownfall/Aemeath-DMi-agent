@@ -116,9 +116,12 @@ except Exception as exc:
     out = {{"success": False, "error": str(exc)}}
 print(json.dumps(out, ensure_ascii=False))
 '''
+    env = dict(os.environ)
+    env['PYTHONIOENCODING'] = 'utf-8'
     try:
         proc = subprocess.run([sys.executable, '-u', '-c', script],
-                              capture_output=True, text=True, timeout=timeout)
+                              capture_output=True, text=True, timeout=timeout,
+                              encoding='utf-8', errors='replace', env=env)
     except subprocess.TimeoutExpired:
         return {"success": False, "error": f"符号计算超时（{timeout}秒），表达式可能过于复杂"}
     try:
@@ -135,19 +138,42 @@ print(json.dumps(out, ensure_ascii=False))
 SANDBOX_PRELUDE = '''
 import builtins
 import sys as _sys
+
+# ---- 统一子进程输出为 UTF-8（配合父进程 encoding='utf-8'，避免中文乱码） ----
+try:
+    _sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    _sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 _orig_import = builtins.__import__
 
+# 允许导入：白名单三方库 + 全部标准库 + C 扩展模块（_io/_collections_abc 等）
+# 注意：numpy/scipy/sympy 内部会大量 import 标准库（os/io/_io/abc/...），
+# 旧版只放 5 个名字，把它们内部依赖也拦死了 → ImportError: 禁止导入模块: _io
 _ALLOWED = {'numpy', 'scipy', 'sympy', 'math', 'uncertainties'}
+_STDLIB = set(getattr(_sys, 'stdlib_module_names', ())) | set(_sys.builtin_module_names)
 
 def _safe_import(name, *args, **kwargs):
+    # 相对导入（from . import x）：包本身已通过顶层白名单校验，直接放行
+    level = kwargs.get('level', 0)
+    if len(args) > 3:
+        level = args[3]
+    if level > 0:
+        return _orig_import(name, *args, **kwargs)
     base = name.split('.')[0]
-    if base not in _ALLOWED:
-        raise ImportError(f"禁止导入模块: {name}")
-    return _orig_import(name, *args, **kwargs)
+    if base in _ALLOWED or base in _STDLIB or base.startswith('_') or base in _sys.modules:
+        return _orig_import(name, *args, **kwargs)
+    raise ImportError(f"禁止导入模块: {name}")
 
 builtins.__import__ = _safe_import
 
-# 禁用危险内建 + 对象内省逃逸辅助
+# ---- 常用快捷导入（先导入，再禁用危险内建，避免 numpy/scipy 内部用到） ----
+import math
+import numpy as np
+from scipy import integrate, optimize, signal
+
+# 禁用危险内建（尽力而为；真实安全边界是子进程隔离 + 本机 AUTH_TOKEN）
 for _bad in ('eval', 'exec', 'open', 'compile', 'input', 'breakpoint'):
     setattr(builtins, _bad, None)
 
@@ -174,6 +200,8 @@ def do_numeric(code, timeout=10, max_output=10240):
         proc = subprocess.run(
             [sys.executable, '-u', '-c', full_code],
             capture_output=True, text=True, timeout=timeout,
+            encoding='utf-8', errors='replace',   # 按 UTF-8 解码
+            env=env,                               # 子进程也按 UTF-8 输出
         )
     except subprocess.TimeoutExpired:
         return {"success": False, "error": f"代码执行超时（{timeout}秒）"}

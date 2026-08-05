@@ -220,10 +220,11 @@ function startMCPService() {
 
   // 延迟启动，等端口释放
   setTimeout(() => {
-    startProcess('mcp_server', 'npx', ['tsx', script], { shell: true });
-  }, 800, {
-    env: { ...process.env, AUTH_TOKEN },
-  });
+    startProcess('mcp_server', 'npx', ['tsx', script], {
+      shell: true,
+      env: { ...process.env, AUTH_TOKEN },   // ← env 放进回调内的 options
+    });
+  }, 800);
 }
 
 // ===== 创建系统托盘 =====
@@ -529,72 +530,8 @@ function showConfirmPopup(data) {
     </div>`;
   }).join('');
 
-  const html = `<!DOCTYPE html>
-  <html><head><meta charset="utf-8">
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:'Segoe UI', Arial, sans-serif; background:transparent; }
-    .card { background:rgba(20,20,40,0.95); border:1px solid #4c1d95; border-radius:14px;
-            padding:14px 16px; color:#e0e0ff; box-shadow:0 8px 30px rgba(0,0,0,0.6); }
-    .head { font-size:14px; font-weight:600; margin-bottom:8px; }
-    .tools { max-height:130px; overflow-y:auto; }
-    .hint { font-size:11px; color:#8888bb; margin:8px 0; }
-    .btns { display:flex; gap:8px; }
-    .btn { flex:1; padding:8px 0; border:none; border-radius:8px; font-size:13px; cursor:pointer; }
-    .allow { background:#16a34a; color:#fff; }
-    .deny  { background:#dc2626; color:#fff; }
-    .nont3 { background:#d97706; color:#fff; }
-  </style></head>
-  <body><div class="card">
-    <div class="head">🔧 爱弥斯想执行 ${toolRows.length} 个操作</div>
-    <div class="tools">${toolRows}</div>
-    <div class="hint">⌨ 全局键（无需切窗口）：<b>F8</b>全部允许 · <b>F7</b>全部拒绝 · <b>F9</b>剩余允许</div>
-    <div class="btns">
-      <button class="btn deny"  id="btn-deny">拒绝全部</button>
-      <button class="btn allow" id="btn-allow">全部允许</button>
-    </div>
-  </div>
-  <script>
-    const REQUEST_ID = ${JSON.stringify(data.requestId)};
-    const TOOL_CALLS = ${JSON.stringify(data.toolCalls || [])};
-    async function decide(approve, onlyNonT3) {
-      const token = await window.electronAPI.getAuthToken();
-      const ids = TOOL_CALLS.filter(tc => !onlyNonT3 || !tc.t3).map(tc => tc.tool_call_id);
-      await Promise.all(ids.map(id => fetch('http://127.0.0.1:18892/' + (approve ? 'tool-approve' : 'tool-deny'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': token },
-        body: JSON.stringify({ request_id: REQUEST_ID, tool_call_id: id })
-      }).catch(() => {})));
-      window.close();
-    }
-    document.getElementById('btn-allow').onclick = () => decide(true, false);
-    document.getElementById('btn-deny').onclick  = () => decide(false, false);
-    // 全局键 F8/F7/F9 也能操作本弹窗
-    if (window.electronAPI.onApprovalHotkey) {
-      window.electronAPI.onApprovalHotkey((action) => {
-        if (action === 'approve') decide(true, false);
-        else if (action === 'deny') decide(false, false);
-        else if (action === 'approve-all') decide(true, true);
-      });
-    }
-    setTimeout(() => window.close(), 65000);   // 服务端60秒自动拒绝，这里兜底关闭
-  <\/script>
-  </body></html>`;
-
   const wa = screen.getPrimaryDisplay().workArea;
   const W = 400, H = 250;
-  confirmWindow = new BrowserWindow({
-    width: W, height: H,
-    frame: false, transparent: true, resizable: false,
-    alwaysOnTop: true, skipTaskbar: true, show: false,
-    x: wa.x + wa.width - W - 20,
-    y: wa.y + wa.height - H - 20,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
   confirmWindow = new BrowserWindow({
     width: W, height: H,
     frame: false, transparent: true, resizable: false,

@@ -11,6 +11,7 @@ import time
 import uuid
 import tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn   # 多线程支持
 
 AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '')
 
@@ -44,7 +45,7 @@ except ImportError:
 SCREEN_WIDTH, SCREEN_HEIGHT = pyautogui.size() if HAS_PYAUTOGUI else (1920, 1080)
 
 class ControlHandler(BaseHTTPRequestHandler):
-    
+
     def do_GET(self):
         if not _check_auth(self):
             self.send_json(401, {"success": False, "error": "unauthorized"})
@@ -54,28 +55,24 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
             self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "ok"
-            }).encode('utf-8'))
+            self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
         except Exception:
             pass  # 客户端断开就忽略
 
-
-    
     def do_POST(self):
         if not _check_auth(self):
             self.send_json(401, {"success": False, "error": "unauthorized"})
             return
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length) if content_length > 0 else b'{}'
-        
+
         try:
             data = json.loads(body)
-        except:
+        except Exception:
             data = {}
-        
+
         action = data.get('action', '')
-        
+
         try:
             # ========== 鼠标操作 ==========
             if action == 'move':
@@ -84,7 +81,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 duration = data.get('duration', 0.3)
                 pyautogui.moveTo(x, y, duration=duration)
                 self.send_json(200, {"success": True})
-            
+
             elif action == 'click':
                 x = data.get('x', None)
                 y = data.get('y', None)
@@ -95,7 +92,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 else:
                     pyautogui.click(clicks=clicks, button=button)
                 self.send_json(200, {"success": True})
-            
+
             elif action == 'double_click':
                 x = data.get('x', None)
                 y = data.get('y', None)
@@ -104,7 +101,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 else:
                     pyautogui.doubleClick()
                 self.send_json(200, {"success": True})
-            
+
             elif action == 'right_click':
                 x = data.get('x', None)
                 y = data.get('y', None)
@@ -113,21 +110,21 @@ class ControlHandler(BaseHTTPRequestHandler):
                 else:
                     pyautogui.rightClick()
                 self.send_json(200, {"success": True})
-            
+
             elif action == 'scroll':
                 amount = data.get('amount', -3)
                 pyautogui.scroll(amount)
                 self.send_json(200, {"success": True})
-            
+
             elif action == 'type':
                 text = data.get('text', '')
-                title = data.get('title', '')   # 可选：目标窗口标题，粘贴前先聚焦（关键修复）
+                title = data.get('title', '')
 
                 if not text:
                     self.send_json(200, {"success": True, "action": "type", "length": 0})
                     return
 
-                # 0) 可选：先聚焦目标窗口——打字前必须有焦点，否则 Ctrl+V 会进当前焦点窗口
+                # 可选：先聚焦目标窗口
                 if title:
                     try:
                         windows = gw.getWindowsWithTitle(title)
@@ -140,7 +137,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
 
-                # 0.5) 保存剪贴板（粘贴后恢复，不破坏用户复制的内容）
+                # 保存剪贴板（粘贴后恢复）
                 saved = None
                 try:
                     import subprocess
@@ -161,7 +158,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                     segments = re.split(r'\{[Ee][Nn][Tt][Ee][Rr]\}', normalized)
 
                     for i, segment in enumerate(segments):
-                        # 先粘贴纯文本部分
                         clean = segment.strip()
                         if clean:
                             pyperclip.copy(clean)
@@ -169,7 +165,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                             pyautogui.hotkey('ctrl', 'v')
                             time.sleep(0.2)
 
-                        # 如果不是最后一段，每段后面按一次回车
                         if i < len(segments) - 1:
                             pyautogui.press('enter')
                             time.sleep(0.2)
@@ -182,7 +177,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "focused": bool(title)
                     }
                 finally:
-                    # 3) 恢复剪贴板
+                    # 恢复剪贴板
                     try:
                         if saved and saved.strip():
                             pyperclip.copy(saved)
@@ -195,13 +190,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                 keys = data.get('keys', [])
                 pyautogui.hotkey(*keys)
                 self.send_json(200, {"success": True, "keys": keys})
-            
+
             elif action == 'press':
                 key = data.get('key', '')
                 presses = data.get('presses', 1)
                 pyautogui.press(key, presses=presses)
                 self.send_json(200, {"success": True})
-            
+
             # ========== 窗口操作 ==========
             elif action == 'focus_window':
                 title = data.get('title', '')
@@ -218,13 +213,73 @@ class ControlHandler(BaseHTTPRequestHandler):
                 win.activate()
                 time.sleep(0.3)
                 self.send_json(200, {"success": True, "title": win.title})
-            
+
             elif action == 'list_windows':
-                all_windows = gw.getAllWindows()
-                visible = [{"title": w.title, "minimized": w.isMinimized, "active": w.isActive}
-                          for w in all_windows if w.title.strip()]
-                self.send_json(200, {"success": True, "windows": visible[:30]})
-            
+                # 【修复】解决"静默无响应"：
+                # 1) 服务端改为多线程，单个请求卡住不阻塞其他操作；
+                # 2) 枚举放入独立线程 + 3 秒硬超时：即使遇到无响应窗口导致
+                #    GetWindowText 卡住，也保证 3 秒内必回包（返回已收集的部分结果）；
+                # 3) 逐窗口 IsWindow + try/except 隔离坏窗口。
+                import threading as _threading
+                try:
+                    import win32gui
+                    HAS_WIN32GUI = True
+                except ImportError:
+                    HAS_WIN32GUI = False
+
+                results = []
+                done = _threading.Event()
+                err_holder = {}
+
+                def _collect():
+                    try:
+                        if HAS_WIN32GUI:
+                            def _enum_cb(hwnd, _lparam):
+                                try:
+                                    if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                                        return True
+                                    title = (win32gui.GetWindowText(hwnd) or '').strip()
+                                    if not title:
+                                        return True
+                                    minimized = active = False
+                                    try:
+                                        minimized = win32gui.IsIconic(hwnd)
+                                        active = win32gui.GetForegroundWindow() == hwnd
+                                    except Exception:
+                                        pass  # 附加状态拿不到就算了
+                                    results.append({"title": title, "minimized": minimized, "active": active})
+                                except Exception:
+                                    pass  # 单个窗口异常直接跳过
+                                return True
+                            win32gui.EnumWindows(_enum_cb, None)
+                        else:
+                            # 兜底：pygetwindow（慢，仅后备，同样受 3 秒超时保护）
+                            for w in gw.getAllWindows():
+                                try:
+                                    t = (w.title or '').strip()
+                                    if t:
+                                        results.append({"title": t, "minimized": w.isMinimized, "active": w.isActive})
+                                except Exception:
+                                    continue
+                    except Exception as e:
+                        err_holder['error'] = str(e)
+                    finally:
+                        done.set()
+
+                _threading.Thread(target=_collect, daemon=True).start()
+                done.wait(timeout=3.0)   # 硬超时：绝不无限挂起
+
+                if not results and err_holder.get('error'):
+                    print(f"[Control] list_windows 失败: {err_holder['error']}")
+                    self.send_json(200, {"success": False, "error": f"list_windows failed: {err_holder['error']}"})
+                    return
+                print(f"[Control] list_windows: {len(results)} 个窗口 (timed_out={not done.is_set()})")
+                self.send_json(200, {
+                    "success": True,
+                    "windows": results[:30],
+                    "timed_out": not done.is_set(),   # True 说明有窗口卡住，返回的是部分列表
+                })
+
             elif action == 'minimize_window':
                 title = data.get('title', '')
                 if not title:
@@ -236,7 +291,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     return
                 windows[0].minimize()
                 self.send_json(200, {"success": True})
-            
+
             elif action == 'close_window':
                 title = data.get('title', '')
                 if not title:
@@ -248,12 +303,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                     return
                 windows[0].close()
                 self.send_json(200, {"success": True})
-            
+
             # ========== 其他 ==========
             elif action == 'position':
                 x, y = pyautogui.position()
                 self.send_json(200, {"success": True, "x": x, "y": y})
-            
+
             elif action == 'screenshot':
                 region = data.get('region', None)
                 if region:
@@ -267,7 +322,6 @@ class ControlHandler(BaseHTTPRequestHandler):
             elif action == 'open':
                 program = data.get('program', '').lower()
 
-                # ===== 精确匹配白名单（修复：不再用 startswith 前缀匹配） =====
                 ALLOWED_PROGRAMS = {
                     'notepad': 'notepad.exe',
                     'calc': 'calc.exe',
@@ -298,7 +352,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                 text = data.get('text', '')
                 if text:
                     time.sleep(1.0)
-                    # 尝试激活窗口（按程序名找）
                     windows = gw.getWindowsWithTitle(program)
                     if windows:
                         win = windows[0]
@@ -309,9 +362,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                     pyperclip.copy(text)
                     time.sleep(0.2)
                     pyautogui.hotkey('ctrl', 'v')
-                
+
                 self.send_json(200, {"success": True, "program": program, "typed": bool(text)})
-                
+
             elif action == 'open_url':
                 url = data.get('url', '')
                 if not url:
@@ -320,14 +373,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                 import webbrowser
                 webbrowser.open(url)   # 不经 shell，URL 含 & 也无法逃逸
                 self.send_json(200, {"success": True, "action": "open_url", "url": url})
-                
+
             # ========== 快捷操作（组合指令） ==========
             elif action == 'open_and_type':
                 program = data.get('program', 'notepad').lower()
                 text = data.get('text', '')
                 title = data.get('title', program)
 
-                # 1. 校验白名单（复用精确匹配，禁止 shell）
                 ALLOWED_PROGRAMS = {
                     'notepad': 'notepad.exe', 'calc': 'calc.exe',
                     'explorer': 'explorer.exe', 'cmd': 'cmd.exe',
@@ -342,11 +394,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                     self.send_json(403, {"success": False, "error": f"程序 '{program}' 不在白名单中"})
                     return
                 time.sleep(1.0)
-                
-                # 1. 打开程序
-                time.sleep(1.0)  # 等程序启动
-                
-                # 2. 激活窗口
+
+                # 激活窗口
                 windows = gw.getWindowsWithTitle(title)
                 if windows:
                     win = windows[0]
@@ -354,13 +403,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                         win.restore()
                     win.activate()
                     time.sleep(0.3)
-                
-                # 3. 输入文字
+
+                # 输入文字
                 if text:
                     pyperclip.copy(text)
                     time.sleep(0.2)
                     pyautogui.hotkey('ctrl', 'v')
-                
+
                 self.send_json(200, {
                     "success": True,
                     "action": "open_and_type",
@@ -370,35 +419,37 @@ class ControlHandler(BaseHTTPRequestHandler):
 
             else:
                 self.send_json(400, {"success": False, "error": f"未知操作: {action}"})
-        
+
         except Exception as e:
             self.send_json(500, {"success": False, "error": str(e)})
-    
+
     def send_json(self, status, data):
         try:
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
-            self.send_header('Access-Control-Allow-Headers', self.headers.get('Origin', ''))
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Token')
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
-            # 客户端提前断开连接，忽略
-            pass
+            pass  # 客户端提前断开连接，忽略
         except Exception:
-            # 其他写入错误也忽略
-            pass
+            pass  # 其他写入错误也忽略
 
-    
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
-        self.send_header('Access-Control-Allow-Headers', self.headers.get('Origin', ''))
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Token')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.end_headers()
-    
+
     def log_message(self, format, *args):
         pass
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 def main():
@@ -411,17 +462,17 @@ def main():
     if not HAS_WINDOW:
         print("错误: pygetwindow 未安装，请执行: pip install pygetwindow")
         sys.exit(1)
-    
+
     HOST = "127.0.0.1"
     PORT = 18890
-    
-    server = HTTPServer((HOST, PORT), ControlHandler)
+
+    server = ThreadedHTTPServer((HOST, PORT), ControlHandler)
     print("键盘鼠标控制服务启动中...")
     print(f"  监听: http://{HOST}:{PORT}")
     print(f"  屏幕: {SCREEN_WIDTH}x{SCREEN_HEIGHT}")
     print(f"  可用操作: move, click, type(支持中文), hotkey, focus_window, etc.")
     print(f"  按 Ctrl+C 停止")
-    
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -30,14 +30,6 @@ import memory_store
 # {request_id: {"event": threading.Event(), "approved": None, "tool_calls": [...]}}
 approval_store = {}
 approval_lock = threading.Lock()
-# ===== 计划模式存储 =====
-# {plan_id: {"plan": {...}, "event": Event, "decision": None|'approved'|'rejected',
-#            "dev_event": Event, "dev_decision": None|'continue'|'replan'|'stop',
-#            "revision_count": int, "last_query": str, "mode": str, "scope": set}}
-plan_store = {}
-plan_lock = threading.Lock()
-# 计划模式下仍必须逐工具确认的高风险工具
-PLAN_T3 = {'run_python', 'write_file'}
 
 # ===== Windows 编码修复 =====
 if sys.platform == 'win32':
@@ -106,10 +98,14 @@ def http_post(url, data, timeout=15):
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', errors='replace')[:300]
         return {"success": False, "error": f"HTTP {e.code}: {body}"}
-    except urllib.error.URLError as e:
-        return {"success": False, "error": f"Connection failed: {e.reason}"}
+    except OSError as e:
+        # URLError/TimeoutError/ConnectionRefused 都是 OSError 子类，
+        # 超时、连接拒绝也必须返回结构化错误，不能静默、不能裸抛
+        print(f"[HTTP] 请求 {url} 失败: {e}")
+        return {"success": False, "error": f"http request failed: {e}"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        print(f"[HTTP] 请求 {url} 异常: {e}")
+        return {"success": False, "error": f"http_post failed: {e}"}
 
 # ===== 敏感文件黑名单（防止 read_file 静默泄露凭据） =====
 SENSITIVE_MARKERS = [
@@ -281,8 +277,31 @@ def execute_tool(name, args):
             for k in ['title', 'program', 'text']:
                 if k in args: payload[k] = args[k]
             r = http_post('http://127.0.0.1:18890', payload, timeout=10)
-            if r.get('success'): return f"Window {act} done"
+            if r.get('success'):
+                # 有实际返回数据的动作，把数据回给 AI（否则列表/标题被吞掉）
+                if act == 'list_windows':
+                    wins = r.get('windows') or []
+                    if not wins:
+                        return "当前没有可见窗口"
+                    lines = [f"{i}. {w.get('title', '')}{'（最小化）' if w.get('minimized') else ''}{'（活动）' if w.get('active') else ''}"
+                             for i, w in enumerate(wins, 1)]
+                    return "打开的窗口列表：\n" + "\n".join(lines)
+                if act == 'focus_window' and r.get('title'):
+                    return f"已切换到窗口：{r['title']}"
+                return f"Window {act} done"
             return f"Window failed: {r.get('error', 'unknown')}"
+
+        # ---- 列出窗口（只读，独立工具，不再借道 control_window） ----
+        if name == 'list_windows':
+            r = http_post('http://127.0.0.1:18890', {"action": "list_windows"}, timeout=10)
+            if not r.get('success'):
+                return f"List windows failed: {r.get('error', 'unknown')}"
+            wins = r.get('windows') or []
+            if not wins:
+                return "当前没有可见窗口"
+            lines = [f"{i}. {w.get('title', '')}{'（最小化）' if w.get('minimized') else ''}{'（活动）' if w.get('active') else ''}"
+                     for i, w in enumerate(wins, 1)]
+            return "打开的窗口列表：\n" + "\n".join(lines)
 
         # ---- 打开 URL ----
         if name == 'open_url':
@@ -415,7 +434,7 @@ def execute_tool(name, args):
                 _ast.Expression, _ast.BinOp, _ast.UnaryOp, _ast.Constant,
                 _ast.Name, _ast.Load, _ast.Add, _ast.Sub, _ast.Mult,
                 _ast.Div, _ast.FloorDiv, _ast.Mod, _ast.Pow,
-                _ast.USub, _ast.UAdd,
+                _ast.USub, _ast.UAdd, _ast.Call,
             )
             allowed_funcs = {'sin','cos','tan','sqrt','log','log10','log2',
                              'exp','abs','floor','ceil','pow','factorial'}
@@ -611,6 +630,11 @@ TOOLS = [
             "action": {"type": "string", "enum": ["focus_window", "list_windows", "open", "minimize_window", "close_window"]},
             "title": {"type": "string"}, "program": {"type": "string"}, "text": {"type": "string"}
         }, "required": ["action"]}
+    }},
+    {"type": "function", "function": {
+        "name": "list_windows",
+        "description": "列出当前所有可见窗口及其真实标题（只读，无副作用）。需要操作某个窗口前，先调用本工具拿到真实标题，再传给 control_window/control_keyboard",
+        "parameters": {"type": "object", "properties": {}}
     }},
     {"type": "function", "function": {
         "name": "open_url",
@@ -931,64 +955,13 @@ Only respond with a JSON object: {{"score": <1-10 number>, "reason": "<brief rea
     warning = f"LLM评分 {score}/10: {reason}" if score < 8 else ""
     return score, passed, warning
 
-
-# ── 入口：组合检测（Tier 1 → Tier 2） ──
-def ooc_check(reply, mode, system_prompt, wfile=None):
-    """
-    双层 OOC 检测入口。
-    1. 先跑规则检测（Tier 1）
-    2. 如果规则返回 "llm"，再调 DeepSeek 评分（Tier 2）
-    3. 将结果通过 SSE 发到前端（如有 wfile）
-    
-    返回 (score, passed, warning)
-    """
-    # Tier 1：规则检测
-    score, passed, warning, problems, action = rule_ooc_check(reply, mode)
-    print(f"[OOC] 一级评分: {score}分", flush=True) 
-
-    # Tier 2：边界情况 → LLM 语义评分
-    if action == "llm":
-        print(f"[OOC] 规则边界 ({score}分)，调 LLM 语义评分...", flush=True)
-        llm_score, llm_passed, llm_warning = llm_ooc_check(reply, mode, system_prompt)
-        print(f"[OOC] 二级评分: {llm_score}分", flush=True)
-        # 综合：取 LLM 评分，但规则的问题仍保留
-        final_score = llm_score
-        final_passed = llm_passed
-        final_warning = llm_warning
-        if problems:
-            final_warning = f"[规则] {'; '.join(problems)} | [LLM] {llm_warning}" if llm_warning else f"[规则] {'; '.join(problems)}"
-        print(f"[OOC] LLM 评分: {llm_score}/10, passed={llm_passed}", flush=True)
-    else:
-        print(f"[OOC] 一级评分: {score}分（无需二级）", flush=True)    
-        final_score = score
-        final_passed = passed
-        final_warning = warning
-
 def _ooc_llm_async(reply, mode, system_prompt, rule_score, rule_passed, rule_warning):
     """后台执行 LLM 层 OOC 评分（仅记录日志，不阻塞流式响应）"""
     try:
         llm_score, llm_passed, llm_warning = llm_ooc_check(reply, mode, system_prompt)
         print(f"[OOC] 后台 LLM 评分: {llm_score}/10, passed={llm_passed}（规则层 {rule_score}/10）", flush=True)
     except Exception as e:
-        print(f"[OOC] 后台 LLM 评分失败: {e}")
-
-    # 发送 SSE 事件到前端
-    if wfile and not final_passed:
-        try:
-            wfile.write(f"data: {json.dumps({
-                'type': 'ooc_warning',
-                'warning': final_warning,
-                'score': final_score,
-                'problems': problems
-            })}\n\n".encode('utf-8'))
-            wfile.flush()
-        except:
-            pass
-
-    if final_warning:
-        print(f"[OOC] {'⚠️' if final_passed else '❌'} score={final_score}: {final_warning[:80]}")
-
-    return final_score, final_passed, final_warning
+        traceback.print_exc()
 
 # ===== 工具风险分级 =====
 # AUTO_TOOLS: 只读/无副作用/可逆 → 自动执行，不弹确认框
@@ -998,7 +971,7 @@ AUTO_TOOLS = {
     'search_files', 'arxiv_search', 'detect_screen', 'ocr_screen',
     'describe_screen', 'web_scraper',
     'compute_symbolic', 'compute_plot', 'compare_answers',
-    'todo_add', 'todo_list', 'todo_done', 'todo_report',
+    'todo_add', 'todo_list', 'todo_done', 'todo_report', 'list_windows',
 }
 
 def describe_tool_action(name, args):
@@ -1044,7 +1017,7 @@ def describe_tool_action(name, args):
         'compute_numeric': lambda a: f"执行数值计算代码:\n{a.get('code','')[:200]}",
         'compute_plot': lambda a: f"绘制函数图: y={a.get('expression','')}（x: {a.get('x_min','-5')} ~ {a.get('x_max','5')}）",
         'compare_answers': lambda a: f"比对答案: {a.get('a','')} 与 {a.get('b','')}",
-
+        'list_windows': lambda a: "列出所有打开的窗口",
     }
     
     desc_fn = descriptions.get(name)
@@ -1053,223 +1026,79 @@ def describe_tool_action(name, args):
     return f"执行操作：{name}"
 
 # ============================================================
-# 计划模式：规划 / 批准 / 偏差 / 修订
+# 工具确认与执行（逐工具弹窗，等待用户决定）
 # ============================================================
 
-def tool_catalog():
-    """从 TOOLS 生成工具清单文本（供规划 prompt 使用）"""
-    lines = []
-    try:
-        for t in TOOLS:
-            fn = t.get('function', {})
-            name = fn.get('name', '')
-            desc = fn.get('description', '')
-            props = fn.get('parameters', {}).get('properties', {})
-            keys = ', '.join(props.keys()) if props else ''
-            lines.append(f"- {name}: {desc} (参数: {keys})")
-    except Exception:
-        pass
-    return '\n'.join(lines) or '(工具清单获取失败)'
+# 高风险工具：前端弹窗标红，且 F9"剩余全部允许"不会自动批准它们
+CONFIRM_T3 = {'execute_command', 'run_python', 'write_file',
+              'control_mouse', 'control_keyboard', 'control_window'}
 
-def call_deepseek_json(messages, timeout=30):
-    """非流式调用 DeepSeek，解析返回内容里的第一个 JSON 对象；失败返回 None"""
-    url = f"{DEEPSEEK_API_BASE}/chat/completions"
-    body = {
-        "model": "deepseek-v4-flash",
-        "messages": messages,
-        "stream": False,
-        "temperature": 0.2,
-        "max_tokens": 2000,
-    }
-    req = urllib.request.Request(url, data=json.dumps(body).encode('utf-8'), headers={
-        'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
-        'Content-Type': 'application/json',
-    }, method='POST')
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        content = data['choices'][0]['message']['content']
-        start, end = content.find('{'), content.rfind('}')
-        if start == -1 or end == -1:
-            return None
-        return json.loads(content[start:end + 1])
-    except Exception as e:
-        print(f"[Plan] JSON 调用失败: {e}")
-        return None
+def confirm_and_execute(confirm_calls, wfile):
+    """把需要确认的工具逐个发给前端，等用户决定（最长 60 秒，超时按拒绝），
+    执行已批准的工具。返回 {tool_call_id: 结果字符串}"""
+    tool_results = {}
+    if not confirm_calls:
+        return tool_results
 
-def generate_plan(query, mode):
-    """让 LLM 生成结构化执行计划，返回 plan dict 或 None"""
-    prompt = (
-        "你是一个桌面自动化任务规划器。用户请求：\n"
-        f"「{query}」\n\n"
-        "请把任务拆解为可执行的步骤序列，严格只输出一个 JSON 对象（不要输出任何其他文字）：\n"
-        "{\n"
-        '  "goal": "任务目标一句话",\n'
-        '  "steps": [\n'
-        '    {"step": 1, "tool": "工具名", "args": {具体参数}, '
-        '"risk_tier": 0-3, "expected": "该步成功后的预期状态", "verify": "screenshot 或 none"}\n'
-        "  ]\n"
-        "}\n\n"
-        "可用工具（名称 + 参数）：\n"
-        f"{tool_catalog()}\n\n"
-        "规则：\n"
-        "- risk_tier: 0=无副作用(读取/查询), 1=轻微(键盘鼠标), 2=中等(打开程序/写文件), 3=高风险(运行代码/删除/覆盖)\n"
-        "- args 必须具体（坐标、文本、路径），不要写占位符\n"
-        "- 每步只调用一个工具，把大任务拆成小步\n"
-        "- 涉及界面操作时 verify 填 screenshot，否则 none"
-        "- 只能使用上面清单中列出的工具名，禁止自创工具名\n"
-        "- 读取/查询类工具（detect_screen、ocr_screen、list_files、read_file 等）会自动执行，无需列入计划，只列需要用户关注的步骤\n"
-    )
-    messages = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": query},
-    ]
-    plan = call_deepseek_json(messages)
-    if not plan or not isinstance(plan.get('steps'), list) or not plan['steps']:
-        return None
-    for i, s in enumerate(plan['steps']):
-        s['step'] = i + 1
-        s.setdefault('args', {})
-        s.setdefault('risk_tier', 1)
-        s.setdefault('expected', '')
-        s.setdefault('verify', 'none')
-    return plan
-
-def plan_scope(plan):
-    """计划允许范围：{(tool, action_or_None)}"""
-    scope = set()
-    for s in plan.get('steps', []):
-        tool = s.get('tool', '')
-        action = s.get('args', {}).get('action')
-        scope.add((tool, action))
-    return scope
-
-def in_plan_scope(plan, name, args):
-    """工具调用是否在已批准计划范围内（放宽：计划中出现过的工具即视为已授权）"""
-    scope = plan.get('_scope')
-    if scope is None:
-        scope = set()
-        for s in plan.get('steps', []):
-            scope.add(s.get('tool', ''))
-        plan['_scope'] = scope
-    return name in scope
-
-def wait_plan_decision(entry, wfile, wait_sec=180):
-    """等待用户批准/拒绝计划，期间发 keepalive 防止连接超时"""
-    elapsed = 0
-    while not entry['event'].is_set() and elapsed < wait_sec:
-        entry['event'].wait(30)
-        elapsed += 30
-        if not entry['event'].is_set():
-            try:
-                wfile.write(f"data: {json.dumps({'type': 'plan_waiting'})}\n\n".encode('utf-8'))
-                wfile.flush()
-            except Exception:
-                break
-    return entry['decision']
-
-def wait_dev_decision(entry, wfile, wait_sec=120):
-    """等待用户对计划外操作的决定（continue/replan/stop）"""
-    entry['dev_event'] = threading.Event()
-    entry['dev_decision'] = None
-    elapsed = 0
-    while not entry['dev_event'].is_set() and elapsed < wait_sec:
-        entry['dev_event'].wait(30)
-        elapsed += 30
-        if not entry['dev_event'].is_set():
-            try:
-                wfile.write(f"data: {json.dumps({'type': 'plan_waiting'})}\n\n".encode('utf-8'))
-                wfile.flush()
-            except Exception:
-                break
-    return entry['dev_decision']   # None=超时，调用方按 stop 处理
-
-def handle_plan_replan(plan_id, wfile, extra_info=''):
-    """失败/偏离后生成修订计划并等待批准。返回 True=已批准"""
-    with plan_lock:
-        entry = plan_store.get(plan_id)
-        if not entry:
-            return False
-        if entry['revision_count'] >= 3:
-            try:
-                wfile.write(f"data: {json.dumps({'type': 'plan_aborted', 'plan_id': plan_id, 'reason': '修订次数超过上限(3次)'})}\n\n".encode('utf-8'))
-                wfile.flush()
-            except Exception:
-                pass
-            return False
-        query = entry.get('last_query', '')
-        mode = entry.get('mode', 'aemeath')
-    new_plan = generate_plan(f"{query}\n\n【补充信息】{extra_info}", mode)
-    if not new_plan:
-        return False
-    with plan_lock:
-        entry['plan'] = new_plan
-        entry['revision_count'] += 1
-        entry['scope'] = plan_scope(new_plan)
-        entry['event'] = threading.Event()
-        entry['decision'] = None
-    try:
-        wfile.write(f"data: {json.dumps({'type': 'plan_revision', 'plan_id': plan_id, 'goal': new_plan.get('goal', ''), 'steps': new_plan.get('steps', []), 'revision_count': entry['revision_count']})}\n\n".encode('utf-8'))
-        wfile.flush()
-    except Exception:
-        pass
-    decision = wait_plan_decision(entry, wfile, wait_sec=180)
-    return decision == 'approved'
-
-def confirm_and_execute(calls, wfile):
-    """逐工具确认并执行（T3 或非计划模式），返回 {tool_call_id: result}"""
-    results = {}
-    if not calls:
-        return results
     request_id = str(uuid.uuid4())
     event = threading.Event()
     with approval_lock:
         approval_store[request_id] = {
             "event": event,
-            "decisions": {},
-            "confirm_ids": [pc['tc'].get('id', '') for pc in calls]
+            "decisions": {},          # {tool_call_id: True/False}
+            "confirm_ids": [pc["tc"].get('id', '') for pc in confirm_calls]
         }
+
+    # 组装前端确认框需要的字段
     tool_call_info = []
-    for pc in calls:
+    for pc in confirm_calls:
+        description = describe_tool_action(pc["name"], pc["args"])
         tool_call_info.append({
-            "name": pc['name'],
-            "args": pc['args'],
-            "description": describe_tool_action(pc['name'], pc['args']),
-            "tool_call_id": pc['tc'].get('id', ''),
-            "t3": pc['name'] in PLAN_T3,
+            "name": pc["name"],
+            "args": pc["args"],
+            "description": description,
+            "tool_call_id": pc["tc"].get('id', ''),
+            "t3": pc["name"] in CONFIRM_T3,   # 高风险标记（前端标红 + F9 不自动批准）
         })
+
     try:
+        # 发 SSE 事件 → 前端弹确认框
         wfile.write(f"data: {json.dumps({'type': 'tool_call', 'request_id': request_id, 'tool_calls': tool_call_info})}\n\n".encode('utf-8'))
         wfile.flush()
-    except Exception:
-        pass
-    print(f"[Tool] 等待用户确认 {len(calls)} 个工具: {request_id}")
+    except Exception as e:
+        print(f"[Tool] 确认事件发送失败: {e}")
+
+    print(f"[Tool] 等待用户确认 {len(confirm_calls)} 个工具: {request_id}")
+
+    # 等用户逐工具决定（最长 60 秒，超时全部按拒绝处理）
     event.wait(timeout=60)
+
     with approval_lock:
         decisions = dict(approval_store.get(request_id, {}).get('decisions', {}))
-        if len(decisions) < len(calls):
-            print(f"[Tool] 有 {len(calls) - len(decisions)} 个工具未获确认（等待60秒超时），按拒绝处理: {request_id}", flush=True)
         if request_id in approval_store:
             del approval_store[request_id]
-    for pc in calls:
-        call_id = pc['tc'].get('id', '')
+
+    # 执行已批准的工具；拒绝/超时的记录为拒绝
+    for pc in confirm_calls:
+        call_id = pc["tc"].get('id', '')
         if decisions.get(call_id, False):
             try:
-                result = execute_tool(pc['name'], pc['args'])
+                result = execute_tool(pc["name"], pc["args"])
             except Exception as e:
                 result = f"Error: {e}"
-            results[call_id] = str(result)[:2000]
+            tool_results[call_id] = str(result)[:2000]
             print(f"[Tool] {pc['name']} (用户批准) 完成")
         else:
-            results[call_id] = "用户拒绝执行此工具"
+            tool_results[call_id] = "用户拒绝执行此工具"
             print(f"[Tool] {pc['name']} (用户拒绝)")
-    return results
+
+    return tool_results
 
 # ============================================================
 # 流式 + 工具循环（核心，始终 stream=True + tools）
 # ============================================================
 
-def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, mode='aemeath', system_prompt='', max_rounds=15, plan=None):
+def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, mode='aemeath', system_prompt='', max_rounds=15):
     """
     带工具循环的流式 DeepSeek 调用。
     每一轮：stream=True + tools，实时流式输出文字，
@@ -1359,38 +1188,27 @@ def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, m
         tool_calls = list(accumulated_tool_calls.values()) if accumulated_tool_calls else []
 
         if not tool_calls:
-            print(f"[AI] 无工具调用，最终回答: {len(round_text)} 字符")
-
-            # ===== 双层 OOC 检测（规则层同步毫秒级；LLM 层改后台线程，
-            #      不再阻塞 [DONE]——原实现 LLM 兜底最长卡 10 秒） =====
+            # ===== 最终回答：统一执行 OOC（规则层同步，LLM 层后台线程）=====
             score, passed, warning, problems, action = rule_ooc_check(round_text, mode)
-            final_score, final_passed, final_warning = score, passed, warning
+            print(f"[OOC] 规则评分: {score}分 action={action} problems={len(problems)}", flush=True)
             if action == "llm":
-                # 边界情况：先用规则层结论交付，LLM 语义评分放后台线程（只记日志）
                 print(f"[OOC] 规则边界 ({score}分)，LLM 评分转后台", flush=True)
                 threading.Thread(
                     target=_ooc_llm_async,
                     args=(round_text, mode, system_prompt, score, passed, warning),
                     daemon=True
                 ).start()
-            # SSE 推送（保持原格式：仅未通过时发）
-            if wfile and not final_passed:
+            # SSE 警告（必须在 [DONE] 之前发——handle_chat 收到返回后才写 [DONE]，顺序正确）
+            if wfile and not passed:
                 try:
-                    wfile.write(f"data: {json.dumps({
-                        'type': 'ooc_warning',
-                        'warning': final_warning,
-                        'score': final_score,
-                        'problems': problems
-                    })}\n\n".encode('utf-8'))
+                    wfile.write(f"data: {json.dumps({'type': 'ooc_warning', 'warning': warning, 'score': score, 'problems': problems})}\n\n".encode('utf-8'))
                     wfile.flush()
                 except Exception:
                     pass
-            if final_warning:
-                print(f"[OOC] {'WARN' if final_passed else 'ERROR'} score={final_score}: {final_warning[:80]}")
-
             return round_text, False
 
         print(f"[Tool] Round {round_num}: {len(tool_calls)} 个工具调用")
+        # ↓ 后面照旧：解析参数、风险分级、执行工具、continue
 
         # ---- 解析参数 ----
         parsed_calls = []
@@ -1417,83 +1235,10 @@ def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, m
                 result = f"Error: {e}"
             tool_results[pc["tc"].get('id', '')] = str(result)[:2000]
             print(f"[Tool] {pc['name']} (自动执行) 完成")
+        # 2) 需要确认的工具 → 发前端逐工具确认（等待用户决定后执行）
+        if confirm_calls:
+            tool_results.update(confirm_and_execute(confirm_calls, wfile))
 
-        # 2) 需要确认的工具
-        if plan is not None:
-            # ===== 计划模式 =====
-            entry = plan['entry']
-            plan_id = plan['plan_id']
-            plan_obj = plan['plan']
-
-            in_scope_calls = []   # 范围内 → 自动执行
-            t3_calls = []         # 高风险 → 逐工具确认
-            dev_calls = []        # 范围外 → 偏差处理（loose 模式下恒为空）
-            for pc in confirm_calls:
-                if pc['name'] in PLAN_T3:
-                    t3_calls.append(pc)
-                elif loose or in_plan_scope(plan_obj, pc['name'], pc['args']):
-                    in_scope_calls.append(pc)
-                else:
-                    dev_calls.append(pc)
-
-            # 2a) 计划范围内：直接执行，发进度事件
-            for pc in in_scope_calls:
-                try:
-                    result = execute_tool(pc['name'], pc['args'])
-                except Exception as e:
-                    result = f"Error: {e}"
-                tool_results[pc['tc'].get('id', '')] = str(result)[:2000]
-                print(f"[Plan] 范围内执行: {pc['name']}")
-                try:
-                    wfile.write(f"data: {json.dumps({'type': 'plan_progress', 'plan_id': plan_id, 'tool': pc['name']})}\n\n".encode('utf-8'))
-                    wfile.flush()
-                except Exception:
-                    pass
-
-            # 2b) 高风险工具：永远逐工具确认
-            if t3_calls:
-                tool_results.update(confirm_and_execute(t3_calls, wfile))
-
-            # 2c) 计划外操作：偏差处理
-            if dev_calls:
-                dev_info = [{
-                    "name": pc['name'],
-                    "args": pc['args'],
-                    "description": describe_tool_action(pc['name'], pc['args']),
-                } for pc in dev_calls]
-                try:
-                    wfile.write(f"data: {json.dumps({'type': 'plan_deviation', 'plan_id': plan_id, 'tool_calls': dev_info})}\n\n".encode('utf-8'))
-                    wfile.flush()
-                except Exception:
-                    pass
-                dev_decision = wait_dev_decision(entry, wfile, wait_sec=120) or 'stop'
-
-                if dev_decision == 'continue':
-                    for pc in dev_calls:
-                        try:
-                            result = execute_tool(pc['name'], pc['args'])
-                        except Exception as e:
-                            result = f"Error: {e}"
-                        tool_results[pc['tc'].get('id', '')] = str(result)[:2000]
-                elif dev_decision == 'replan':
-                    ok = handle_plan_replan(plan_id, wfile, extra_info=f"AI 请求了计划外操作：{dev_info[0]['description'] if dev_info else ''}")
-                    new_plan_obj = plan_store.get(plan_id, {}).get('plan', plan_obj) if ok else None
-                    for pc in dev_calls:
-                        if ok and new_plan_obj and in_plan_scope(new_plan_obj, pc['name'], pc['args']):
-                            try:
-                                result = execute_tool(pc['name'], pc['args'])
-                            except Exception as e:
-                                result = f"Error: {e}"
-                            tool_results[pc['tc'].get('id', '')] = str(result)[:2000]
-                        else:
-                            tool_results[pc['tc'].get('id', '')] = "修订后计划不包含此操作 / 已停止"
-                else:  # stop 或超时
-                    for pc in dev_calls:
-                        tool_results[pc['tc'].get('id', '')] = "用户停止执行"
-        else:
-            # ===== 非计划模式：原逐工具确认 =====
-            if confirm_calls:
-                tool_results.update(confirm_and_execute(confirm_calls, wfile))
 
         # 3) 构造 assistant 消息（带全部 tool_calls）+ 对应 tool 结果
         #    【关键】必须回写，否则模型永远看不到工具执行结果
@@ -1512,7 +1257,7 @@ def stream_deepseek_with_tools(messages, wfile, approval_store, approval_lock, m
 
         # 继续下一轮
         continue
-
+    
     return "Too many tool calls, please simplify", True
 
 # ============================================================
@@ -1551,12 +1296,6 @@ class AIHandler(BaseHTTPRequestHandler):
             self.handle_tool_approve()
         elif self.path == '/tool-deny':
             self.handle_tool_deny()
-        elif self.path == '/plan-approve':
-            self.handle_plan_approve()
-        elif self.path == '/plan-reject':
-            self.handle_plan_reject()
-        elif self.path == '/plan-deviation':
-            self.handle_plan_deviation()
         elif self.path == '/health':
             self.send_json(200, {"status": "ok"})
         else:
@@ -1592,121 +1331,6 @@ class AIHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"success": True})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
-
-    # ============================================================
-    # 计划模式端点
-    # ============================================================
-
-    def handle_plan_approve(self):
-        try:
-            body = self.read_body()
-            plan_id = body.get('plan_id', '')
-            loose = body.get('loose', False)   # True=批准后自动执行，不再逐步骤询问
-            with plan_lock:
-                entry = plan_store.get(plan_id)
-                if entry:
-                    entry['decision'] = 'approved'
-                    entry['loose'] = loose
-                    entry['event'].set()
-            self.send_json(200, {"success": True})
-        except Exception as e:
-            self.send_json(500, {"error": str(e)})
-
-    def handle_plan_reject(self):
-        try:
-            body = self.read_body()
-            plan_id = body.get('plan_id', '')
-            with plan_lock:
-                entry = plan_store.get(plan_id)
-                if entry:
-                    entry['decision'] = 'rejected'
-                    entry['event'].set()
-            self.send_json(200, {"success": True})
-        except Exception as e:
-            self.send_json(500, {"error": str(e)})
-
-    def handle_plan_deviation(self):
-        try:
-            body = self.read_body()
-            plan_id = body.get('plan_id', '')
-            decision = body.get('decision', 'stop')  # continue | replan | stop
-            with plan_lock:
-                entry = plan_store.get(plan_id)
-                if entry:
-                    entry['dev_decision'] = decision
-                    entry['dev_event'].set()
-            self.send_json(200, {"success": True})
-        except Exception as e:
-            self.send_json(500, {"error": str(e)})
-
-    def run_plan_flow(self, query, mode, wfile):
-        """生成计划 → 发 tool_plan → 等批准。返回 {'plan_id','entry','plan'} 或 None"""
-        # 1. 通知前端开始规划
-        try:
-            wfile.write(f"data: {json.dumps({'type': 'plan_generating'})}\n\n".encode('utf-8'))
-            wfile.flush()
-        except Exception:
-            pass
-
-        # 2. 生成计划（失败重试一次）
-        plan = generate_plan(query, mode)
-        if not plan:
-            plan = generate_plan(query, mode)
-        if not plan:
-            try:
-                wfile.write(f"data: {json.dumps({'answer': '无法生成执行计划，请换一种更具体的描述再试。', 'error': True})}\n\n".encode('utf-8'))
-                wfile.write(b"data: [DONE]\n\n")
-                wfile.flush()
-            except Exception:
-                pass
-            return None
-
-        # 3. 存入 plan_store
-        plan_id = str(uuid.uuid4())
-        entry = {
-            "plan_id": plan_id,
-            "plan": plan,
-            "event": threading.Event(),
-            "decision": None,
-            "dev_event": threading.Event(),
-            "dev_decision": None,
-            "revision_count": 0,
-            "loose": False,  
-            "last_query": query,
-            "mode": mode,
-            "scope": plan_scope(plan),
-        }
-        with plan_lock:
-            plan_store[plan_id] = entry
-
-        # 4. 发计划事件并等待批准（keepalive 每30秒一次，防止 socket 超时）
-        try:
-            wfile.write(f"data: {json.dumps({'type': 'tool_plan', 'plan_id': plan_id, 'goal': plan.get('goal', ''), 'steps': plan.get('steps', [])})}\n\n".encode('utf-8'))
-            wfile.flush()
-        except Exception:
-            pass
-        print(f"[Plan] 等待用户批准: {plan_id} | {len(plan.get('steps', []))} 步")
-
-        decision = wait_plan_decision(entry, wfile, wait_sec=180)
-
-        if decision != 'approved':
-            try:
-                wfile.write(f"data: {json.dumps({'type': 'plan_rejected', 'plan_id': plan_id})}\n\n".encode('utf-8'))
-                wfile.write(b"data: [DONE]\n\n")
-                wfile.flush()
-            except Exception:
-                pass
-            with plan_lock:
-                plan_store.pop(plan_id, None)
-            return None
-
-        try:
-            wfile.write(f"data: {json.dumps({'type': 'plan_approved', 'plan_id': plan_id})}\n\n".encode('utf-8'))
-            wfile.flush()
-        except Exception:
-            pass
-        return {"plan_id": plan_id, "entry": entry, "plan": plan}
-
 
     # ============================================================
     # handle_chat - 核心对话处理
@@ -1789,28 +1413,11 @@ class AIHandler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', self.headers.get('Origin', ''))
             self.end_headers()
 
-            # 4. 计划模式：先规划 → 等批准 → 再执行
-            plan = None
-            if body.get('plan_mode', False):
-                plan = self.run_plan_flow(query, mode, self.wfile)
-                if plan is None:
-                    return  # 已拒绝/失败，事件已发送完毕
-                # 把已批准计划注入上下文，约束 AI 不要做计划外操作
-                messages.append({
-                    "role": "system",
-                    "content": f"用户已批准以下执行计划，请严格按照计划执行，不要做计划外的操作：\n{json.dumps(plan['plan'], ensure_ascii=False)}"
-                })
-
             # 5. 调用流式工具循环（始终 streaming + tools）
             final_text, has_error = stream_deepseek_with_tools(
                 messages, self.wfile, approval_store, approval_lock,
-                mode=mode, system_prompt=system_prompt, plan=plan
+                mode=mode, system_prompt=system_prompt
             )
-
-            # 6. 清理计划状态
-            if plan is not None:
-                with plan_lock:
-                    plan_store.pop(plan['plan_id'], None)
 
             if has_error:
                 self.wfile.write(f"data: {json.dumps({'answer': final_text, 'error': True})}\n\n".encode('utf-8'))
@@ -1852,11 +1459,14 @@ class AIHandler(BaseHTTPRequestHandler):
             if not reply:
                 self.send_json(400, {"error": "missing reply"})
                 return
-            result, method = fast_ooc_check(reply, mode)
-            result['method'] = method
-            self.send_json(200, result)
+                # 改为调用真实存在的函数（先确认 rule_ooc_check 的返回签名，旧版是 (score, passed, warning)）
+                score, passed, warning = rule_ooc_check(reply, mode)
+                result = {"score": score, "passed": passed, "warning": warning}
+                result['method'] = 'rule'
+                self.send_json(200, result)
         except Exception as e:
-            self.send_json(200, {"score": 10, "passed": True})
+            traceback.print_exc()   # 至少留证据
+            self.send_json(500, {"error": True, "message": f"ooc check failed: {e}"})
 
     def read_body(self):
         length = int(self.headers.get('Content-Length', 0))
