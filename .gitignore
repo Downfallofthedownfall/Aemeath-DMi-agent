@@ -170,3 +170,4 @@ dify/docker/volumes/plugin_daemon/cwd/
 
 # 记忆
 data/
+todos.json
