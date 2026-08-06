@@ -228,7 +228,6 @@ def execute_tool(name, args):
                         print(f"[Tool] 内置命令: {name} 已打开")
                         # 如果有额外参数（如 URL），稍后处理
                         if 'http' in cmd_lower or 'https' in cmd_lower:
-                            import re
                             urls = re.findall(r'https?://[^\s]+', cmd)
                             if urls:
                                 time.sleep(0.5)
@@ -515,15 +514,23 @@ def execute_tool(name, args):
             return f"答案{'等价' if eq else '不等价'}（判定方式: {method}）"
 
         if name == 'web_scraper':
-            url = args['url']
-            req = urllib.request.Request(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-            })
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                html = resp.read().decode('utf-8', errors='replace')
-            text = re.sub(r'<[^>]+>', ' ', html)
-            text = re.sub(r'\s+', ' ', text).strip()
-            return f"Web content:\n\n{text[:3000]}" + ("\n\n...(truncated)" if len(text) > 3000 else "")
+            try:
+                url = args['url']
+                req = urllib.request.Request(url, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                })
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    html = resp.read().decode('utf-8', errors='replace')
+                # 先剔除 script/style 内容，避免抓到一堆 JS/CSS
+                html = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', html,
+                              flags=re.DOTALL | re.IGNORECASE)
+                text = re.sub(r'<[^>]+>', ' ', html)
+                text = re.sub(r'\s+', ' ', text).strip()
+                return f"Web content:\n\n{text[:3000]}" + ("\n\n...(truncated)" if len(text) > 3000 else "")
+            except urllib.error.HTTPError as e:
+                return f"Web scraper error: HTTP {e.code} ({url})"
+            except Exception as e:
+                return f"Web scraper error: {e}"
 
         if name == 'run_python':
             code = args['code']

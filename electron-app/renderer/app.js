@@ -505,8 +505,15 @@ window.addEventListener('DOMContentLoaded', () => {
     isSending = true;
     sendBtn.disabled = true;
     if (sendStatusEl) sendStatusEl.textContent = 'AI 生成中…';
-    
-    let timeoutId = null;
+      const controller = new AbortController();
+      // 看门狗：只有"静默超时"才中断（收到数据就续期）。
+      // 修复：长回复/长工具流程被 90s 硬超时误杀 → 前端断流 → 服务端 WinError 10053
+      const baseTimeout = usePlan ? 420000 : 90000;
+      let timeoutId = setTimeout(() => controller.abort(), baseTimeout);
+      const kickWatchdog = () => {
+        clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => controller.abort(), baseTimeout);
+      };
     try {
       const controller = new AbortController();
       timeoutId = setTimeout(() => controller.abort(), usePlan ? 420000 : 90000);
@@ -551,6 +558,7 @@ window.addEventListener('DOMContentLoaded', () => {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        kickWatchdog();   // 收到数据 → 看门狗续期
 
         const chunk = decoder.decode(value, { stream: true });
         readBuffer += chunk;
