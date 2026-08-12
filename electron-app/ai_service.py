@@ -3,6 +3,7 @@
 # 功能：双模式切换、工具调用（文件/命令/控制/视觉）、
 #       OOC 检测（规则优先）、流式输出
 #       分层记忆（M1：L1 工作缓存 + L2 滚动摘要，见 memory_store.py）
+#       Worldbook 知识库（M2：双馆隔离 + 自传头，见 worldbook.py）
 # 端口：18892
 # ============================================================
 
@@ -25,6 +26,7 @@ import uuid
 import unicodedata   # 用于准确的 emoji 检测
 import base64
 import memory_store
+import worldbook        # Worldbook 知识库
 
 # ===== 用户确认存储 =====
 # {request_id: {"event": threading.Event(), "approved": None, "tool_calls": [...]}}
@@ -58,6 +60,8 @@ config = load_config()
 
 # ===== 分层记忆系统（M1）初始化（失败时自动停用，不影响原有对话） =====
 memory_store.init(config, SCRIPT_DIR)
+# ===== Worldbook 知识库（M2）初始化（失败时自动停用，不影响原有对话） =====
+worldbook.init(config, SCRIPT_DIR)
 
 # ===== 认证 =====
 AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '')
@@ -1377,6 +1381,41 @@ class AIHandler(BaseHTTPRequestHandler):
             # 2. 构造消息（组装顺序：system_prompt → 常驻规则 → L2 召回 →
             #    shared_memory → 任务暂存区 → history → query）
             messages = [{"role": "system", "content": system_prompt}]
+            # ===== Worldbook 知识库（M2）：自传头常驻 + 触发条目，插在 L2 召回之前 =====
+            wb_block = ''
+            try:
+                wb_block = worldbook.match_worldbook(query, mode)
+                if wb_block:
+                    messages.append({"role": "system", "content": wb_block})
+            except Exception as e:
+                print(f"[Worldbook] 注入失败（不影响对话）: {e}")
+
+            if memory_on and session_id:
+                try:
+                    messages = memory_store.build_context(messages, session_id, mode, history, shared_memory)
+                except Exception as e:
+                    # 记忆组装异常 → 回退到原逻辑（保留 Worldbook 注入），保证对话不中断
+                    print(f"[Memory] 上下文组装失败，回退原逻辑: {e}")
+                    messages = [{"role": "system", "content": system_prompt}]
+                    if wb_block:
+                        messages.append({"role": "system", "content": wb_block})
+                    if shared_memory:
+                        messages.append({"role": "system", "content": f"## User info\n{shared_memory}"})
+                    for msg in history:
+                        role = msg.get('role', '')
+                        content = msg.get('content', '')
+                        if role in ('user', 'assistant') and content:
+                            messages.append({"role": role, "content": content})
+            else:
+                # 记忆未开启 → 原逻辑（Worldbook 注入已在上方完成）
+                if shared_memory:
+                    messages.append({"role": "system", "content": f"## User info\n{shared_memory}"})
+                for msg in history:
+                    role = msg.get('role', '')
+                    content = msg.get('content', '')
+                    if role in ('user', 'assistant') and content:
+                        messages.append({"role": role, "content": content})
+            messages.append({"role": "user", "content": query})
             if memory_on and session_id:
                 try:
                     messages = memory_store.build_context(messages, session_id, mode, history, shared_memory)

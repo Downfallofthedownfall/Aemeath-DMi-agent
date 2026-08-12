@@ -31,8 +31,9 @@ def _log(msg):
     print(f"[Memory] {msg}", flush=True)
 
 # ===== 模式判定 =====
-# 任务暂存区仅对"星炬物理学霸"（physicist）模式开放，aemeath 模式不触发
-SCHOLAR_MODES = {'physicist'}
+# 任务暂存区仅对"学霸"模式开放。
+# 统一模式命名为 aemeath/physicist；scholar 为早期文档旧名（兼容保留）。
+PHYSICIST_MODES = {'physicist', 'scholar'}
 
 # ===== 解题触发词（规则层，命中则更新 scratch） =====
 SCRATCH_TRIGGER_WORDS = ['推导', '证明', '这题', '这道题', '求解', '计算', '积分', '微分']
@@ -329,7 +330,7 @@ def _heuristic_blocker(reply):
 def update_scratch(session_id, mode, query, reply):
     """规则层：query 命中解题触发词 → 更新 scratch（覆盖旧 scratch，只留最新一条）。
     attempted_steps 累积最近最多 10 步"""
-    if mode not in SCHOLAR_MODES:
+    if mode not in PHYSICIST_MODES:
         return
     if not any(w in query for w in SCRATCH_TRIGGER_WORDS):
         return

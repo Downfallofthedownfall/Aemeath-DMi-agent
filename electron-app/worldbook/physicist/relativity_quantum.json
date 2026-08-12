@@ -1,0 +1,58 @@
+[
+  {
+    "id": "rq_special_relativity",
+    "title": "狭义相对论",
+    "kind": "knowledge",
+    "triggers": ["狭义相对论", "洛伦兹变换", "时间膨胀", "长度收缩", "质能方程", "光速不变", "相对论", "双生子佯谬", "special relativity", "lorentz transformation", "time dilation", "relativitaetstheorie", "zeitdilatation", "laengenkontraktion", "e=mc2"],
+    "constant": false,
+    "intrinsic_value": 90,
+    "priority": 180,
+    "chain": ["rq_general_relativity", "an_nuclear_reactions"],
+    "content": "两条基本原理：① 相对性原理——物理定律在所有惯性系中具有相同形式；② 光速不变原理——真空中光速在任何惯性系中都为 c，与光源和观察者运动无关。\n洛伦兹变换：x' = γ(x - vt)，t' = γ(t - vx/c²)，其中 γ = 1/√(1 - v²/c²)（洛伦兹因子）。\n时间膨胀：Δt = γ·Δt0（运动参考系中时钟变慢，静止寿命最短，如 μ 子衰变）；双生子佯谬由加速过程解释。\n长度收缩：L = L0/γ（沿运动方向收缩，垂直方向不变）。\n质能方程：E = mc²；相对论动量 p = γmv；能量-动量关系 E² = (pc)² + (m0c²)²。\n相对论速度变换：u' = (u - v)/(1 - uv/c²)，光速不变自动满足。\nc 是极限速度：静止质量不为零的物体不能达到光速；高速时经典力学（牛顿定律）不再适用。",
+    "source": "大学物理 相对论篇 / Demtröder Kap.13 / Fließbach《Mechanik》",
+    "exam_points": "时间膨胀与长度收缩计算、质能关系应用（考研常考）",
+    "verifiable": true
+  },
+  {
+    "id": "rq_quantum_basics",
+    "title": "量子力学基本假设与薛定谔方程",
+    "kind": "knowledge",
+    "triggers": ["量子力学", "波函数", "薛定谔方程", "不确定原理", "算符", "本征值", "波粒二象性", "德布罗意", "势阱", "quantum mechanics", "wave function", "schrodinger equation", "quantenmechanik", "schroedinger", "wellenfunktion", "unschaerferelation"],
+    "constant": false,
+    "intrinsic_value": 93,
+    "priority": 185,
+    "chain": ["rq_quantum_advanced", "an_atomic_structure"],
+    "content": "波粒二象性：德布罗意假设物质波 λ = h/p；电子衍射实验证实。\n波函数：Ψ(r,t) 完备描述量子态，|Ψ|² 为概率密度，满足归一化条件 ∫|Ψ|² dV = 1；波函数需单值、连续、有限。\n量子力学基本假设：① 状态由波函数描述；② 力学量对应线性厄米算符；③ 单次测量得到该力学量的本征值，概率由态叠加决定；④ 波函数演化满足薛定谔方程。\n薛定谔方程（含时）：iħ·∂Ψ/∂t = ĤΨ；定态方程：Ĥψ = Eψ（能量本征值问题）。\n不确定性原理：Δx·Δp ≥ ħ/2，ΔE·Δt ≥ ħ/2（ħ = h/2π）。\n一维无限深势阱：E_n = n²π²ħ²/(2mL²)，ψ_n = √(2/L)·sin(nπx/L)，基态能量不为零（零点能）。\n一维谐振子：E_n = (n + ½)ħω，能级等间距。\n势垒贯穿（隧道效应）：粒子可穿过能量高于自身的势垒，是 α 衰变、扫描隧道显微镜（STM）的原理。",
+    "source": "Griffiths《量子力学概论》/ 曾谨言《量子力学》卷I / Nolting《Grundkurs Theoretische Physik 5/1》",
+    "exam_points": "一维势阱本征问题、不确定关系应用（考研/研究生课程）",
+    "verifiable": true
+  },
+  {
+    "id": "rq_quantum_advanced",
+    "title": "量子力学的数学结构与角动量",
+    "kind": "knowledge",
+    "triggers": ["希尔伯特空间", "狄拉克符号", "对易关系", "角动量", "自旋", "微扰论", "泡利矩阵", "全同粒子", "泡利不相容", "dirac notation", "hilbert space", "spin", "perturbation theory", "hilbertraum", "spin", "stoerungstheorie", "kommutator"],
+    "constant": false,
+    "intrinsic_value": 95,
+    "priority": 188,
+    "chain": ["sp_statistical_mechanics", "an_particle_physics"],
+    "content": "狄拉克符号：右矢 |ψ⟩ 表示态、左矢 ⟨φ| 表示对偶，内积 ⟨φ|ψ⟩，算符作用 Â|ψ⟩；完备性关系 Σ|n⟩⟨n| = 1。\n角动量对易关系：[Lx, Ly] = iħLz（循环），[L², Lz] = 0；共同本征态 |l, m⟩：L²|lm⟩ = l(l+1)ħ²|lm⟩，Lz|lm⟩ = mħ|lm⟩（m = -l, …, +l，简并度 2l+1）。\n自旋：电子自旋 s = 1/2，泡利矩阵 σx、σy、σz（满足 σiσj = iεijkσk）；自旋-轨道耦合产生精细结构。\n全同粒子：玻色子（整数自旋）波函数交换对称，可凝聚（BEC）；费米子（半整数自旋）反对称，服从泡利不相容原理（决定元素周期表）。\n近似方法：非简并定态微扰论（一级能量修正 E_n⁽¹⁾ = ⟨n|H'|n⟩）、简并微扰、变分法、含时微扰（费米黄金规则）。\n氢原子能级：E_n = -13.6 eV/n²，简并度 n²。\n表象理论：坐标表象与动量表象通过傅里叶变换联系。",
+    "source": "Sakurai《现代量子力学》/ 曾谨言《量子力学》卷II / Nolting《Grundkurs Theoretische Physik 5/2》",
+    "exam_points": "角动量代数、微扰论一级修正计算（研究生课程/资格考试）",
+    "verifiable": true
+  },
+  {
+    "id": "rq_general_relativity",
+    "title": "广义相对论与引力",
+    "kind": "knowledge",
+    "triggers": ["广义相对论", "引力", "时空弯曲", "等效原理", "爱因斯坦场方程", "黑洞", "史瓦西", "引力波", "引力红移", "general relativity", "gravity", "black hole", "gravitational wave", "allgemeine relativitaetstheorie", "gravitation", "schwarzes loch"],
+    "constant": false,
+    "intrinsic_value": 88,
+    "priority": 180,
+    "chain": ["rq_special_relativity"],
+    "content": "等效原理：惯性质量 = 引力质量，局域内引力场与匀加速参考系不可区分（爱因斯坦电梯思想实验）。\n广义相对性原理：物理定律在所有参考系（包括非惯性系）中形式相同。\n核心思想：引力 = 时空弯曲；物质决定时空几何，时空告诉物质如何运动。爱因斯坦场方程：Gμν + Λgμν = (8πG/c⁴)·Tμν（Gμν 爱因斯坦张量、Tμν 能量动量张量、Λ 宇宙学常数）。\n三大经典检验：① 光线在太阳引力场中偏折（1919 爱丁顿日食观测）；② 水星近日点进动（43″/世纪）；③ 引力红移与引力时间膨胀（GPS 卫星时钟必须修正）。\n黑洞：史瓦西半径 r_s = 2GM/c²，事件视界内光无法逃逸；广义相对论预言引力波。\n引力波：时空曲率扰动以光速传播，2015 年 LIGO 首次直接探测双黑洞并合（2017 诺贝尔物理学奖）。\n宇宙学：弗里德曼方程描述宇宙膨胀，暗能量（Λ）驱动加速膨胀。",
+    "source": "俞允强《广义相对论引论》/ Schutz《A First Course in General Relativity》/ Fließbach《Allgemeine Relativitätstheorie》",
+    "exam_points": "史瓦西半径计算、引力红移与时钟修正（研究生课程）",
+    "verifiable": true
+  }
+]
