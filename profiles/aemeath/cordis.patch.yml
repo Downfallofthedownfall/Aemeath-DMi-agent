@@ -38,6 +38,11 @@
           aemeath: 'packages/worldbook/data/aemeath'
         maxInjectTokens: 3000
         hotReloadInterval: 3
+    - id: aemeath-retriever
+      name: '@aemeath/dsh-plugin-retriever'
+      config:
+        notesDir: 'packages/library/scholar/notes'
+        maxInjectTokens: 1500
     - id: aemeath-memory
       name: '@aemeath/dsh-plugin-memory'
       config:

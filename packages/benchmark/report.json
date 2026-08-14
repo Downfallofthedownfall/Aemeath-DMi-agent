@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-08-14T21:19:42.506169",
+  "total": 2,
+  "answered": 2,
+  "metrics": {
+    "hit_rate": 1.0,
+    "false_positive_rate": 0.0,
+    "source_citation_rate": 1.0,
+    "honesty_rate": 0.0,
+    "answer_keyword_rate": 1.0
+  },
+  "thresholds": {
+    "hit_rate": 0.85,
+    "false_positive_rate": 0.05,
+    "source_citation_rate": 0.8,
+    "honesty_rate": 0.8
+  },
+  "results": [
+    {
+      "id": "mech-01",
+      "topic": "力学",
+      "expected_honest": false,
+      "question": "一个物体从静止开始匀加速运动，5 秒后速度为 20 m/s。求加速度。",
+      "keyword_hit": true,
+      "has_source": true,
+      "uncertain": false,
+      "confident": true,
+      "answer_len": 2099,
+      "answer": "[aemeath-retriever] 讲义索引构建完成：5 块\n[aemeath-retriever] 讲义注入已挂载（agent/pre-step，scholar 模式）\n[aemeath-common] 冒烟工具 aemeath/version 已注册\n[aemeath-common] 现存 agents: (无)\n[aemeath-common] OOC 规则层已挂载（agent/pre-step）\n[aemeath-worldbook] 馆 scholar 加载完成 59 条\n[aemeath-worldbook] 馆 aemeath 加载完成 8 条\n[aemeath-worldbook] 触发注入已挂载（agent/pre-step）\n[aemeath-worldbook] 工具 retrieve_worldbook 已注册\n[aemeath-memory] 存储域 aemeath_memory 已打开（memories=10 条历史记录）\n[aemeath-memory] ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch）\n[aemeath-memory] 记忆召回注入已挂载（agent/pre-step）\n[aemeath-memory] session/flush 已接入（pending 批量判定）\n[aemeath-memory] 衰减已启用（90 天未访问 -10 importance，每 6h 检查）\n[aemeath-memory] /memory 命令已注册（list/stats/delete/profile/scratch）\n[aemeath-common] 人格已挂载 → preset=scholar agent=session-aca0e0b2-e7cb-4811-ba0e-32758f2606c9（972 字符）\n[aemeath-memory] preset=scholar 召回 5 条记忆注入\n[aemeath-worldbook] preset=scholar agent=session-aca0e0b2-e7cb-4811-ba0e-32758f2606c9 注入 2757 字符（≤3000 tokens 预算）\n[aemeath-retriever] [dbg] pre-step agent=session- preset=scholar msgs=4\n[aemeath-retriever] [dbg] query=\"一个物体从静止开始匀加速运动，5 秒后速度为 20 m/s。\" len=35\n[aemeath-retriever] preset=scholar 讲义注入 414 字符（≤1500 tokens 预算）\n[aemeath-retriever] 讲义索引构建完成：5 块\n[aemeath-memory] session/flush：session- 有 1 轮 pending，触发判定\n[aemeath-memory] preset=scholar 召回 5 条记忆注入\n[aemeath-worldbook] preset=scholar agent=session-aca0e0b2-e7cb-4811-ba0e-32758f2606c9 注入 2757 字符（≤3000 tokens 预算）\n[aemeath-retriever] [dbg] pre-step agent=session- preset=scholar msgs=2\n[aemeath-memory] preset=scholar 召回 5 条记忆注入\n[aemeath-worldbook] preset=scholar agent=session-aca0e0b2-e7cb-4811-ba0e-32758f2606c9 注入 2757 字符（≤3000 tokens 预算）\n[aemeath-retriever] [dbg] pre-step agent=session- preset=scholar msgs=2\n这道题直接套匀变速直线运动的速度公式即可。\n\n原理：匀变速直线运动的速度公式为\n\nv = v₀ + at\n\n其中 v₀ 是初速度，a 是加速度，t 是时间。题设物体从静止开始，所以 v₀ = 0，代入已知量：\n\n20 = 0 + a × 5\n\n解得：\n\na = 20 / 5 = 4 m/s²\n\n结论：加速度为 4 m/s²，方向与运动方向相同。\n\n补充一句验证：单位上，速度变化量 Δv = 20 m/s 除以时间 t = 5 s，得到 (m/s)/s = m/s²，量纲自洽，结果可信。这类题是考试基础分，唯一易错点是忘"
+    },
+    {
+      "id": "mech-02",
+      "topic": "力学",
+      "expected_honest": false,
+      "question": "质量 2 kg 的物体在光滑水平面上受 10 N 水平力作用，求加速度。",
+      "keyword_hit": true,
+      "has_source": true,
+      "uncertain": false,
+      "confident": true,
+      "answer_len": 1533,
+      "answer": "[aemeath-retriever] 讲义索引构建完成：5 块\n[aemeath-retriever] 讲义注入已挂载（agent/pre-step，scholar 模式）\n[aemeath-common] 冒烟工具 aemeath/version 已注册\n[aemeath-common] 现存 agents: (无)\n[aemeath-common] OOC 规则层已挂载（agent/pre-step）\n[aemeath-worldbook] 馆 scholar 加载完成 59 条\n[aemeath-worldbook] 馆 aemeath 加载完成 8 条\n[aemeath-worldbook] 触发注入已挂载（agent/pre-step）\n[aemeath-worldbook] 工具 retrieve_worldbook 已注册\n[aemeath-memory] 存储域 aemeath_memory 已打开（memories=10 条历史记录）\n[aemeath-memory] ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch）\n[aemeath-memory] 记忆召回注入已挂载（agent/pre-step）\n[aemeath-memory] session/flush 已接入（pending 批量判定）\n[aemeath-memory] 衰减已启用（90 天未访问 -10 importance，每 6h 检查）\n[aemeath-memory] /memory 命令已注册（list/stats/delete/profile/scratch）\n[aemeath-common] 人格已挂载 → preset=scholar agent=session-79ecedb4-359b-4ede-a3c8-9c5218db6bc1（972 字符）\n[aemeath-memory] preset=scholar 召回 5 条记忆注入\n[aemeath-worldbook] preset=scholar agent=session-79ecedb4-359b-4ede-a3c8-9c5218db6bc1 注入 2757 字符（≤3000 tokens 预算）\n[aemeath-retriever] [dbg] pre-step agent=session- preset=scholar msgs=4\n[aemeath-retriever] [dbg] query=\"质量 2 kg 的物体在光滑水平面上受 10 N 水平力作用\" len=36\n[aemeath-retriever] preset=scholar 讲义注入 426 字符（≤1500 tokens 预算）\n这道题直接应用牛顿第二定律即可，不需要复杂的分析。\n\n已知条件：\n质量 m = 2 kg\n水平力 F = 10 N\n水平面光滑，意味着无摩擦力，合力即为 F。\n\n由牛顿第二定律 F = ma，得\n\na = F/m = 10 N / 2 kg = 5 m/s²\n\n方向与力的方向相同，沿水平方向。\n\n补充说明两点。第一，光滑水平面这个条件很关键——如果粗糙，摩擦力会抵消部分拉力，合力变为 F - μmg，加速度会变小。第二，本题物体只受水平力作用，竖直方向重力与支持力平衡，不影响水平加速度，所以计算时只需考虑水平方向的力。\n\n结论：加速度为 5 m/s²，方向沿水平力方向。来源：力学讲义《牛顿运动定律》牛顿第二定律部分。\n[aemeath-retriever] 讲义索引构建完成：5 块"
+    }
+  ]
+}

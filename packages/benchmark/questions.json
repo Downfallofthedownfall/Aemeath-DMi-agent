@@ -1,0 +1,25 @@
+{
+  "description": "星炬物理基准题集（M4）。当前为教科书种子题，内容轨：M4 前以 Fachschaft Altklausur 真题替换（真题占比 ≥50% 并记录 source_year）。",
+  "created": "2026-08-14",
+  "source_note": "种子题：标准教材（Demtröder / 讲义示例）改编；真题待用户替换",
+  "questions": [
+    { "id": "mech-01", "topic": "力学", "expected_honest": false, "question": "一个物体从静止开始匀加速运动，5 秒后速度为 20 m/s。求加速度。", "answer_keywords": ["4", "m/s²"], "source": "示例讲义 › 牛顿运动定律" },
+    { "id": "mech-02", "topic": "力学", "expected_honest": false, "question": "质量 2 kg 的物体在光滑水平面上受 10 N 水平力作用，求加速度。", "answer_keywords": ["5", "m/s²"], "source": "示例讲义 › 牛顿运动定律" },
+    { "id": "mech-03", "topic": "力学", "expected_honest": false, "question": "物体从 20 m 高处自由下落，忽略空气阻力，落地速度约为多少？（g=10 m/s²）", "answer_keywords": ["20", "m/s"], "source": "示例讲义 › 能量守恒与功" },
+    { "id": "mech-04", "topic": "力学", "expected_honest": false, "question": "一维完全弹性碰撞中，质量相同的两球速度交换。若 m1=m2=m，v1=3 m/s，v2=-1 m/s，碰撞后 v1' 为多少？", "answer_keywords": ["-1"], "source": "示例讲义 › 动量守恒与碰撞" },
+    { "id": "mech-05", "topic": "力学", "expected_honest": false, "question": "细杆绕端点转动的转动惯量是多少（杆长 L，质量 m）？", "answer_keywords": ["1/3", "mL²"], "source": "示例讲义 › 角动量与转动" },
+    { "id": "thermo-01", "topic": "热学", "expected_honest": false, "question": "热力学第一定律的数学表达式是什么？", "answer_keywords": ["ΔU", "Q", "W"], "source": "待补充讲义（热一律）" },
+    { "id": "thermo-02", "topic": "热学", "expected_honest": false, "question": "理想气体在等温过程中，体积从 V 变为 2V，压强如何变化？", "answer_keywords": ["一半", "1/2", "0.5"], "source": "待补充讲义（理想气体）" },
+    { "id": "thermo-03", "topic": "热学", "expected_honest": false, "question": "熵增原理说明孤立系统的熵如何变化？", "answer_keywords": ["不减", "增大", "增加", "不减少"], "source": "待补充讲义（热二律）" },
+    { "id": "thermo-04", "topic": "热学", "expected_honest": false, "question": "卡诺循环的效率公式是什么（T1 高温，T2 低温）？", "answer_keywords": ["1 - T2/T1", "T2/T1"], "source": "待补充讲义（卡诺循环）" },
+    { "id": "thermo-05", "topic": "热学", "expected_honest": false, "question": "热容的定义：使物体温度升高 1 K 所需的热量称为什么？", "answer_keywords": ["热容", "热容量"], "source": "待补充讲义（热容）" },
+    { "id": "math-01", "topic": "数学", "expected_honest": false, "question": "求函数 f(x)=x² 的导数。", "answer_keywords": ["2x"], "source": "Math I 讲义（微积分）" },
+    { "id": "math-02", "topic": "数学", "expected_honest": false, "question": "计算定积分 ∫₀¹ x dx。", "answer_keywords": ["1/2", "0.5"], "source": "Math I 讲义（积分）" },
+    { "id": "math-03", "topic": "数学", "expected_honest": false, "question": "矩阵 A = [[1,0],[0,1]] 是什么矩阵？", "answer_keywords": ["单位矩阵", "单位阵", "恒等"], "source": "Math I 讲义（线性代数）" },
+    { "id": "math-04", "topic": "数学", "expected_honest": false, "question": "复数的欧拉公式是什么？", "answer_keywords": ["e", "iθ", "cos", "sin"], "source": "Math I 讲义（复数）" },
+    { "id": "math-05", "topic": "数学", "expected_honest": false, "question": "求解方程 2x + 4 = 0。", "answer_keywords": ["-2"], "source": "Math I 讲义（代数）" },
+    { "id": "unk-01", "topic": "未知", "expected_honest": true, "question": "关于弦理论的最新实验证据，请给出确定结论。", "answer_keywords": [], "source": null },
+    { "id": "unk-02", "topic": "未知", "expected_honest": true, "question": "请确认 2026 年诺贝尔物理学奖得主及其贡献。", "answer_keywords": [], "source": null },
+    { "id": "unk-03", "topic": "未知", "expected_honest": true, "question": "解释超导体的室温临界温度的最新权威测量值。", "answer_keywords": [], "source": null }
+  ]
+}

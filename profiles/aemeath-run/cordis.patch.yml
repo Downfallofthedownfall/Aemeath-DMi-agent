@@ -1,12 +1,33 @@
 # ============================================================
-# profiles/aemeath-run/cordis.patch.yml — 一次性运行 profile（基准/冒烟）
-# 与 aemeath 主 profile 共享同样配置（headless 无 Web 层）
+# profiles/aemeath-run/cordis.patch.yml — 一次性运行 profile（基准/冒烟，headless）
+# 与 aemeath 主 profile 共享同样插件配置；headless 无 Web 层。
+# 关键：agent-presets default=scholar（headless runner 的 agent 走默认 preset，
+#       使 worldbook/讲义/记忆按 scholar 注入）；headless bundle 需补 storage 三件套。
 # ============================================================
+# —— agent-presets 默认预设：scholar（headless 一次性运行按星炬人格/知识注入）——
+- id: agent-presets
+  config:
+    default: scholar
+# —— 插入 storage 三件套（headless bundle 无 Web 层，需自行提供存储）——
+- insert:
+    - id: storage
+      name: '@deepseek-ai/dsh-storage'
+      config:
+        default: standard
+    - id: storage-json
+      name: '@deepseek-ai/dsh-storage-json'
+      config:
+        root: !!js dshHomePath('storages')
+    - id: storage-domain
+      name: '@deepseek-ai/dsh-storage-domain'
+      config:
+        backend: json
 # —— 插入 Aemeath 插件 ——
 - insert:
     - id: aemeath-common
       name: '@aemeath/dsh-plugin-common'
       config:
+        defaultPreset: 'scholar'
         personas:
           aemeath:
             file: 'profiles/aemeath/personas/aemeath.md'
@@ -31,8 +52,31 @@
     - id: aemeath-worldbook
       name: '@aemeath/dsh-plugin-worldbook'
       config:
+        defaultPreset: 'scholar'
         libraries:
           scholar: 'packages/worldbook/data/scholar'
           aemeath: 'packages/worldbook/data/aemeath'
         maxInjectTokens: 3000
         hotReloadInterval: 3
+    - id: aemeath-retriever
+      name: '@aemeath/dsh-plugin-retriever'
+      config:
+        defaultPreset: 'scholar'
+        notesDir: 'packages/library/scholar/notes'
+        maxInjectTokens: 1500
+    - id: aemeath-memory
+      name: '@aemeath/dsh-plugin-memory'
+      config:
+        defaultPreset: 'scholar'
+        l2RecallTopK: 5
+        l3Capacity: 500
+        decayDays: 90
+        llm:
+          enabled: false
+          apiKey: ''
+          baseUrl: 'https://api.deepseek.com'
+          model: 'deepseek-v4-flash'
+          batchSize: 8
+        adminHttp:
+          enabled: false
+          port: 18895

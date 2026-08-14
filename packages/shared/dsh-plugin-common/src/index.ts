@@ -26,6 +26,7 @@ export const VERSION = '2.0.0-m0';
 
 // ===== 配置（schemastery：属性默认可选，required() 才必填） =====
 export const Config = z.object({
+  defaultPreset: z.string(),
   personas: z.dict(
     z.object({
       file: z.string(),
@@ -49,6 +50,7 @@ export interface OocRuleConfig {
 }
 
 export interface CommonConfig {
+  defaultPreset?: string;
   personas?: Record<string, PersonaConfig>;
   oocRules?: Record<string, OocRuleConfig>;
 }
@@ -113,9 +115,9 @@ export function apply(ctx: Context, config: CommonConfig): void {
   );
   log('冒烟工具 aemeath/version 已注册');
 
-  // ---- 2) 双人格注册（agent 作用域 shadowing，按 agent preset 分流） ----
+  // ---- 2) 双人格注册（agent 作用域 shadowing，按 agent preset 分流；无 preset 时用 defaultPreset） ----
   const mountPersona = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
-    const preset = resolveSessionPreset(agent.session as never);
+    const preset = resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
     const persona = config.personas?.[preset ?? ''];
     if (!persona) return;
     let text = persona.text ?? '';
@@ -150,7 +152,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
 
-    const preset = resolveSessionPreset(payload.agent.session as never);
+    const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     const rules = config.oocRules?.[preset ?? ''];
     if (!rules?.forbidPatterns?.length) return decision;
 

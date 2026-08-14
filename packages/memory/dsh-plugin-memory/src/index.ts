@@ -40,6 +40,7 @@ export const inject = ['storageDomain', 'commands', 'credentials'];
 
 // ===== 配置 =====
 export const Config = z.object({
+  defaultPreset: z.string(),
   l2RecallTopK: z.number(),
   l3Capacity: z.number(),
   llm: z.object({
@@ -57,6 +58,7 @@ export const Config = z.object({
 });
 
 export interface MemoryConfig {
+  defaultPreset?: string;
   l2RecallTopK?: number;
   l3Capacity?: number;
   llm?: { enabled?: boolean; apiKey?: string; baseUrl?: string; model?: string; batchSize?: number };
@@ -128,7 +130,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           .map((b: { type?: string; text?: string }) => (b.type === 'text' ? b.text ?? '' : ''))
           .join('')
           .trim();
-        if (text) turnBuffer.set(sid, { query: text, reply: '', preset: resolveSessionPreset(session) ?? '', ts: Date.now() });
+        if (text) turnBuffer.set(sid, { query: text, reply: '', preset: resolveSessionPreset(session) ?? config.defaultPreset ?? '', ts: Date.now() });
       } else if (event.type === 'assistant/message') {
         const buf = turnBuffer.get(sid);
         if (!buf) return;
@@ -352,7 +354,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
 
-    const preset = resolveSessionPreset(payload.agent.session as never);
+    const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     if (!preset) return decision;
 
     const now = Date.now();

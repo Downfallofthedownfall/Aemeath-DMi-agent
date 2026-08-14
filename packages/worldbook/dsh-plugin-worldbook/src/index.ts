@@ -23,12 +23,14 @@ export const name = 'aemeath-worldbook';
 export const inject = ['tools', 'agents'];
 
 export const Config = z.object({
+  defaultPreset: z.string(),
   libraries: z.dict(z.string()),
   maxInjectTokens: z.number(),
   hotReloadInterval: z.number(),
 });
 
 export interface WorldbookConfig {
+  defaultPreset?: string;
   libraries?: Record<string, string>;
   maxInjectTokens?: number;
   hotReloadInterval?: number;
@@ -148,7 +150,7 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
 
-    const preset = resolveSessionPreset(payload.agent.session as never);
+    const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     const lib = preset ? libs.get(preset) : undefined;
     if (!lib || !lib.entries.length) return decision;
 
@@ -196,7 +198,7 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
 
   // ---- 工具可见性隔离：爱弥斯（aemeath preset）不暴露检索工具 ----
   const restrictAemeath = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
-    const preset = resolveSessionPreset(agent.session as never);
+    const preset = resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
     if (preset !== 'aemeath') return;
     agent.ctx.tools.restrict({ deny: ['retrieve_worldbook'] });
     log(`preset=${preset}（${agent.id}）已隐藏 retrieve_worldbook 工具（工具集隔离）`);
