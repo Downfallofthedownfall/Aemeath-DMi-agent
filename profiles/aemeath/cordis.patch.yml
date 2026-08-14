@@ -38,3 +38,13 @@
           aemeath: 'packages/worldbook/data/aemeath'
         maxInjectTokens: 3000
         hotReloadInterval: 3
+    - id: aemeath-memory
+      name: '@aemeath/dsh-plugin-memory'
+      config:
+        l2RecallTopK: 5
+        decayDays: 90
+        llm:
+          enabled: false
+          apiKey: ''
+          baseUrl: 'https://api.deepseek.com'
+          model: 'deepseek-v4-flash'
