@@ -2,7 +2,8 @@
   "name": "dsh-profile-aemeath",
   "private": true,
   "dependencies": {
-    "@aemeath/dsh-plugin-common": "file:../../packages/shared/dsh-plugin-common"
+    "@aemeath/dsh-plugin-common": "file:../../packages/shared/dsh-plugin-common",
+    "@aemeath/dsh-plugin-worldbook": "file:../../packages/worldbook/dsh-plugin-worldbook"
   },
   "dsh": {
     "profile": {
