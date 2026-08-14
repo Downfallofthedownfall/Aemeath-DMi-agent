@@ -5,6 +5,7 @@
     "@aemeath/dsh-plugin-common": "file:../../packages/shared/dsh-plugin-common",
     "@aemeath/dsh-plugin-memory": "file:../../packages/memory/dsh-plugin-memory",
     "@aemeath/dsh-plugin-retriever": "file:../../packages/retriever/dsh-plugin-retriever",
+    "@aemeath/dsh-plugin-workflow": "file:../../packages/workflow/dsh-plugin-workflow",
     "@aemeath/dsh-plugin-worldbook": "file:../../packages/worldbook/dsh-plugin-worldbook"
   },
   "dsh": {

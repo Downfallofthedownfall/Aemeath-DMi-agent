@@ -17,9 +17,12 @@ import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
+import { credentialRef } from '@deepseek-ai/dsh-credentials';
+import type {} from '@deepseek-ai/dsh-credentials';
+import type {} from '@deepseek-ai/dsh-agent';
 
 export const name = 'aemeath-common';
-export const inject = ['tools', 'systemPrompt', 'agents'];
+export const inject = ['tools', 'systemPrompt', 'agents', 'credentials'];
 
 /** 当前 v2 版本标识（M0）。 */
 export const VERSION = '2.0.0-m0';
@@ -38,6 +41,12 @@ export const Config = z.object({
       forbidPatterns: z.array(z.string()),
     }),
   ),
+  oocLlm: z.object({
+    enabled: z.boolean(),
+    apiKey: z.string(),
+    baseUrl: z.string(),
+    model: z.string(),
+  }),
 });
 
 export interface PersonaConfig {
@@ -53,6 +62,7 @@ export interface CommonConfig {
   defaultPreset?: string;
   personas?: Record<string, PersonaConfig>;
   oocRules?: Record<string, OocRuleConfig>;
+  oocLlm?: { enabled?: boolean; apiKey?: string; baseUrl?: string; model?: string };
 }
 
 // ===== 日志（[前缀] 约定） =====
@@ -192,4 +202,61 @@ export function apply(ctx: Context, config: CommonConfig): void {
   });
 
   log('OOC 规则层已挂载（agent/pre-step）');
+
+  // ---- 4) OOC LLM 判定层（M6，默认关；assistant 回复后异步判定越界 → steer 纠偏） ----
+  const oocLlm = config.oocLlm ?? { enabled: false, apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' };
+  if (oocLlm.enabled) {
+    ctx.on('session/event', async (session, event) => {
+      try {
+        if (event.type !== 'assistant/message') return;
+        const preset = resolveSessionPreset(session as never) ?? config.defaultPreset;
+        if (!preset) return;
+        const text = (event.data.message?.content ?? [])
+          .map((b: { type?: string; text?: string }) => (b.type === 'text' ? b.text ?? '' : ''))
+          .join('')
+          .trim();
+        if (!text) return;
+        const personaName = preset === 'aemeath' ? '爱弥斯（桌宠，活泼俏皮，不讲物理公式）' : '星炬（物理学霸，严谨专业，不卖萌）';
+        let apiKey = oocLlm.apiKey;
+        if (!apiKey) {
+          try {
+            apiKey = (await ctx.credentials?.resolve(credentialRef('DEEPSEEK_API_KEY')))?.value ?? '';
+          } catch {
+            apiKey = '';
+          }
+        }
+        if (!apiKey) return;
+        const resp = await fetch(`${oocLlm.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${oocLlm.apiKey}` },
+          body: JSON.stringify({
+            model: oocLlm.model,
+            messages: [
+              { role: 'system', content: '你是角色一致性判定器。判断回复是否符合角色设定，只输出 JSON：{"ooc": true/false, "reason": "简要原因"}' },
+              { role: 'user', content: `角色：${personaName}\n回复：${text.slice(0, 600)}` },
+            ],
+            response_format: { type: 'json_object' },
+            max_tokens: 120,
+            temperature: 0,
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!resp.ok) return;
+        const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
+        const parsed = JSON.parse(data.choices?.[0]?.message?.content ?? '{}') as { ooc?: boolean; reason?: string };
+        if (parsed.ooc) {
+          log(`[OOC-LLM] preset=${preset} 越界（${parsed.reason}）→ steer 纠偏`);
+          const agent = ctx.agents.get(session.id);
+          if (agent) {
+            agent.steer({
+              content: [{ type: 'text', text: `（系统提示）你刚才的回答偏离了角色（${parsed.reason}）。请立即修正：保持角色，直接重答。` }],
+            } as never);
+          }
+        }
+      } catch {
+        /* OOC LLM 判定失败静默（不影响对话） */
+      }
+    });
+    log('OOC LLM 判定层已挂载（session/event，assistant 回复后）');
+  }
 }

@@ -30,6 +30,11 @@
               - '好哒'
               - '喵~'
               - 'Ciallo'
+        oocLlm:
+          enabled: false
+          apiKey: ''
+          baseUrl: 'https://api.deepseek.com'
+          model: 'deepseek-v4-flash'
     - id: aemeath-worldbook
       name: '@aemeath/dsh-plugin-worldbook'
       config:
@@ -58,3 +63,7 @@
         adminHttp:
           enabled: true
           port: 18895
+    - id: aemeath-workflow
+      name: '@aemeath/dsh-plugin-workflow'
+      config:
+        enabled: true

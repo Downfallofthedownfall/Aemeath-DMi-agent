@@ -16,8 +16,8 @@ export const memoryRecordSchema = z.object({
   created_at: z.number(),
   last_access: z.number(),
   status: z.enum(['active', 'dormant']),
-  superseded_by: z.string().optional(),
-  deleted: z.boolean().optional(),
+  superseded_by: z.string().nullable().optional(),
+  deleted: z.boolean().nullable().optional(),
 });
 export type MemoryRecord = z.infer<typeof memoryRecordSchema>;
 
@@ -25,7 +25,7 @@ export const auditRecordSchema = z.object({
   id: z.string(),
   ts: z.number(),
   action: z.string(),
-  memory_id: z.string().optional(),
+  memory_id: z.string().nullable().optional(),
   detail: z.string(),
 });
 export type AuditRecord = z.infer<typeof auditRecordSchema>;

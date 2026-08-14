@@ -64,6 +64,11 @@
         defaultPreset: 'scholar'
         notesDir: 'packages/library/scholar/notes'
         maxInjectTokens: 1500
+    - id: aemeath-workflow
+      name: '@aemeath/dsh-plugin-workflow'
+      config:
+        defaultPreset: 'scholar'
+        enabled: true
     - id: aemeath-memory
       name: '@aemeath/dsh-plugin-memory'
       config:
