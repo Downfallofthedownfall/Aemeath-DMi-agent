@@ -1,20 +1,9 @@
 # ============================================================
 # profiles/aemeath/cordis.patch.yml — Aemeath 主 profile（Web UI）
-# 双 agent（爱弥斯/星炬）：覆盖 base 的 agent-loop 配置 + 插入公共/世界书插件
+# 双角色由 agent presets 承载（.dsh-home/.agent-presets/{aemeath,scholar}，
+# 由 scripts/dsh.ps1 同步）；本层只插入公共/世界书插件。
 # 注：路径相对仓库根（scripts/dsh.ps1 固定 cwd）
 # ============================================================
-# —— 覆盖 dsh-base 自带的 agent-loop（agents 空表 → 双 agent）——
-- id: agent-loop
-  config:
-    agents:
-      - id: aemeath
-        sessionId: aemeath
-        provider: deepseek-official
-        model: deepseek-v4-flash
-      - id: scholar
-        sessionId: scholar
-        provider: deepseek-official
-        model: deepseek-v4-flash
 # —— 插入 Aemeath 插件 ——
 - insert:
     - id: aemeath-common

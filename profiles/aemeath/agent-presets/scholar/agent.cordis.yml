@@ -1,0 +1,25 @@
+# ============================================================
+# scholar preset · 星炬物理学霸（学习引擎）
+# 组合：核心工具行（persona 由 @aemeath/dsh-plugin-common 按 preset 挂载，
+#       worldbook 注入 scholar 馆，检索工具可用）
+# ============================================================
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'

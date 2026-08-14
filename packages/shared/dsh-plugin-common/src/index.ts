@@ -16,6 +16,7 @@ import { join, isAbsolute } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
 
 export const name = 'aemeath-common';
 export const inject = ['tools', 'systemPrompt', 'agents'];
@@ -112,9 +113,10 @@ export function apply(ctx: Context, config: CommonConfig): void {
   );
   log('冒烟工具 aemeath/version 已注册');
 
-  // ---- 2) 双人格注册（agent 作用域 shadowing） ----
-  const mountPersona = (agent: { id: string; ctx: Context }): void => {
-    const persona = config.personas?.[agent.id];
+  // ---- 2) 双人格注册（agent 作用域 shadowing，按 agent preset 分流） ----
+  const mountPersona = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
+    const preset = resolveSessionPreset(agent.session as never);
+    const persona = config.personas?.[preset ?? ''];
     if (!persona) return;
     let text = persona.text ?? '';
     if (!text && persona.file) {
@@ -133,7 +135,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
       order: 0,
       text,
     });
-    log(`人格已挂载 → agent=${agent.id}（${text.length} 字符）`);
+    log(`人格已挂载 → preset=${preset} agent=${agent.id}（${text.length} 字符）`);
   };
 
   // 先补挂已存在的 agents（插件启动晚于 agent-loop，会错过 agent/created）
@@ -148,7 +150,8 @@ export function apply(ctx: Context, config: CommonConfig): void {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
 
-    const rules = config.oocRules?.[payload.agent.id];
+    const preset = resolveSessionPreset(payload.agent.session as never);
+    const rules = config.oocRules?.[preset ?? ''];
     if (!rules?.forbidPatterns?.length) return decision;
 
     // 检查会话日志中最近一条 assistant 文本（上一轮模型输出）
@@ -174,7 +177,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
     if (steeredTurns.get(key)) return decision; // 每回合最多纠偏一次
     steeredTurns.set(key, 1);
 
-    log(`[OOC] 命中禁止模式 pattern=${violation.pattern} matched=${violation.matched.slice(0, 40)} turn=${payload.turn} → steer 纠偏`);
+    log(`[OOC] preset=${preset} 命中禁止模式 pattern=${violation.pattern} matched=${violation.matched.slice(0, 40)} turn=${payload.turn} → steer 纠偏`);
     payload.agent.steer({
       content: [
         {

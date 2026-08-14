@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
 import { matchWorldbook, hitSummary, type WorldbookEntry } from './match.js';
 
 export const name = 'aemeath-worldbook';
@@ -142,12 +143,13 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
   }, Math.max(0.5, reloadSec) * 1000);
   if (timer.unref) timer.unref();
 
-  // ---- 触发注入（agent/pre-step waterfall） ----
+  // ---- 触发注入（agent/pre-step waterfall，按 agent preset 选馆） ----
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
 
-    const lib = libs.get(payload.agent.id);
+    const preset = resolveSessionPreset(payload.agent.session as never);
+    const lib = preset ? libs.get(preset) : undefined;
     if (!lib || !lib.entries.length) return decision;
 
     const query = extractUserText(decision.messages);
@@ -156,7 +158,7 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
     const block = matchWorldbook(query, lib.entries, maxTokens);
     if (!block) return decision;
 
-    log(`agent=${payload.agent.id} 注入 ${block.length} 字符（≤${maxTokens} tokens 预算）`);
+    log(`preset=${preset} agent=${payload.agent.id} 注入 ${block.length} 字符（≤${maxTokens} tokens 预算）`);
     const injectMsg = createUserMessage({
       content: [{ type: 'text', text: block }],
       source: { kind: 'plugin', plugin: name, form: 'catalog' },
@@ -192,11 +194,12 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
   );
   log('工具 retrieve_worldbook 已注册');
 
-  // ---- 工具可见性隔离：爱弥斯不暴露检索工具（先补挂现存 agent，再监听后续创建） ----
-  const restrictAemeath = (agent: { id: string; ctx: Context }): void => {
-    if (agent.id !== 'aemeath') return;
+  // ---- 工具可见性隔离：爱弥斯（aemeath preset）不暴露检索工具 ----
+  const restrictAemeath = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
+    const preset = resolveSessionPreset(agent.session as never);
+    if (preset !== 'aemeath') return;
     agent.ctx.tools.restrict({ deny: ['retrieve_worldbook'] });
-    log('爱弥斯会话已隐藏 retrieve_worldbook 工具（工具集隔离）');
+    log(`preset=${preset}（${agent.id}）已隐藏 retrieve_worldbook 工具（工具集隔离）`);
   };
   for (const agent of ctx.agents.list()) restrictAemeath(agent);
   ctx.on('agent/created', ({ agent }) => restrictAemeath(agent));
