@@ -1,0 +1,42 @@
+# ============================================================
+# profiles/aemeath-run/cordis.patch.yml — 一次性运行 profile（基准/冒烟）
+# 与 aemeath 主 profile 共享同样配置（headless 无 Web 层）
+# ============================================================
+# —— 覆盖 dsh-base 自带的 agent-loop ——
+- id: agent-loop
+  config:
+    agents:
+      - id: aemeath
+        sessionId: aemeath
+        provider: deepseek-official
+        model: deepseek-v4-flash
+      - id: scholar
+        sessionId: scholar
+        provider: deepseek-official
+        model: deepseek-v4-flash
+# —— 插入 Aemeath 公共插件 ——
+- insert:
+    - id: aemeath-common
+      name: '@aemeath/dsh-plugin-common'
+      config:
+        personas:
+          aemeath:
+            file: 'profiles/aemeath/personas/aemeath.md'
+          scholar:
+            file: 'profiles/aemeath/personas/scholar.md'
+        oocRules:
+          aemeath:
+            forbidPatterns:
+              - '根据研究'
+              - '科学表明'
+              - '数据显示'
+              - '牛顿'
+              - '焦耳'
+              - '库仑'
+          scholar:
+            forbidPatterns:
+              - '嘤嘤嘤'
+              - '人家'
+              - '好哒'
+              - '喵~'
+              - 'Ciallo'

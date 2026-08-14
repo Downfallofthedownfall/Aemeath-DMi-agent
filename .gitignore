@@ -174,3 +174,14 @@ todos.json
 
 # 计划
 docs
+
+# ===== v2 (dsh 插件 monorepo) =====
+# 项目内 dsh home（profile 运行时数据/会话/凭据）
+.dsh-home/
+# 项目内 npm 缓存（沙箱/离线友好）
+.npm-cache/
+# 插件编译产物
+packages/**/lib/
+packages/**/dist/
+profiles/**/node_modules/
+*.tsbuildinfo

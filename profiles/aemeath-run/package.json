@@ -1,0 +1,15 @@
+{
+  "name": "dsh-profile-aemeath-run",
+  "private": true,
+  "dependencies": {
+    "@aemeath/dsh-plugin-common": "file:../../packages/shared/dsh-plugin-common"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-headless"
+      ]
+    }
+  }
+}
