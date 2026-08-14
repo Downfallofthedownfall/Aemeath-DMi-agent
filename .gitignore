@@ -168,8 +168,8 @@ __pycache__/
 # 忽略 Dify 插件运行时缓存
 dify/docker/volumes/plugin_daemon/cwd/
 
-# 记忆
-data/
+# 记忆（v1 SQLite）
+electron-app/data/
 todos.json
 
 # 计划

@@ -1,0 +1,72 @@
+[
+  {
+    "id": "em_circuits_ohm",
+    "title": "电路基础与欧姆定律",
+    "kind": "knowledge",
+    "triggers": ["电流", "电压", "电阻", "欧姆定律", "串联", "并联", "电功率", "焦耳定律", "I=U/R", "ohm's law", "current", "voltage", "strom", "spannung", "widerstand"],
+    "constant": false,
+    "intrinsic_value": 90,
+    "priority": 180,
+    "chain": ["em_electrostatics_coulomb"],
+    "content": "电流：电荷定向移动形成，I = Q/t，单位安培 A。\n电压：使电荷定向移动形成电流的原因，单位伏特 V；电源提供电压。\n电阻：导体对电流的阻碍作用，R = U/I，单位欧姆 Ω；决定式 R = ρL/S（材料、长度、横截面积）。\n欧姆定律：I = U/R（同一导体，电流与电压成正比、与电阻成反比）。\n串联：I 相同，U = U1 + U2，R总 = R1 + R2，电压按电阻正比分压。\n并联：U 相同，I = I1 + I2，1/R总 = 1/R1 + 1/R2，电流按电阻反比分流。\n电功率：P = UI = I²R = U²/R；焦耳定律 Q = I²Rt（纯电阻电路 Q = W）。",
+    "source": "人教版九年级物理 第十五~十八章 / 高中选修3-1 / 赵凯华《电磁学》",
+    "exam_points": "欧姆定律与电功率综合、动态电路分析（中考/高考常考）",
+    "verifiable": true
+  },
+  {
+    "id": "em_electrostatics_coulomb",
+    "title": "静电场与库仑定律",
+    "kind": "knowledge",
+    "triggers": ["静电", "电荷", "库仑定律", "电场强度", "电势", "电势差", "电容器", "高斯定理", "coulomb's law", "electric field", "potential", "elektrisches feld", "potential", "kondensator"],
+    "constant": false,
+    "intrinsic_value": 92,
+    "priority": 180,
+    "chain": ["em_circuits_ohm", "em_maxwell"],
+    "content": "电荷守恒定律：电荷只能转移不能创生或消灭；摩擦起电、感应起电本质都是电荷转移。\n库仑定律：F = k·q1·q2/r²，k = 8.99×10⁹ N·m²/C²（真空中两点电荷，方向沿连线）。\n电场强度：E = F/q（单位 N/C 或 V/m），点电荷场强 E = kQ/r²；电场线从正电荷指向负电荷。\n电势与电势差：Uab = φa - φb = Wab/q；电场力做功与路径无关，仅与初末位置电势差有关。\n电容器：C = Q/U；平行板电容器 C = εS/d（ε = ε0·εr），插入电介质 C 增大。\n高斯定理（本科）：∮E·dS = Σq内/ε0，用于对称电荷分布（球对称、无限长柱、无限大板）求场强。\n带电粒子在匀强电场中：类平抛运动（偏转）、加速（qU = ½mv²）。",
+    "source": "高中选修3-1 / 赵凯华《电磁学》上册 / Demtröder Kap.7",
+    "exam_points": "场强与电势叠加、电容器动态分析、带电粒子偏转（高考/考研常考）",
+    "verifiable": true
+  },
+  {
+    "id": "em_magnetic_field",
+    "title": "磁场、安培力与洛伦兹力",
+    "kind": "knowledge",
+    "triggers": ["磁场", "磁感应强度", "安培力", "洛伦兹力", "带电粒子", "回旋加速器", "质谱仪", "BIL", "qvB", "magnetic field", "lorentz force", "magnetfeld", "lorentzkraft"],
+    "constant": false,
+    "intrinsic_value": 90,
+    "priority": 180,
+    "chain": ["em_induction"],
+    "content": "磁感应强度：B = F/(IL)（电流元垂直磁场时），单位特斯拉 T；用磁感线描述，磁感线闭合、不相交。\n安培力：F = BIL·sinθ，方向用左手定则判断（伸左手，四指指向电流方向）。\n洛伦兹力：F = qvB·sinθ，方向垂直于 v 与 B 决定的平面；洛伦兹力永不做功（只改变方向）。\n带电粒子垂直进入匀强磁场做匀速圆周运动：r = mv/(qB)，周期 T = 2πm/(qB) 与速度无关。\n应用：回旋加速器（利用 T 与速度无关）、质谱仪（按比荷 q/m 分离）、速度选择器（qvB = qE）。\n磁通量：Φ = BS·cosθ，单位韦伯 Wb。",
+    "source": "高中选修3-1 / 赵凯华《电磁学》上册 / Demtröder Kap.8",
+    "exam_points": "带电粒子圆周运动几何分析（高考压轴）、回旋加速器（2022真题类似题型）",
+    "verifiable": true
+  },
+  {
+    "id": "em_induction",
+    "title": "电磁感应与法拉第定律",
+    "kind": "knowledge",
+    "triggers": ["电磁感应", "法拉第", "楞次定律", "感应电动势", "自感", "互感", "涡流", "E=nΔΦ/Δt", "induction", "faraday", "lens", "induktion"],
+    "constant": false,
+    "intrinsic_value": 88,
+    "priority": 175,
+    "chain": ["em_maxwell"],
+    "content": "电磁感应：穿过闭合回路的磁通量发生变化时产生感应电流。\n楞次定律：感应电流的方向总是阻碍引起感应电流的磁通量的变化（增反减同、来拒去留），本质是能量守恒。\n法拉第电磁感应定律：E = n·ΔΦ/Δt（n 为匝数）；导体切割磁感线 E = BLv·sinθ。\n自感：线圈自身电流变化产生感应电动势，自感系数 L（单位亨利 H），通电自感阻碍电流增大、断电自感维持电流。\n互感：一个线圈电流变化在相邻线圈产生电动势，是变压器原理（U1/U2 = n1/n2）。\n涡流：块状金属在变化磁场中产生感应电流，应用于电磁炉、高频淬火，也产生阻尼。",
+    "source": "高中选修3-2 / 赵凯华《电磁学》下册 / Demtröder Kap.8.4",
+    "exam_points": "电磁感应与动量能量综合（高考压轴）、楞次定律判向",
+    "verifiable": true
+  },
+  {
+    "id": "em_maxwell",
+    "title": "麦克斯韦方程组与电磁波",
+    "kind": "knowledge",
+    "triggers": ["麦克斯韦", "麦克斯韦方程组", "电磁波", "位移电流", "电磁场", "电磁波谱", "maxwell's equations", "displacement current", "maxwell", "verschiebungsstrom", "elektromagnetische welle"],
+    "constant": false,
+    "intrinsic_value": 95,
+    "priority": 185,
+    "chain": ["em_induction", "opt_diffraction_polarization"],
+    "content": "麦克斯韦方程组（积分形式）：\n① 电场高斯定理：∮E·dS = Σq/ε0（电场有源，源为电荷）；\n② 磁场高斯定理：∮B·dS = 0（磁场无源，磁感线闭合）；\n③ 法拉第定律：∮E·dl = -dΦB/dt（变化磁场激发涡旋电场）；\n④ 安培-麦克斯韦定律：∮B·dl = μ0(I + ε0·dΦE/dt)（变化电场激发磁场，位移电流）。\n麦克斯韦预言电磁波：真空中 c = 1/√(ε0·μ0) ≈ 3×10⁸ m/s，由赫兹实验证实。\n电磁波是横波：E、B 互相垂直且都垂直于传播方向，相位相同；c = λf。\n电磁波谱（频率由低到高）：无线电波、微波、红外、可见光、紫外、X 射线、γ 射线。\n微分形式（硕士）：∇·E = ρ/ε0，∇·B = 0，∇×E = -∂B/∂t，∇×B = μ0J + μ0ε0·∂E/∂t。",
+    "source": "赵凯华《电磁学》下册 / Jackson《经典电动力学》/ Fließbach《Elektrodynamik》",
+    "exam_points": "位移电流概念、电磁波性质与能流（考研/研究生课程）",
+    "verifiable": true
+  }
+]

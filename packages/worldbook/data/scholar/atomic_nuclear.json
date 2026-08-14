@@ -1,0 +1,58 @@
+[
+  {
+    "id": "an_atomic_structure",
+    "title": "原子结构与玻尔模型",
+    "kind": "knowledge",
+    "triggers": ["原子结构", "玻尔模型", "能级", "氢原子", "光谱", "跃迁", "卢瑟福", "α粒子散射", "电子云", "bohr model", "energy level", "hydrogen", "bohr", "atommodell", "energieniveau", "wasserstoff"],
+    "constant": false,
+    "intrinsic_value": 86,
+    "priority": 175,
+    "chain": ["an_nuclear_basics", "rq_quantum_basics"],
+    "content": "原子结构认识史：汤姆孙葡萄干布丁模型 → 卢瑟福 α 粒子散射实验（绝大多数 α 粒子直穿、少数大角度偏转，得出原子核式结构：原子由很小的带正电原子核与核外电子构成）→ 玻尔模型。\n玻尔假设：① 定态假设——电子只能在特定轨道运动、不辐射能量；② 频率条件——跃迁时辐射/吸收光子 hν = En - Em；③ 角动量量子化 L = nħ。\n氢原子能级：E_n = -13.6 eV/n²（n = 1, 2, 3…）；基态电离能 13.6 eV。\n光谱线系：赖曼系（n→1，紫外）、巴耳末系（n→2，可见光）、帕邢系（n→3，红外）。\n从能级 n 跃迁可产生的光谱线数：N = n(n-1)/2。\n现代量子力学图像：电子无确定轨道，由概率密度（电子云）描述，玻尔模型是半经典近似。",
+    "source": "高中选修3-5 / 大学物理 原子物理篇 / Demtröder Kap.12",
+    "exam_points": "能级跃迁与光子能量计算（高考常考）",
+    "verifiable": true
+  },
+  {
+    "id": "an_nuclear_basics",
+    "title": "原子核与放射性",
+    "kind": "knowledge",
+    "triggers": ["原子核", "放射性", "衰变", "半衰期", "α衰变", "β衰变", "γ射线", "核力", "结合能", "radioactivity", "half-life", "decay", "radioaktivitaet", "halbwertszeit", "zerfall"],
+    "constant": false,
+    "intrinsic_value": 84,
+    "priority": 172,
+    "chain": ["an_nuclear_reactions"],
+    "content": "原子核由质子（Z）与中子（N）组成（统称核子），核素记作 ᴬ_Z X，质量数 A = Z + N；同位素：质子数相同、中子数不同。\n三种射线：α 射线（氦核 ⁴₂He²⁺，电离本领最强、穿透最弱，一张纸可挡）；β 射线（电子/正电子，几毫米铝板可挡）；γ 射线（高频电磁波，穿透最强，需厚铅层）。\n衰变规律：α 衰变质量数减 4、电荷数减 2（X → Y + ⁴₂He）；β 衰变（n → p + e⁻ + ṽₑ）电荷数加 1、质量数不变；γ 衰变伴随 α/β 发生，不改变 A、Z。\n半衰期：放射性核半数衰变所需时间，N = N0·(1/2)^(t/T½)；只取决于核本身性质，不受温度、压强、化学状态影响。\n核力：短程强相互作用（约 10⁻¹⁵ m），使质子中子结合；比结合能（平均每个核子的结合能）越大核越稳定，铁最稳定。",
+    "source": "高中选修3-5 / 大学物理 核物理篇",
+    "exam_points": "衰变方程书写、半衰期计算（高考常考）",
+    "verifiable": true
+  },
+  {
+    "id": "an_nuclear_reactions",
+    "title": "核反应与核能利用",
+    "kind": "knowledge",
+    "triggers": ["核反应", "核裂变", "核聚变", "质能亏损", "链式反应", "核电站", "质能方程", "nuclear fission", "nuclear fusion", "kernspaltung", "kernfusion", "kernenergie"],
+    "constant": false,
+    "intrinsic_value": 83,
+    "priority": 170,
+    "chain": ["rq_special_relativity"],
+    "content": "核反应方程必须满足质量数守恒与电荷数守恒。\n核裂变：重核分裂为两个中等质量核并释放能量，如 ²³⁵₉₂U + ¹₀n → ¹⁴¹₅₆Ba + ⁹²₃₆Kr + 3¹₀n + 约 200 MeV；铀核每次裂变产生 2-3 个中子可引发链式反应，是核电站与原子弹的原理。\n核聚变：轻核结合成较重核释放能量，如 ²₁H + ³₁H → ⁴₂He + ¹₀n + 17.6 MeV；是太阳的能源，需要极高温度（约 10⁸ K），可控核聚变（ITER、EAST）仍在工程研究阶段。\n质能亏损：反应前后质量差 Δm 转化为能量 ΔE = Δmc²；每核子释放的能量聚变（约 3.5 MeV）大于裂变（约 1 MeV）。\n比结合能曲线：中等质量核比结合能最大，因此重核裂变与轻核聚变都释放能量。\n应用与安全：核电站（裂变、可控）、核废料处理、辐射防护。",
+    "source": "高中选修3-5 / 大学物理 核物理篇",
+    "exam_points": "核反应方程与质能亏损计算（高考常考）",
+    "verifiable": true
+  },
+  {
+    "id": "an_particle_physics",
+    "title": "粒子物理标准模型",
+    "kind": "knowledge",
+    "triggers": ["粒子物理", "标准模型", "夸克", "轻子", "胶子", "希格斯", "规范场", "反物质", "强相互作用", "弱相互作用", "particle physics", "standard model", "quark", "higgs", "teilchenphysik", "standardmodell", "higgs"],
+    "constant": false,
+    "intrinsic_value": 88,
+    "priority": 180,
+    "chain": ["rq_quantum_advanced"],
+    "content": "基本粒子分两类：费米子（物质组成，自旋 1/2）——6 种夸克（u, d, c, s, t, b）和 6 种轻子（e, μ, τ 及对应中微子 νe, νμ, ντ）；玻色子（传递相互作用，整数自旋）。\n四种基本相互作用及其媒介子：强相互作用（胶子）、电磁相互作用（光子）、弱相互作用（W±、Z⁰）、引力（假设的引力子，尚未证实）。\n标准模型：规范理论统一描述电磁、弱、强三种相互作用；电弱统一（Glashow-Weinberg-Salam，W/Z 玻色子 1983 年发现）。\n夸克禁闭：夸克不能单独存在，由胶子束缚成强子——重子（3 夸克，如质子 uud、中子 udd）、介子（正反夸克对，如 π 介子）。\n希格斯机制：希格斯玻色子（2012 年 LHC 发现，2013 诺贝尔奖）通过自发对称破缺赋予 W/Z 和费米子质量。\n反物质：每个粒子都有反粒子（正电子、反质子），正反粒子相遇湮灭为光子（能量 E = 2mc²）。\n超出标准模型：暗物质、暗能量、中微子质量、CP 破坏等问题尚未解决。",
+    "source": "Griffiths《Introduction to Elementary Particles》/ 研究生课程 粒子物理导论",
+    "exam_points": "夸克组成、守恒量（重子数、轻子数）判断（研究生课程）",
+    "verifiable": true
+  }
+]

@@ -1,0 +1,72 @@
+[
+  {
+    "id": "la_vector_spaces",
+    "title": "矢量空间与线性映射",
+    "kind": "knowledge",
+    "triggers": ["矢量空间", "线性相关", "线性无关", "基", "维数", "线性映射", "核", "像", "秩", "张成", "vector space", "linear independence", "basis", "dimension", "linear map", "kernel", "rank", "vektorraum", "basis", "dimension", "lineare abbildung"],
+    "constant": false,
+    "intrinsic_value": 88,
+    "priority": 180,
+    "chain": ["la_matrices_equations", "rq_quantum_advanced"],
+    "content": "矢量空间：满足加法与数乘八条公理（封闭性、结合律、交换律、零元、负元、分配律等）；典型例子：Rⁿ、多项式空间、连续函数空间、矩阵空间。\n线性组合与张成 span{vᵢ}；线性相关/无关的定义；基：极大线性无关组（同时张成且线性无关）；维数：同一空间任何两组基元素个数相同。\n子空间：对加法和数乘封闭的非空子集（如直线、平面、核空间）。\n线性映射 f: V → W（保持加法与数乘）：核 Ker f（映到零的向量）、像 Im f；秩-零化度定理 dim V = dim Ker f + rank f。\n坐标表示：选定基后线性映射 ↔ 矩阵；基变换矩阵与坐标变换公式。\n物理意义：量子力学的态矢量构成希尔伯特空间（衔接 rq_quantum_advanced）。",
+    "source": "Bosch《Lineare Algebra》Kap.2-4 / Fischer《Lineare Algebra》",
+    "exam_points": "线性相关判断、基与维数、秩-零化度定理（笔试核心）",
+    "verifiable": true
+  },
+  {
+    "id": "la_matrices_equations",
+    "title": "矩阵与线性方程组",
+    "kind": "knowledge",
+    "triggers": ["矩阵", "行列式", "高斯消元", "逆矩阵", "线性方程组", "克拉默法则", "秩", "转置", "matrix", "determinant", "gaussian elimination", "inverse", "cramer's rule", "matrix", "determinante", "gauß-elimination", "inverse matrix"],
+    "constant": false,
+    "intrinsic_value": 90,
+    "priority": 182,
+    "chain": ["la_eigenvalues", "em_circuits_ohm"],
+    "content": "矩阵运算：加法、数乘、乘法（一般不可交换）、转置、共轭转置；(AB)ᵀ = BᵀAᵀ。\n行列式：展开定义与性质（行交换变号、某行乘 k 行列式乘 k、两行成比例则行列式为零、三角行列式 = 对角线乘积）；按行/列展开（拉普拉斯）；乘积定理 det(AB) = det A·det B。\n高斯消元法：行初等变换化为行阶梯形；秩 = 非零行数；求解线性方程组的标准算法。\n逆矩阵：A 可逆 ⇔ det A ≠ 0；伴随矩阵法 A⁻¹ = adj(A)/det A；(AB)⁻¹ = B⁻¹A⁻¹。\n线性方程组 Ax = b：有解判别 rank(A) = rank(A|b)；唯一解 ⇔ det A ≠ 0；齐次方程 Ax = 0 有非零解 ⇔ det A = 0；克拉默法则（方阵情形）。\n物理应用：基尔霍夫电路方程组、坐标变换、数值计算基础。",
+    "source": "Bosch《Lineare Algebra》Kap.1-3 / Fischer",
+    "exam_points": "行列式计算技巧、高斯消元与逆矩阵、方程组解结构（笔试核心）",
+    "verifiable": true
+  },
+  {
+    "id": "la_eigenvalues",
+    "title": "特征值与特征向量",
+    "kind": "knowledge",
+    "triggers": ["特征值", "特征向量", "特征多项式", "对角化", "相似", "迹", "谱", "本征值", "eigenvalue", "eigenvector", "diagonalization", "characteristic polynomial", "eigenwert", "eigenvektor", "diagonalisierung"],
+    "constant": false,
+    "intrinsic_value": 92,
+    "priority": 184,
+    "chain": ["m2_ode_systems", "rq_quantum_basics"],
+    "content": "特征值问题：Av = λv（v ≠ 0）；特征多项式 det(A - λI) = 0 的根即特征值，对应齐次方程组 (A - λI)v = 0 的非零解为特征向量。\n基本性质：迹 tr(A) = Σλᵢ；行列式 det A = Πλᵢ；不同特征值对应的特征向量线性无关；实对称矩阵的特征值全为实数。\n对角化：A 可对角化 ⇔ 存在 n 个线性无关特征向量（每个特征值的代数重数 = 几何重数）；此时 P⁻¹AP = diag(λ₁,…,λₙ)，P 由特征向量组成。\n对称矩阵谱定理：实对称矩阵可正交对角化（P 可取正交矩阵）。\n应用：微分方程组解耦（x' = Ax 用特征向量基变换化为对角系统）、振动模态与本征频率、主应力分析、量子力学定态薛定谔方程 Ĥψ = Eψ（衔接 rq_quantum_basics、m2_ode_systems）。",
+    "source": "Bosch《Lineare Algebra》Kap.6 / Fischer",
+    "exam_points": "特征值与特征向量计算、可对角化判定（笔试核心）",
+    "verifiable": true
+  },
+  {
+    "id": "la_inner_product",
+    "title": "内积空间与正交性",
+    "kind": "knowledge",
+    "triggers": ["内积", "范数", "正交", "施密特正交化", "投影", "最小二乘", "柯西-施瓦茨", "厄米", "酉", "inner product", "norm", "orthogonal", "gram-schmidt", "cauchy-schwarz", "hermite", "skalarprodukt", "norm", "orthogonalisierung"],
+    "constant": false,
+    "intrinsic_value": 90,
+    "priority": 182,
+    "chain": ["rq_quantum_advanced", "m2_fourier_analysis"],
+    "content": "内积：满足正定性 ⟨v,v⟩ ≥ 0（等号当且仅当 v = 0）、共轭对称性 ⟨u,v⟩ = ⟨v,u⟩*、对第一元线性；实内积空间（欧氏）与复内积空间（酉空间/希尔伯特空间）。\n范数：||v|| = √⟨v,v⟩；柯西-施瓦茨不等式 |⟨u,v⟩| ≤ ||u||·||v||；三角不等式 ||u + v|| ≤ ||u|| + ||v||。\n正交与正交基：⟨u,v⟩ = 0；格拉姆-施密特正交化过程——将任意线性无关组化为正交归一基。\n投影定理：向量到子空间的最佳逼近（最小距离）等于正交投影，是最小二乘法的几何基础（线性回归）。\n厄米矩阵 A† = A：特征值为实数、不同特征值的本征向量正交——量子力学可观测量的数学要求（衔接 rq_quantum_advanced）。\n物理应用：傅里叶级数的正交函数系（衔接 m2_fourier_analysis）、量子态内积与概率幅。",
+    "source": "Bosch《Lineare Algebra》Kap.7 / Fischer",
+    "exam_points": "施密特正交化、柯西-施瓦茨不等式证明、最小二乘（笔试常考）",
+    "verifiable": true
+  },
+  {
+    "id": "la_transformations_physics",
+    "title": "正交变换与物理应用",
+    "kind": "knowledge",
+    "triggers": ["旋转矩阵", "正交变换", "酉变换", "洛伦兹变换", "泡利矩阵", "欧拉角", "群论", "罗德里格斯", "rotation matrix", "orthogonal transformation", "unitary", "lorentz", "pauli matrices", "drehmatrix", "orthogonale transformation", "lorentz-transformation"],
+    "constant": false,
+    "intrinsic_value": 89,
+    "priority": 181,
+    "chain": ["rq_special_relativity", "rq_quantum_advanced"],
+    "content": "正交矩阵：QᵀQ = QQᵀ = I，保内积与长度，det Q = ±1（+1 为旋转、-1 为反射）。\n二维旋转矩阵 R(θ) = (cosθ  -sinθ; sinθ  cosθ)；三维旋转用欧拉角或罗德里格斯公式（绕任意轴旋转）。\n酉矩阵 U†U = I：复空间中保内积，量子力学时间演化算符 e^{-iĤt/ħ} 是酉的（概率守恒）。\n洛伦兹变换矩阵：闵可夫斯基时空中的伪正交变换（度规 η = diag(1,-1,-1,-1)），衔接 rq_special_relativity。\n泡利矩阵 σₓ、σ_y、σ_z：自旋 1/2 的矩阵表示，生成 SU(2)，衔接 rq_quantum_advanced。\n群论预告：旋转群 SO(3) 与对称性；诺特定理——连续对称性对应守恒律（为分析力学、量子场论打基础）。",
+    "source": "Bosch《Lineare Algebra》Kap.8 / 理论物理导论讲义",
+    "exam_points": "旋转矩阵性质、正交/酉条件验证（为后续课程衔接）",
+    "verifiable": true
+  }
+]
