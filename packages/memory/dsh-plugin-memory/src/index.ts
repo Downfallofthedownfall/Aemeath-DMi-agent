@@ -1,31 +1,39 @@
 // ============================================================
-// dsh-plugin-memory · 分层记忆插件（M3 v1）
+// dsh-plugin-memory · 分层记忆插件（M3 v3 · 完整版）
 // 职责：
-//   1. 存储：ctx.storageDomain 域 'aemeath_memory'（memories 表 + audit 表 + userProfile 全局）
-//   2. 事实采集：session/event 监听，缓冲每轮 (query, reply)
-//   3. 守门员规则层（gatekeeper.ts 纯函数）→ save 直写 / knowledge_routed / skip / blocked / pending
-//   4. LLM 判定层（配置启用时）：攒批 8 轮 → DeepSeek 判定 JSON 动作（默认关闭，M3 v2 细化）
-//   5. 召回注入：agent/pre-step 按 preset 召回 L2(mode) + L3(global) top-k，MessageSource form='recall'
-//   6. 审计：每次写入/更新/删除记 audit 表（可回放、可撤销）
-//   7. 衰减：last_access 超 90 天 importance-10 → <30 dormant（setInterval 宿主级）
-//   8. /memory 命令：list/stats/delete
-// 注：M3 v1 交付核心闭环（采集→守门→存储→召回→审计）；容量淘汰/再巩固/管理端点/迁移脚本为 v2 增量。
+//   1. 存储：ctx.storageDomain 域 'aemeath_memory'（memories + audit + userProfile）
+//   2. 事实采集：session/event 缓冲每轮 (query, reply)
+//   3. 守门员规则层 → save/knowledge_routed/skip/blocked/pending
+//   4. LLM 判定层：攒批 → DeepSeek JSON 动作（save/update/merge/reconsolidate/skip
+//      + conflict + target_id + scope: mode|global）
+//   5. L1 暂存区：MemoryService.scratch（会话内任务工作态，M6 解题用）
+//   6. L2/L3：scope='mode' 角色隔离；scope='global' 跨角色共享
+//   7. user_profile 沉淀：user_fact 归集进全局画像（衰减/淘汰前）
+//   8. L3 容量淘汰：importance×recency 最低者先沉淀后淘汰
+//   9. 召回注入：pre-step 按 preset 召回 L2+L3（form='recall'）
+//   10. session/flush 接入：落盘时机触发 pending 批量判定
+//   11. ctx.memory Service：search/list/save/softDelete/stats/scratch
+//   12. HTTP 管理端点（可选，仅回环）：/memory/list|stats|delete
+//   13. 审计 + 衰减 + /memory 命令
 // ============================================================
 
+import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
-import { z as zod } from 'zod';
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain';
-import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain';
+import type { KvTable } from '@deepseek-ai/dsh-storage-domain';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-credentials';
-import { decide, hasTimeEvidence, classifyCategory, extractMemory, type MemoryAction, type Category } from './gatekeeper.js';
+import { decide, hasTimeEvidence, classifyCategory, extractMemory, type Category } from './gatekeeper.js';
 import { search as bm25Search } from './bm25.js';
+import { selectEviction, suggestProfileFacts } from './engine.js';
+import { memoryRecordSchema, auditRecordSchema, userProfileSchema, type MemoryRecord, type AuditRecord, type UserProfile } from './types.js';
+import { MemoryService } from './service.js';
 
 export const name = 'aemeath-memory';
 export const inject = ['storageDomain', 'commands', 'credentials'];
@@ -33,6 +41,7 @@ export const inject = ['storageDomain', 'commands', 'credentials'];
 // ===== 配置 =====
 export const Config = z.object({
   l2RecallTopK: z.number(),
+  l3Capacity: z.number(),
   llm: z.object({
     enabled: z.boolean(),
     apiKey: z.string(),
@@ -41,49 +50,28 @@ export const Config = z.object({
     batchSize: z.number(),
   }),
   decayDays: z.number(),
+  adminHttp: z.object({
+    enabled: z.boolean(),
+    port: z.number(),
+  }),
 });
 
 export interface MemoryConfig {
   l2RecallTopK?: number;
+  l3Capacity?: number;
   llm?: { enabled?: boolean; apiKey?: string; baseUrl?: string; model?: string; batchSize?: number };
   decayDays?: number;
+  adminHttp?: { enabled?: boolean; port?: number };
 }
 
-// ===== 存储域（zod 记录 schema） =====
-const memoryRecord = zod.object({
-  id: zod.string(),
-  scope: zod.enum(['mode', 'global']),
-  preset: zod.string(),
-  content: zod.string(),
-  category: zod.enum(['user_fact', 'study_log', 'preference', 'relationship', 'session_summary']),
-  importance: zod.number(),
-  confidence: zod.number(),
-  source_mode: zod.string(),
-  created_at: zod.number(),
-  last_access: zod.number(),
-  status: zod.enum(['active', 'dormant']),
-  superseded_by: zod.string().optional(),
-  deleted: zod.boolean().optional(),
-});
-type MemoryRecord = zod.infer<typeof memoryRecord>;
-
-const auditRecord = zod.object({
-  id: zod.string(),
-  ts: zod.number(),
-  action: zod.string(),
-  memory_id: zod.string().optional(),
-  detail: zod.string(),
-});
-
-const userProfileGlobal = zod.object({ facts: zod.array(zod.string()) });
-
+// ===== 存储域（zod 记录 schema，见 types.ts） =====
 const MEMORY_DOMAIN = defineDomain({
   name: 'aemeath_memory',
   version: 1,
-  global: { schema: userProfileGlobal, initial: { facts: [] } },
+  global: { schema: userProfileSchema, initial: { facts: [] } },
   tables: {
-    memories: domainTable<string, MemoryRecord>(memoryRecord),
-    audit: domainTable<string, (typeof auditRecord)['_output']>(auditRecord),
+    memories: domainTable<string, MemoryRecord>(memoryRecordSchema),
+    audit: domainTable<string, AuditRecord>(auditRecordSchema),
   },
 });
 
@@ -95,14 +83,15 @@ function warn(msg: string): void {
   console.warn(`[aemeath-memory] ⚠ ${msg}`);
 }
 
-/** 攒批判定：每 N 轮 flush 一次 LLM 判定（N 由 config.llm.batchSize 决定，默认 8）。 */
 const LLM_BATCH_SIZE_DEFAULT = 8;
 
 export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const topK = config.l2RecallTopK ?? 5;
+  const l3Capacity = config.l3Capacity ?? 500;
   const decayDays = config.decayDays ?? 90;
   const llm = config.llm ?? { enabled: false, apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', batchSize: LLM_BATCH_SIZE_DEFAULT };
   const llmBatchSize = Math.max(2, llm.batchSize ?? LLM_BATCH_SIZE_DEFAULT);
+  const adminHttp = config.adminHttp ?? { enabled: true, port: 18895 };
 
   // ---- 打开存储域 ----
   const domain = await ctx.storageDomain.open(MEMORY_DOMAIN);
@@ -110,8 +99,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     void domain.close();
   });
   const memories = domain.table('memories') as unknown as KvTable<string, MemoryRecord>;
-  const audit = domain.table('audit') as unknown as KvTable<string, (typeof auditRecord)['_output']>;
-  const profile = domain.global as unknown as { get(): { facts: string[] }; set(v: { facts: string[] }): Promise<void> };
+  const audit = domain.table('audit') as unknown as KvTable<string, AuditRecord>;
+  const profile = domain.global as unknown as { get(): UserProfile; set(v: UserProfile): Promise<void> };
   log(`存储域 aemeath_memory 已打开（memories=${memories.size} 条历史记录）`);
 
   const auditWrite = async (action: string, memoryId: string | undefined, detail: string): Promise<void> => {
@@ -121,6 +110,10 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       warn(`审计写入失败: ${(e as Error).message}`);
     }
   };
+
+  // ---- ctx.memory 服务 ----
+  const memoryService = new MemoryService(ctx, { memories, audit, profile, auditWrite });
+  log('ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch）');
 
   // ---- 事实采集：缓冲每轮 (query, reply) ----
   interface PendingTurn { query: string; reply: string; preset: string; ts: number }
@@ -152,8 +145,60 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     }
   });
 
+  // ---- 画像沉淀：user_fact 类记忆归集进全局 userProfile ----
+  const promoteProfileFacts = async (): Promise<void> => {
+    try {
+      const facts: string[] = [];
+      for (const { rec } of memoryService.list()) {
+        if (rec.deleted || rec.category !== 'user_fact') continue;
+        facts.push(rec.content);
+      }
+      const existing = profile.get().facts;
+      const added = suggestProfileFacts(facts, existing, 20);
+      if (added.length) {
+        await profile.set({ facts: [...existing, ...added].slice(-40) });
+        await auditWrite('profile_promote', undefined, `沉淀 ${added.length} 条用户事实`);
+        log(`画像沉淀：+${added.length} 条（${added[0].slice(0, 20)}…）`);
+      }
+    } catch (e) {
+      warn(`画像沉淀失败: ${(e as Error).message}`);
+    }
+  };
+
+  // ---- L3 容量淘汰：importance×recency 最低者先沉淀后淘汰 ----
+  const enforceCapacity = async (): Promise<void> => {
+    const candidates = memoryService
+      .list()
+      .map(({ key, rec }) => ({ id: key, importance: rec.importance, lastAccess: rec.last_access, scope: rec.scope, status: rec.status }));
+    const evict = selectEviction(candidates, l3Capacity, Date.now());
+    if (!evict.length) return;
+    await promoteProfileFacts();
+    for (const id of evict) {
+      const rec = memories.get(id);
+      if (!rec) continue;
+      await memories.put(id, { ...rec, deleted: true, status: 'dormant' });
+      await auditWrite('capacity_evict', id, 'L3 容量淘汰（已先沉淀画像）');
+      log(`L3 容量淘汰：${id.slice(0, 8)}（${rec.content.slice(0, 20)}…）`);
+    }
+  };
+
+  const saveMemory = async (preset: string, content: string, category: Category, importance: number, confidence: number, sid: string, scope: 'mode' | 'global'): Promise<string> => {
+    const id = await memoryService.save({ content, category, importance, confidence, scope, preset, source_mode: preset });
+    if (scope === 'global') await enforceCapacity();
+    log(`记忆已写入 preset=${preset} cat=${category} imp=${importance} scope=${scope}（${content.slice(0, 30)}…）`);
+    return id;
+  };
+
+  const supersedeMemory = async (oldKey: string, preset: string, content: string, category: Category, sid: string): Promise<void> => {
+    const old = memories.get(oldKey);
+    if (!old) return;
+    const newId = await saveMemory(preset, content, category, Math.max(60, old.importance), 0.8, sid, old.scope);
+    await memories.put(oldKey, { ...old, superseded_by: newId, status: 'dormant', confidence: Math.max(0, old.confidence - 0.2) });
+    await auditWrite('supersede', oldKey, `被 ${newId.slice(0, 8)} 取代（时间证据冲突）`);
+    log(`冲突 supersede：${oldKey.slice(0, 8)} → ${newId.slice(0, 8)}（${content.slice(0, 30)}…）`);
+  };
+
   const processTurn = async (sid: string, turn: PendingTurn): Promise<void> => {
-    log(`[dbg] processTurn sid=${sid.slice(0, 8)} query=${turn.query.slice(0, 24)}`);
     const decision = decide(turn.query, turn.reply);
     switch (decision.kind) {
       case 'blocked':
@@ -165,18 +210,20 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       case 'skip':
         break;
       case 'save': {
-        // 规则级冲突处理：时间证据 + BM25 查重命中 → update + supersede
+        // 规则级冲突：时间证据 + BM25 命中 → supersede
         const hits = bm25Search(`${turn.query} ${turn.reply}`, allMemories(), 1);
         const conflictHit = hits.length > 0 && hits[0].score > 0.8 && hasTimeEvidence(turn.query);
+        // L3 升级：user_fact 类显式事实 → global（跨角色稳定）
+        const scope: 'mode' | 'global' = decision.category === 'user_fact' ? 'global' : 'mode';
         if (conflictHit) {
           await supersedeMemory(hits[0].id, turn.preset, decision.content, decision.category, sid);
         } else {
-          await saveMemory(turn.preset, decision.content, decision.category, decision.importance, 0.9, sid, 'mode');
+          await saveMemory(turn.preset, decision.content, decision.category, decision.importance, 0.9, sid, scope);
         }
         break;
       }
       case 'pending': {
-        // 规则级冲突处理（pending 也检查）：时间证据 + BM25 查重命中 → supersede，不必等 LLM
+        // 规则级冲突（pending 也检查）：时间证据 + BM25 命中 → supersede，不必等 LLM
         const hits = bm25Search(`${turn.query} ${turn.reply}`, allMemories(), 1);
         if (hits.length > 0 && hits[0].score > 0.8 && hasTimeEvidence(turn.query)) {
           await supersedeMemory(hits[0].id, turn.preset, extractMemory(turn.query), classifyCategory(turn.query, turn.reply), sid);
@@ -185,60 +232,21 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         const batch = pendingBatch.get(sid) ?? [];
         batch.push(turn);
         pendingBatch.set(sid, batch);
-        log(`[dbg] pending batch=${batch.length}/${llmBatchSize}`);
         if (batch.length >= llmBatchSize) await flushLlm(sid, batch);
         break;
       }
     }
   };
 
-  /** 现存未删除记忆（供查重/召回）。 */
   const allMemories = (): Array<{ id: string; content: string }> => {
-    const out: Array<{ id: string; content: string }> = [];
-    for (const [key, rec] of memories.entries()) {
-      if (rec.deleted) continue;
-      out.push({ id: key, content: rec.content });
-    }
-    return out;
+    return memoryService.list().map(({ key, rec }) => ({ id: key, content: rec.content }));
   };
 
-  const saveMemory = async (preset: string, content: string, category: Category, importance: number, confidence: number, sid: string, scope: 'mode' | 'global'): Promise<string> => {
-    const id = randomUUID();
-    const rec: MemoryRecord = {
-      id,
-      scope,
-      preset,
-      content,
-      category,
-      importance,
-      confidence,
-      source_mode: preset,
-      created_at: Date.now(),
-      last_access: Date.now(),
-      status: 'active',
-    };
-    await memories.put(id, rec);
-    await auditWrite('save', id, `importance=${importance} category=${category} scope=${scope}`);
-    log(`记忆已写入 preset=${preset} cat=${category} imp=${importance} scope=${scope}（${content.slice(0, 30)}…）`);
-    return id;
-  };
-
-  /** 冲突 supersede：旧记忆标 superseded_by + dormant，新记忆写入。 */
-  const supersedeMemory = async (oldKey: string, preset: string, content: string, category: Category, sid: string): Promise<void> => {
-    const old = memories.get(oldKey);
-    if (!old) return;
-    const newId = await saveMemory(preset, content, category, Math.max(60, old.importance), 0.8, sid, old.scope);
-    await memories.put(oldKey, { ...old, superseded_by: newId, status: 'dormant', confidence: Math.max(0, old.confidence - 0.2) });
-    await auditWrite('supersede', oldKey, `被 ${newId.slice(0, 8)} 取代（时间证据冲突）`);
-    log(`冲突 supersede：${oldKey.slice(0, 8)} → ${newId.slice(0, 8)}（${content.slice(0, 30)}…）`);
-  };
-
-  /** LLM 判定动作执行（save/update/merge/reconsolidate/skip）。 */
-  const applyLlmAction = async (item: { action: string; importance?: number; category?: Category; content?: string; conflict?: boolean; target_id?: string }, preset: string, sid: string): Promise<void> => {
+  const applyLlmAction = async (item: { action: string; importance?: number; category?: Category; content?: string; conflict?: boolean; target_id?: string; scope?: string }, preset: string, sid: string): Promise<void> => {
     const action = item.action || 'skip';
     const cat = item.category ?? 'session_summary';
     const imp = item.importance ?? 50;
-    // target：动作显式给 id，否则取 BM25 top-1（query 对应记忆）
+    const scope: 'mode' | 'global' = item.scope === 'global' ? 'global' : 'mode';
     let targetKey = item.target_id;
     if (!targetKey && item.content) {
       const hits = bm25Search(item.content, allMemories(), 1);
@@ -248,11 +256,11 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
     switch (action) {
       case 'save':
-        if (item.content) await saveMemory(preset, item.content, cat, imp, 0.7, sid, item.conflict ? 'mode' : 'mode');
+        if (item.content) await saveMemory(preset, item.content, cat, imp, 0.7, sid, scope);
         break;
       case 'update':
         if (item.content && target) await supersedeMemory(targetKey!, preset, item.content, cat, sid);
-        else if (item.content) await saveMemory(preset, item.content, cat, imp, 0.7, sid, 'mode');
+        else if (item.content) await saveMemory(preset, item.content, cat, imp, 0.7, sid, scope);
         break;
       case 'merge': {
         if (item.content && target) {
@@ -308,11 +316,10 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       }));
       const prompt = [
         '你是记忆守门员的判定层。对以下每轮对话（含与现有记忆的相似候选），输出 JSON 数组，每项含：',
-        '{query, action: "save"|"update"|"merge"|"reconsolidate"|"skip", importance: 0-100, category: "user_fact"|"study_log"|"preference"|"relationship"|"session_summary", conflict: bool, target_id: string|null, content: "第一人称记忆内容"}',
-        '规则：只记关于用户的事实；知识与闲聊 skip；第一人称书写；与候选记忆高度相似且事实有变化（如考完/学会）→ update（target_id 填相似记忆 id，content 写新状态）；相似但可合并 → merge；无冲突新事实 → save；无法确定 → skip。',
+        '{query, action: "save"|"update"|"merge"|"reconsolidate"|"skip", importance: 0-100, category: "user_fact"|"study_log"|"preference"|"relationship"|"session_summary", conflict: bool, target_id: string|null, scope: "mode"|"global", content: "第一人称记忆内容"}',
+        '规则：只记关于用户的事实；知识与闲聊 skip；第一人称书写；与候选记忆高度相似且事实有变化（如考完/学会）→ update（target_id 填相似记忆 id，content 写新状态）；相似但可合并 → merge；无冲突新事实 → save；无法确定 → skip。scope 判定：跨角色稳定事实（身份/长期偏好/基本习惯）→ global；角色相关（学习计划/进度/课程）→ mode。',
         JSON.stringify(candidates),
       ].join('\n');
-      log(`LLM 判定开始：${batch.length} 轮（${sid}）`);
       const resp = await fetch(`${llm.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -328,13 +335,12 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
       const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
       const text = data.choices?.[0]?.message?.content ?? '[]';
-      const parsed = JSON.parse(text) as Array<{ query?: string; action: string; importance?: number; category?: Category; content?: string; conflict?: boolean; target_id?: string }>;
+      const parsed = JSON.parse(text) as Array<{ query?: string; action: string; importance?: number; category?: Category; content?: string; conflict?: boolean; target_id?: string; scope?: string }>;
       for (const item of parsed) {
-        const preset = batch[0].preset;
-        await applyLlmAction(item, preset, sid);
+        await applyLlmAction(item, batch[0].preset, sid);
       }
       await auditWrite('llm_batch', undefined, `${batch.length} 轮判定完成（${parsed.length} 项）`);
-      log(`LLM 判定完成：${parsed.length} 项（${sid}）`);
+      log(`LLM 判定完成：${parsed.length} 项（${sid.slice(0, 8)}）`);
     } catch (e) {
       await auditWrite('llm_error', undefined, `LLM 判定失败: ${(e as Error).message}`);
       warn(`LLM 判定失败: ${(e as Error).message}`);
@@ -350,21 +356,14 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     if (!preset) return decision;
 
     const now = Date.now();
-    const recs: MemoryRecord[] = [];
-    for (const [, rec] of memories.entries()) {
-      if (rec.deleted || rec.status !== 'active') continue;
-      if (rec.scope === 'global' || rec.preset === preset) recs.push(rec);
-    }
-    recs.sort((a, b) => b.importance - a.importance);
-    const top = recs.slice(0, topK);
+    const top = memoryService.recallForPreset(preset, topK);
     if (!top.length) return decision;
 
-    // 更新 last_access（异步，不阻塞 step）
-    for (const rec of top) {
-      void memories.update(rec.id, (cur) => ({ ...cur, last_access: now })).catch(() => undefined);
+    for (const { key, rec } of top) {
+      void memories.update(key, (cur) => ({ ...cur, last_access: now })).catch(() => undefined);
     }
 
-    const block = ['## 关于用户的记忆（第一人称）', ...top.map((r) => `- [${r.category}|imp=${r.importance}] ${r.content}`)].join('\n');
+    const block = ['## 关于用户的记忆（第一人称）', ...top.map(({ rec }) => `- [${rec.category}|imp=${rec.importance}|${rec.scope}] ${rec.content}`)].join('\n');
     log(`preset=${preset} 召回 ${top.length} 条记忆注入`);
     const injectMsg = createUserMessage({
       content: [{ type: 'text', text: block }],
@@ -374,11 +373,21 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   });
   log('记忆召回注入已挂载（agent/pre-step）');
 
-  // ---- 衰减（宿主级定时） ----
+  // ---- session/flush 接入：落盘时机触发 pending 批量判定 ----
+  ctx.on('session/flush', async (session) => {
+    const sid = session.id;
+    const batch = pendingBatch.get(sid);
+    if (batch && batch.length > 0) {
+      log(`session/flush：${sid.slice(0, 8)} 有 ${batch.length} 轮 pending，触发判定`);
+      await flushLlm(sid, batch);
+    }
+  });
+  log('session/flush 已接入（pending 批量判定）');
+
+  // ---- 衰减（宿主级定时）+ 沉淀 ----
   const decayTimer = setInterval(() => {
     const now = Date.now();
-    for (const [key, rec] of memories.entries()) {
-      if (rec.deleted) continue;
+    for (const { key, rec } of memoryService.list()) {
       if (now - rec.last_access > decayDays * 24 * 3600 * 1000) {
         const next = Math.max(0, rec.importance - 10);
         void memories
@@ -387,49 +396,83 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           .catch(() => undefined);
       }
     }
+    void promoteProfileFacts();
   }, 6 * 3600 * 1000);
   if (decayTimer.unref) decayTimer.unref();
-  log(`衰减已启用（${decayDays} 天未访问 -10 importance）`);
+  log(`衰减已启用（${decayDays} 天未访问 -10 importance，每 6h 检查）`);
 
   // ---- /memory 命令 ----
   ctx.commands.register({
     name: 'memory',
-    description: '记忆管理：list / stats / delete <id>',
-    input: { hint: 'list | stats | delete <id>' },
+    description: '记忆管理：list / stats / delete <id> / profile / scratch',
+    input: { hint: 'list | stats | delete <id> | profile | scratch <sessionId>' },
     handler: async ({ rawInput }) => {
       const args = (rawInput || '').trim().split(/\s+/);
       const cmd = args[0] || 'stats';
       const ok = (text: string) => ({ kind: 'success' as const, text });
       const err = (text: string) => ({ kind: 'error' as const, text });
       if (cmd === 'list') {
-        const lines: string[] = [];
-        for (const [, rec] of memories.entries()) {
-          if (rec.deleted) continue;
-          lines.push(`- ${rec.id.slice(0, 8)} [${rec.preset}|${rec.category}|imp=${rec.importance}|${rec.status}] ${rec.content}`);
-        }
+        const lines = memoryService.list().map(({ key, rec }) => `- ${key.slice(0, 8)} [${rec.preset}|${rec.scope}|${rec.category}|imp=${rec.importance}|${rec.status}] ${rec.content}`);
         return ok(lines.length ? `记忆列表（${lines.length} 条）:\n${lines.join('\n')}` : '（暂无记忆）');
       }
       if (cmd === 'delete' && args[1]) {
-        const found = [...memories.entries()].find(([k]) => k.startsWith(args[1]));
-        if (!found) return err(`未找到 ${args[1]}`);
-        await memories.put(found[0], { ...found[1], deleted: true });
-        await auditWrite('soft_delete', found[0], '用户删除');
-        return ok(`已软删 ${args[1]}`);
+        return ok((await memoryService.softDelete(args[1])) ? `已软删 ${args[1]}` : `未找到 ${args[1]}`);
+      }
+      if (cmd === 'profile') {
+        const facts = profile.get().facts;
+        return ok(`用户画像（${facts.length} 条）:\n${facts.map((f) => `- ${f}`).join('\n') || '（空）'}`);
+      }
+      if (cmd === 'scratch') {
+        const sid = args[1] ?? '';
+        if (!sid) return err('用法: /memory scratch <sessionId>');
+        const keys = memoryService.scratchKeys(sid);
+        return ok(`scratch(${sid.slice(0, 8)}) keys: ${keys.join(', ') || '（空）'}`);
       }
       if (cmd === 'stats') {
-        let active = 0;
-        let dormant = 0;
-        const byPreset = new Map<string, number>();
-        for (const [, rec] of memories.entries()) {
-          if (rec.deleted) continue;
-          if (rec.status === 'active') active++;
-          else dormant++;
-          byPreset.set(rec.preset, (byPreset.get(rec.preset) ?? 0) + 1);
-        }
-        return ok(`记忆统计：active=${active} dormant=${dormant} 按角色=${[...byPreset.entries()].map(([k, v]) => `${k}:${v}`).join(' ')}`);
+        const s = memoryService.stats();
+        return ok(`记忆统计：active=${s.active} dormant=${s.dormant} 按角色=${Object.entries(s.byPreset).map(([k, v]) => `${k}:${v}`).join(' ')} 按层=${Object.entries(s.byScope).map(([k, v]) => `${k}:${v}`).join(' ')}`);
       }
-      return ok('用法: /memory list | stats | delete <id>（支持 id 前缀）');
+      return ok('用法: /memory list | stats | delete <id> | profile | scratch <sessionId>');
     },
   });
-  log('/memory 命令已注册');
+  log('/memory 命令已注册（list/stats/delete/profile/scratch）');
+
+  // ---- HTTP 管理端点（可选，仅回环；D8：本地信任模型） ----
+  if (adminHttp.enabled) {
+    try {
+      const server = createServer((req, res) => {
+        const send = (code: number, obj: unknown): void => {
+          res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(obj));
+        };
+        const url = req.url ?? '';
+        if (url === '/memory/list') {
+          send(200, { ok: true, items: memoryService.list().map(({ rec }) => ({ ...rec })) });
+        } else if (url === '/memory/stats') {
+          send(200, { ok: true, stats: memoryService.stats(), profile: profile.get() });
+        } else if (url.startsWith('/memory/delete')) {
+          let body = '';
+          req.on('data', (c) => (body += c));
+          req.on('end', async () => {
+            try {
+              const { idPrefix } = JSON.parse(body || '{}') as { idPrefix?: string };
+              if (!idPrefix) return send(400, { ok: false, error: 'idPrefix required' });
+              send(200, { ok: await memoryService.softDelete(idPrefix) });
+            } catch (e) {
+              send(500, { ok: false, error: (e as Error).message });
+            }
+          });
+        } else {
+          send(404, { ok: false, error: 'not found: use /memory/list | /memory/stats | /memory/delete' });
+        }
+      });
+      server.listen(adminHttp.port, '127.0.0.1');
+      ctx.effect(() => () => {
+        server.close();
+      });
+      log(`HTTP 管理端点已启动（http://127.0.0.1:${adminHttp.port}/memory/*，仅回环）`);
+    } catch (e) {
+      warn(`HTTP 管理端点启动失败: ${(e as Error).message}`);
+    }
+  }
 }

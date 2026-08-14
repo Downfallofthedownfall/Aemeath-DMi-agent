@@ -42,10 +42,14 @@
       name: '@aemeath/dsh-plugin-memory'
       config:
         l2RecallTopK: 5
+        l3Capacity: 500
         decayDays: 90
         llm:
           enabled: true
           apiKey: ''
           baseUrl: 'https://api.deepseek.com'
           model: 'deepseek-v4-flash'
-          batchSize: 3
+          batchSize: 8
+        adminHttp:
+          enabled: true
+          port: 18895

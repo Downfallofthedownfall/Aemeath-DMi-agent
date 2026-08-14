@@ -60,13 +60,14 @@ export function hasTimeEvidence(text: string): boolean {
   return TIME_EVIDENCE_PATTERNS.some((re) => re.test(text));
 }
 
-/** 实体类别关键词（save 时分类）。 */
+/** 实体类别关键词（save 时分类；身份事实优先）。 */
 export function classifyCategory(query: string, reply: string): Category {
   const t = `${query} ${reply}`;
+  // 身份事实最强信号（"我叫/我是/我的名字/生日/专业"等）优先
+  if (/我叫|我是|我的名字|名字叫|生日|年龄|来自|家乡|住在|专业是|学的是/.test(t)) return 'user_fact';
   if (/喜欢|讨厌|最爱|爱吃|想(要|去)|希望|担心|害怕/.test(t)) return 'preference';
   if (/朋友|家人|同学|室友|导师|他|她|我们|对象|男朋友|女朋友/.test(t)) return 'relationship';
-  if (/学|课|考试|作业|作业|习题|复习|预习|教授|讲义|大学/.test(t)) return 'study_log';
-  if (/我叫|我是|生日|年龄|专业|学校|家乡|住/.test(t)) return 'user_fact';
+  if (/学|课|考试|作业|习题|复习|预习|教授|讲义|大学/.test(t)) return 'study_log';
   return 'session_summary';
 }
 
@@ -75,7 +76,7 @@ export function extractMemory(query: string): string {
   const q = query.trim();
   // 显式命令句式剥离："记住/以后叫我 X" → 保留 X 部分
   const m = q.match(/(?:记住|以后(?:就)?叫|我的名字是|别忘(?:了|记))\s*(.+)/i);
-  if (m) return m[1].trim();
+  if (m) return m[1].trim().replace(/^[，,、：:\s]+/, '');
   return q.length > 40 ? q.slice(0, 40) + '…' : q;
 }
 

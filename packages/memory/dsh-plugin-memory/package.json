@@ -18,6 +18,14 @@
       "types": "./lib/types/bm25.d.ts",
       "default": "./lib/bm25.js"
     },
+    "./engine": {
+      "types": "./lib/types/engine.d.ts",
+      "default": "./lib/engine.js"
+    },
+    "./types": {
+      "types": "./lib/types/types.d.ts",
+      "default": "./lib/types.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
@@ -25,12 +33,15 @@
     "lib/index.js",
     "lib/gatekeeper.js",
     "lib/bm25.js",
+    "lib/engine.js",
+    "lib/types.js",
+    "lib/service.js",
     "lib/types/**/*.d.ts",
     "src"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node test/check.mjs && node test/check2.mjs"
+    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs"
   },
   "license": "MIT",
   "peerDependencies": {
