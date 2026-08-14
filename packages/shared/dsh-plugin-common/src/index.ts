@@ -18,11 +18,13 @@ import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
+import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-credentials';
 import type {} from '@deepseek-ai/dsh-agent';
 
 export const name = 'aemeath-common';
-export const inject = ['tools', 'systemPrompt', 'agents', 'credentials'];
+export const inject = ['tools', 'systemPrompt', 'agents', 'credentials', 'settings'];
 
 /** 当前 v2 版本标识（M0）。 */
 export const VERSION = '2.0.0-m0';
@@ -110,6 +112,37 @@ export function extractText(blocks: readonly { type?: string; text?: string }[] 
 // 插件主体
 // ============================================================
 export function apply(ctx: Context, config: CommonConfig): void {
+  // ---- 0) settings 接线（M5：前端设置界面 → 实时开关） ----
+  // namespace: aemeath.common；base = 本插件 composition config 的派生值；
+  // 用户层（前端设置页写入）覆盖后 watch 实时生效。
+  const runtime = {
+    oocRulesEnabled: true,
+    oocLlmEnabled: config.oocLlm?.enabled ?? false,
+  };
+  const FeatureSettingsSchema = z.object({
+    oocRulesEnabled: z.boolean(),
+    oocLlmEnabled: z.boolean(),
+  });
+  const featureBase = { oocRulesEnabled: true, oocLlmEnabled: config.oocLlm?.enabled ?? false };
+  let currentSource: () => typeof featureBase = () => featureBase;
+  installSettingsSection(
+    ctx,
+    settingsNamespace('aemeath-common'),
+    FeatureSettingsSchema,
+    featureBase,
+    {
+      setSource: (current) => {
+        currentSource = current;
+      },
+      onChange: () => {
+        const v = currentSource();
+        runtime.oocRulesEnabled = v.oocRulesEnabled;
+        runtime.oocLlmEnabled = v.oocLlmEnabled;
+        log(`settings 已应用: oocRulesEnabled=${runtime.oocRulesEnabled} oocLlmEnabled=${runtime.oocLlmEnabled}`);
+      },
+    },
+  );
+
   // ---- 1) aemeath/version 冒烟工具 ----
   ctx.tools.register(
     defineTool({
@@ -125,7 +158,94 @@ export function apply(ctx: Context, config: CommonConfig): void {
   );
   log('冒烟工具 aemeath/version 已注册');
 
+  // ---- 1.5) v1 轻量工具迁移：get_current_time / web_scraper / arxiv_search ----
+  ctx.tools.register(
+    defineTool({
+      name: 'get_current_time',
+      description: '返回当前日期与时间（YYYY-MM-DD HH:mm:ss）。涉及截止日期/今日安排时先调用它。',
+      parameters: {},
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: String(value) }],
+      },
+      execute: async () => {
+        const d = new Date();
+        const pad = (n: number) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'web_scraper',
+      description:
+        '抓取网页正文文本（去除 script/style 与标签，返回前 3000 字符）。用于查证网页内容、说明书、新闻等。',
+      parameters: {
+        url: { type: 'string', required: true, description: '网页 URL，如 https://example.com/page' },
+      },
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: String(value) }],
+      },
+      execute: async (args: { url: string }) => {
+        const url = args.url;
+        try {
+          const resp = await fetch(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!resp.ok) return `Web scraper error: HTTP ${resp.status} (${url})`;
+          const html = await resp.text();
+          const noScript = html.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+          const text = noScript.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          return `Web content:\n\n${text.slice(0, 3000)}${text.length > 3000 ? '\n\n...(truncated)' : ''}`;
+        } catch (e) {
+          return `Web scraper error: ${(e as Error).message}`;
+        }
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'arxiv_search',
+      description: '搜索 arXiv 学术论文（标题/作者/摘要，最多 5 篇）。用于查证物理/数学文献。',
+      parameters: {
+        query: { type: 'string', required: true, description: '检索关键词，如 "harmonic oscillator" 或 "quantum mechanics"（可加 +AND 组合）' },
+      },
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: String(value) }],
+      },
+      execute: async (args: { query: string }) => {
+        try {
+          const url = `http://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(args.query)}&max_results=5`;
+          const resp = await fetch(url, {
+            headers: { 'User-Agent': 'Aemeath/1.0' },
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!resp.ok) return `arXiv error: HTTP ${resp.status}`;
+          const xml = await resp.text();
+          const entries = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map((m) => m[1]);
+          if (!entries.length) return 'No results found';
+          const results = entries.slice(0, 5).map((entry) => {
+            const title = /<title>([\s\S]*?)<\/title>/.exec(entry)?.[1]?.trim() ?? 'Unknown';
+            const authors = [...entry.matchAll(/<name>([\s\S]*?)<\/name>/g)].map((m) => m[1].trim()).slice(0, 3);
+            const summary = /<summary>([\s\S]*?)<\/summary>/.exec(entry)?.[1]?.trim().slice(0, 200) ?? 'N/A';
+            return `Title: ${title}\nAuthors: ${authors.join(', ')}\nAbstract: ${summary}...`;
+          });
+          return `arXiv '${args.query}':\n\n${results.join('\n---\n')}`;
+        } catch (e) {
+          return `arXiv search error: ${(e as Error).message}`;
+        }
+      },
+    }),
+  );
+  log('轻量工具已注册：get_current_time / web_scraper / arxiv_search（v1 迁移）');
+
   // ---- 2) 双人格注册（agent 作用域 shadowing，按 agent preset 分流；无 preset 时用 defaultPreset） ----
+  const mountedAgentPersonas = new Set<string>();
   const mountPersona = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
     const preset = resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
     const persona = config.personas?.[preset ?? ''];
@@ -141,13 +261,22 @@ export function apply(ctx: Context, config: CommonConfig): void {
       }
     }
     if (!text) return;
+    if (mountedAgentPersonas.has(agent.id)) {
+      warn(`人格已挂载过（跳过重复）: agent=${agent.id}`);
+      return;
+    }
     // 在 agent 作用域上下文注册 persona 槽（shadowing，不全局冲突）
-    agent.ctx.systemPrompt.section({
-      name: 'deployment:persona',
-      order: 0,
-      text,
-    });
-    log(`人格已挂载 → preset=${preset} agent=${agent.id}（${text.length} 字符）`);
+    try {
+      agent.ctx.systemPrompt.section({
+        name: 'deployment:persona',
+        order: 0,
+        text,
+      });
+      mountedAgentPersonas.add(agent.id);
+      log(`人格已挂载 → preset=${preset} agent=${agent.id}（${text.length} 字符）`);
+    } catch (e) {
+      warn(`人格挂载失败（agent=${agent.id} preset=${preset}）: ${(e as Error).message}`);
+    }
   };
 
   // 先补挂已存在的 agents（插件启动晚于 agent-loop，会错过 agent/created）
@@ -161,6 +290,8 @@ export function apply(ctx: Context, config: CommonConfig): void {
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
+
+    if (!runtime.oocRulesEnabled) return decision;
 
     const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     const rules = config.oocRules?.[preset ?? ''];
@@ -205,9 +336,10 @@ export function apply(ctx: Context, config: CommonConfig): void {
 
   // ---- 4) OOC LLM 判定层（M6，默认关；assistant 回复后异步判定越界 → steer 纠偏） ----
   const oocLlm = config.oocLlm ?? { enabled: false, apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' };
-  if (oocLlm.enabled) {
+  if (oocLlm.enabled || runtime.oocLlmEnabled) {
     ctx.on('session/event', async (session, event) => {
       try {
+        if (!runtime.oocLlmEnabled) return;
         if (event.type !== 'assistant/message') return;
         const preset = resolveSessionPreset(session as never) ?? config.defaultPreset;
         if (!preset) return;

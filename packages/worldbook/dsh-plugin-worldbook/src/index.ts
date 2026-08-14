@@ -17,10 +17,12 @@ import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
+import type {} from '@deepseek-ai/dsh-settings';
 import { matchWorldbook, hitSummary, type WorldbookEntry } from './match.js';
 
 export const name = 'aemeath-worldbook';
-export const inject = ['tools', 'agents'];
+export const inject = ['tools', 'agents', 'settings'];
 
 export const Config = z.object({
   defaultPreset: z.string(),
@@ -92,6 +94,28 @@ function extractUserText(
 }
 
 export function apply(ctx: Context, config: WorldbookConfig): void {
+  // ---- settings 接线（M5：前端设置界面 → 实时开关） ----
+  const runtime = { enabled: true };
+  const FeatureSettingsSchema = z.object({ enabled: z.boolean() });
+  const featureBase = { enabled: true };
+  let currentSource: () => typeof featureBase = () => featureBase;
+  installSettingsSection(
+    ctx,
+    settingsNamespace('aemeath-worldbook'),
+    FeatureSettingsSchema,
+    featureBase,
+    {
+      setSource: (current) => {
+        currentSource = current;
+      },
+      onChange: () => {
+        const v = currentSource();
+        runtime.enabled = v.enabled;
+        log(`settings 已应用: enabled=${runtime.enabled}`);
+      },
+    },
+  );
+
   const maxTokens = config.maxInjectTokens ?? 3000;
   const reloadSec = config.hotReloadInterval ?? 3;
   const libs = new Map<string, LibState>();
@@ -150,6 +174,8 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
 
+    if (!runtime.enabled) return decision;
+
     const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     const lib = preset ? libs.get(preset) : undefined;
     if (!lib || !lib.entries.length) return decision;
@@ -205,4 +231,18 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
   };
   for (const agent of ctx.agents.list()) restrictAemeath(agent);
   ctx.on('agent/created', ({ agent }) => restrictAemeath(agent));
+
+  // ---- 开关联动：settings enabled=false 时拒绝工具执行（全局动态 guard）----
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const decision = await next();
+    if (decision.kind !== 'allow') return decision;
+    if (exec.name !== 'retrieve_worldbook') return decision;
+    if (runtime.enabled) return decision;
+    log(`开关已关闭：拒绝 retrieve_worldbook 调用`);
+    return {
+      kind: 'deny' as const,
+      reason: '世界书注入已关闭（设置 → 功能开关）。如需使用知识库检索，请重新开启。',
+    };
+  });
+  log('工具开关联动已挂载（tools/pre-execute，retrieve_worldbook）');
 }

@@ -5,8 +5,10 @@
     "@aemeath/dsh-plugin-common": "file:../../packages/shared/dsh-plugin-common",
     "@aemeath/dsh-plugin-memory": "file:../../packages/memory/dsh-plugin-memory",
     "@aemeath/dsh-plugin-retriever": "file:../../packages/retriever/dsh-plugin-retriever",
+    "@aemeath/dsh-plugin-ui": "file:../../packages/ui/dsh-plugin-ui",
     "@aemeath/dsh-plugin-workflow": "file:../../packages/workflow/dsh-plugin-workflow",
-    "@aemeath/dsh-plugin-worldbook": "file:../../packages/worldbook/dsh-plugin-worldbook"
+    "@aemeath/dsh-plugin-worldbook": "file:../../packages/worldbook/dsh-plugin-worldbook",
+    "@deepseek-ai/dsh-mcp-client": "^0.1.0-rc.6"
   },
   "dsh": {
     "profile": {

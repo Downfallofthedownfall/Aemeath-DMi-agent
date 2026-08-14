@@ -1,0 +1,8 @@
+# tts_mcp — IndexTTS2 语音（⚠ 必须在 IndexTTS 独立 venv 安装，见 py-services/README）
+# 运行环境：D:\index-tts\.venv（Python 3.10 + torch 2.8.0+cu128 + transformers 4.52.1）
+# 本服务无需额外 pip 包（mcp_core 零依赖）；以下为 v1 同款运行依赖，仅供参考：
+#   torch>=2.0
+#   transformers>=4.30.0
+#   librosa>=0.10
+#   soundfile>=0.12
+#   numpy>=1.24

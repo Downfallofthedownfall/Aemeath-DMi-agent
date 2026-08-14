@@ -35,9 +35,11 @@
 
 ```bash
 # 前置：Node 20+、npm、dsh CLI（@deepseek-ai/dsh@0.1.0-rc.6）
-# 安装插件依赖并编译
+# 安装插件依赖并编译（profile 依赖用 --legacy-peer-deps，避免 dsh 核心包双份）
 npm install --cache .npm-cache
 npm run build
+cd profiles\aemeath && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
+cd profiles\aemeath-run && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
 
 # 一次性冒烟（headless，无需浏览器）
 .\scripts\dsh.ps1 --profile aemeath-run "你好，自我介绍"
@@ -55,18 +57,19 @@ npm run build
 | **DeepSeek Harness（dsh）rc.6** | agent loop、工具流水线、会话事件溯源、审批、插件体系（引擎） |
 | DeepSeek API | 对话模型（deepseek-v4-flash） |
 | TypeScript（插件）· Cordis | dsh 插件 monorepo（`packages/`） |
-| Python 微服务（M2+） | SymPy 计算 / YOLO-OCR 视觉 / IndexTTS2，MCP 接入 |
+| Python 微服务（MCP，v1 迁移） | SymPy 计算 / YOLO-OCR 视觉 / IndexTTS2 语音 / 键鼠控制，经 dsh `mcp-client` 接入（`packages/py-services/`） |
 | SQLite FTS5（M4） | 讲义检索（BM25） |
 | Electron（M5） | 桌宠壳（file:// + IPC 桥） |
 
 ## 📁 结构
 
 ```
-packages/            # v2 插件 monorepo（worldbook/memory/retriever/workflow/benchmark/py-services/shared）
+packages/            # v2 插件 monorepo（worldbook/memory/retriever/workflow/benchmark/py-services/shared/ui）
+packages/py-services/# v1 Python 微服务 → MCP server（sympy/vision/tts/control，mcp_core 零依赖）
 profiles/            # dsh profile（aemeath=Web 主 profile，aemeath-run=一次性/基准）
 scripts/dsh.ps1      # dsh 包装脚本（项目内 DSH_HOME）
 docs/                # 迁移计划 + 使用日志（gitignored）
-electron-app/        # v1（冻结，tag v1.0）
+electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留壳参考）
 ```
 
 ---

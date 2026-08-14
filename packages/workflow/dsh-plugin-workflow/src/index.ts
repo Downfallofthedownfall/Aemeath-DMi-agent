@@ -18,12 +18,14 @@ import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-agent';
+import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-subprocess';
 import { routeQuery, SOLVER_PROMPT } from './route.js';
 
 export const name = 'aemeath-workflow';
-export const inject = ['tools', 'subprocess'];
+export const inject = ['tools', 'subprocess', 'settings'];
 
 export const Config = z.object({
   defaultPreset: z.string(),
@@ -70,6 +72,27 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     log('工作流已禁用（config.enabled=false）');
     return;
   }
+  // ---- settings 接线（M5：前端设置界面 → 实时开关） ----
+  const runtime = { enabled: true };
+  const FeatureSettingsSchema = z.object({ enabled: z.boolean() });
+  const featureBase = { enabled: true };
+  let currentSource: () => typeof featureBase = () => featureBase;
+  installSettingsSection(
+    ctx,
+    settingsNamespace('aemeath-workflow'),
+    FeatureSettingsSchema,
+    featureBase,
+    {
+      setSource: (current) => {
+        currentSource = current;
+      },
+      onChange: () => {
+        const v = currentSource();
+        runtime.enabled = v.enabled;
+        log(`settings 已应用: enabled=${runtime.enabled}`);
+      },
+    },
+  );
   const defaultPreset = config.defaultPreset ?? 'scholar';
 
   // ---- compute_verify 工具：SymPy 回代验证 ----
@@ -117,6 +140,8 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     const decision = await next();
     if (decision.kind === 'reject') return decision;
 
+    if (!runtime.enabled) return decision;
+
     const preset = resolveSessionPreset(payload.agent.session as never) ?? defaultPreset;
     if (preset !== 'scholar') return decision;
 
@@ -159,4 +184,18 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     return decision;
   });
   log('Action Gate 已挂载（tools/post-execute，refresh≤2）');
+
+  // ---- 开关联动：settings enabled=false 时拒绝 compute_verify 执行 ----
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const decision = await next();
+    if (decision.kind !== 'allow') return decision;
+    if (exec.name !== 'compute_verify') return decision;
+    if (runtime.enabled) return decision;
+    log(`开关已关闭：拒绝 compute_verify 调用`);
+    return {
+      kind: 'deny' as const,
+      reason: '解题工作流已关闭（设置 → 功能开关）。如需 SymPy 验证，请重新开启。',
+    };
+  });
+  log('工具开关联动已挂载（tools/pre-execute，compute_verify）');
 }

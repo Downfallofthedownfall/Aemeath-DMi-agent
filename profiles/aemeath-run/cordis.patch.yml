@@ -85,3 +85,27 @@
         adminHttp:
           enabled: false
           port: 18895
+    # —— Python 微服务（headless 只挂轻量：sympy 计算 + control；vision/tts 重依赖
+    #    每问一次进程拉起成本高，不挂——基准按星炬纯知识/检索/计算作答）——
+    - id: mcp-sympy
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: sympy
+        command: python
+        args: ['packages/py-services/sympy_mcp/server.py']
+        cwd: '.'
+        env: {}
+        toolCallTimeoutMs: 60000
+        failOnStartupError: false
+    - id: mcp-control
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: control
+        command: python
+        args: ['packages/py-services/control_mcp/server.py']
+        cwd: '.'
+        env: {}
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false

@@ -67,3 +67,83 @@
       name: '@aemeath/dsh-plugin-workflow'
       config:
         enabled: true
+    # —— M5 前端 UI 插件（browser 半区经 dsh.client 声明进入 __DSH_BOOT__）——
+    - id: aemeath-ui
+      name: '@aemeath/dsh-plugin-ui'
+    # —— Python 微服务（v1 迁移 → MCP 接入；cwd 相对仓库根，dsh.ps1 固定）——
+    - id: mcp-sympy
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: sympy
+        command: python
+        args: ['packages/py-services/sympy_mcp/server.py']
+        cwd: '.'
+        env: {}
+        toolCallTimeoutMs: 60000
+        failOnStartupError: false
+    - id: mcp-vision
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: vision
+        command: python
+        args: ['packages/py-services/vision_mcp/server.py']
+        cwd: '.'
+        env: {}
+        toolCallTimeoutMs: 180000
+        failOnStartupError: false
+    - id: mcp-tts
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: tts
+        command: 'D:\index-tts\.venv\Scripts\python.exe'
+        args: ['packages/py-services/tts_mcp/server.py', '--model-dir', 'D:\index-tts']
+        cwd: '.'
+        env: {}
+        toolCallTimeoutMs: 300000
+        failOnStartupError: false
+    - id: mcp-control
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: control
+        command: python
+        args: ['packages/py-services/control_mcp/server.py']
+        cwd: '.'
+        env: {}
+        toolCallTimeoutMs: 30000
+        failOnStartupError: false
+# —— 覆盖 web-app 的 agent-presets 行（同 id 顶层行 = 覆盖 config）：
+#    默认 preset 改为 aemeath（爱弥斯桌宠），而非 dsh 默认 standard（code agent）——
+- id: agent-presets
+  name: '@deepseek-ai/dsh-agent-presets'
+  config:
+    default: aemeath
+# —— 禁用与爱弥斯无关的官方 UI 插件（去掉 dsh 开发工具痕迹）——
+- id: ui-agent-preset
+  disabled: true
+- id: ui-jobs
+  disabled: true
+- id: ui-skill
+  disabled: true
+- id: ui-subagent
+  disabled: true
+- id: ui-goal
+  disabled: true
+- id: ui-workflow-run
+  disabled: true
+- id: ui-plan
+  disabled: true
+- id: ui-trajectory
+  disabled: true
+- id: ui-deliverables
+  disabled: true
+- id: ui-cordis
+  disabled: true
+- id: ui-settings-plugin-inventory
+  disabled: true
+# 官方 models 设置页/DeepSeek onboarding 弹窗：由我们的「爱弥斯」设置页（API key 表单）替代
+- id: ui-settings-models
+  disabled: true

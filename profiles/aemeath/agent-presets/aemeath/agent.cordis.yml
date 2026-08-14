@@ -1,26 +1,10 @@
 # ============================================================
 # aemeath preset · 爱弥斯桌宠（陪伴/情感/日常）
-# 组合：核心工具行（persona 由 @aemeath/dsh-plugin-common 按 preset 挂载，
-#       worldbook 注入 aemeath 馆，检索工具被 restrict 隐藏）
-# 注：行必须是无 realm 的"注册进 host registry"类型（standard 组合已验证）
+# 组合：纯对话角色——不暴露任何 code agent 工具（bash/fs/goal/jobs 全部移除）。
+# persona 由 @aemeath/dsh-plugin-common 按 preset 挂载；
+# worldbook 注入 aemeath 馆；检索工具被 restrict 隐藏。
 # ============================================================
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
   config:
     maxBytes: 65536
-- id: tool-bash
-  name: '@deepseek-ai/dsh-tool-bash'
-  disabled: !!js process.platform === 'win32'
-- id: tool-pwsh
-  name: '@deepseek-ai/dsh-tool-pwsh'
-  disabled: !!js process.platform !== 'win32'
-- id: tool-fs
-  name: '@deepseek-ai/dsh-tool-fs'
-- id: tool-fs-search
-  name: '@deepseek-ai/dsh-tool-fs-search'
-  config:
-    sampleOverCapGlobResults: false
-- id: tool-jobs
-  name: '@deepseek-ai/dsh-tool-jobs'
-- id: tool-goal
-  name: '@deepseek-ai/dsh-tool-goal'

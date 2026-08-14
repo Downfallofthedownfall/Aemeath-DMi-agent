@@ -1,0 +1,4 @@
+# sympy_mcp — SymPy 计算（系统 Python 3.14 已具备）
+sympy>=1.13
+numpy>=1.26
+matplotlib>=3.8        # compute_plot 需要

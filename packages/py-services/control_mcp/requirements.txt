@@ -1,0 +1,5 @@
+# control_mcp — 键鼠/窗口控制（系统 Python 3.14 已具备）
+pyautogui>=0.9.53
+pyperclip>=1.8.2
+pygetwindow>=0.0.9
+pywin32>=306        # control_window_list 的 win32gui（可选，缺省走 pygetwindow 兜底）

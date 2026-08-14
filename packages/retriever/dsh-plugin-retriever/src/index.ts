@@ -15,11 +15,13 @@ import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-agent';
+import type {} from '@deepseek-ai/dsh-settings';
 import { chunkText, type NoteChunk } from './chunker.js';
 
 export const name = 'aemeath-retriever';
-export const inject = [];
+export const inject = ['settings'];
 
 export const Config = z.object({
   defaultPreset: z.string(),
@@ -82,6 +84,28 @@ function escapeFtsQuery(query: string): string {
 const PHYSICS_TERM = /F\s*=\s*ma|牛顿|能量|动量|热力学|电磁|量子|波动|干涉|衍射|光|力学|统计|微分|积分|矩阵|特征值|熵|温度|压强|力|质量|速度|加速度|角动量|力矩|功|薛定谔|麦克斯韦|拉格朗日|哈密顿|简谐|谐振|电容|电感|磁场|电场|相对论|热容/i;
 
 export function apply(ctx: Context, config: RetrieverConfig): void {
+  // ---- settings 接线（M5：前端设置界面 → 实时开关） ----
+  const runtime = { enabled: true };
+  const FeatureSettingsSchema = z.object({ enabled: z.boolean() });
+  const featureBase = { enabled: true };
+  let currentSource: () => typeof featureBase = () => featureBase;
+  installSettingsSection(
+    ctx,
+    settingsNamespace('aemeath-retriever'),
+    FeatureSettingsSchema,
+    featureBase,
+    {
+      setSource: (current) => {
+        currentSource = current;
+      },
+      onChange: () => {
+        const v = currentSource();
+        runtime.enabled = v.enabled;
+        log(`settings 已应用: enabled=${runtime.enabled}`);
+      },
+    },
+  );
+
   const maxTokens = config.maxInjectTokens ?? 1500;
   const notesDir = isAbsolute(config.notesDir ?? '') ? config.notesDir! : join(process.cwd(), config.notesDir ?? 'packages/library/scholar/notes');
 
@@ -143,6 +167,8 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
+
+    if (!runtime.enabled) return decision;
 
     const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     log(`[dbg] pre-step agent=${payload.agent.id.slice(0, 8)} preset=${preset} msgs=${decision.messages.length}`);

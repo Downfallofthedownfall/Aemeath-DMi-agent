@@ -1,0 +1,8 @@
+# vision_mcp — YOLO + OCR（系统 Python 3.14 已具备）
+torch>=2.0
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+pillow>=10.0.0
+mss>=9.0.0
+easyocr>=1.7.0
+numpy>=1.26

@@ -26,6 +26,8 @@ import type { KvTable } from '@deepseek-ai/dsh-storage-domain';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
+import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-credentials';
@@ -36,7 +38,7 @@ import { memoryRecordSchema, auditRecordSchema, userProfileSchema, type MemoryRe
 import { MemoryService } from './service.js';
 
 export const name = 'aemeath-memory';
-export const inject = ['storageDomain', 'commands', 'credentials'];
+export const inject = ['storageDomain', 'commands', 'credentials', 'settings'];
 
 // ===== 配置 =====
 export const Config = z.object({
@@ -88,6 +90,28 @@ function warn(msg: string): void {
 const LLM_BATCH_SIZE_DEFAULT = 8;
 
 export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
+  // ---- settings 接线（M5：前端设置界面 → 实时开关） ----
+  const runtime = { enabled: true };
+  const FeatureSettingsSchema = z.object({ enabled: z.boolean() });
+  const featureBase = { enabled: true };
+  let currentSource: () => typeof featureBase = () => featureBase;
+  installSettingsSection(
+    ctx,
+    settingsNamespace('aemeath-memory'),
+    FeatureSettingsSchema,
+    featureBase,
+    {
+      setSource: (current) => {
+        currentSource = current;
+      },
+      onChange: () => {
+        const v = currentSource();
+        runtime.enabled = v.enabled;
+        log(`settings 已应用: enabled=${runtime.enabled}`);
+      },
+    },
+  );
+
   const topK = config.l2RecallTopK ?? 5;
   const l3Capacity = config.l3Capacity ?? 500;
   const decayDays = config.decayDays ?? 90;
@@ -124,6 +148,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
   ctx.on('session/event', (session, event) => {
     try {
+      if (!runtime.enabled) return;
       const sid = session.id;
       if (event.type === 'user/message' && (event.data.source?.kind ?? 'user') === 'user') {
         const text = (event.data.content ?? [])
@@ -353,6 +378,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
+
+    if (!runtime.enabled) return decision;
 
     const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     if (!preset) return decision;

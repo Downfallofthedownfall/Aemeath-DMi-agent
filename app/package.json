@@ -1,0 +1,38 @@
+{
+  "name": "aemeath-desktop-v2",
+  "version": "2.0.0-m0",
+  "description": "Aemeath-DMi Agent v2 — Electron 桌宠壳（M5）：托管 dsh 服务 + 本地 3081 品牌窗口",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --win --x64"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0"
+  },
+  "build": {
+    "appId": "com.aemeath.desktop-v2",
+    "productName": "爱弥斯 · 物理学习 Copilot",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "爱弥斯 · 物理学习 Copilot",
+      "runAfterFinish": true
+    }
+  }
+}
