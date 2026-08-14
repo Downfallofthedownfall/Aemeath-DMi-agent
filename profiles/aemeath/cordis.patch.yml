@@ -44,7 +44,8 @@
         l2RecallTopK: 5
         decayDays: 90
         llm:
-          enabled: false
+          enabled: true
           apiKey: ''
           baseUrl: 'https://api.deepseek.com'
           model: 'deepseek-v4-flash'
+          batchSize: 3

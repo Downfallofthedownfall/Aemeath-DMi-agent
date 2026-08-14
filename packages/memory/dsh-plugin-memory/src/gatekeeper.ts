@@ -49,8 +49,19 @@ const CHAT_PATTERNS = [
 /** 信息量阈值：query 过短且无显式/事实特征 → skip。 */
 const MIN_INFORMATIVE_LENGTH = 8;
 
+/** 时间证据：事实状态已变化（"考完了/学会了/结束了"）→ 应 update + supersede 旧记忆。 */
+const TIME_EVIDENCE_PATTERNS = [
+  /考完(了|试)?/, /学完(了)?/, /已经(学会|掌握|解决|完成|通过)/, /不需要(了|再)?/,
+  /结束(了)?/, /毕业(了)?/, /分手(了)?/, /不再(需要|用|学)/, /考过了/, /通过了/,
+];
+
+/** 检测文本是否含时间证据（事实状态变化信号）。 */
+export function hasTimeEvidence(text: string): boolean {
+  return TIME_EVIDENCE_PATTERNS.some((re) => re.test(text));
+}
+
 /** 实体类别关键词（save 时分类）。 */
-function classifyCategory(query: string, reply: string): Category {
+export function classifyCategory(query: string, reply: string): Category {
   const t = `${query} ${reply}`;
   if (/喜欢|讨厌|最爱|爱吃|想(要|去)|希望|担心|害怕/.test(t)) return 'preference';
   if (/朋友|家人|同学|室友|导师|他|她|我们|对象|男朋友|女朋友/.test(t)) return 'relationship';
@@ -60,7 +71,7 @@ function classifyCategory(query: string, reply: string): Category {
 }
 
 /** 从对话中提取拟写入的第一人称记忆内容（规则层启发式：取用户原话精简）。 */
-function extractMemory(query: string): string {
+export function extractMemory(query: string): string {
   const q = query.trim();
   // 显式命令句式剥离："记住/以后叫我 X" → 保留 X 部分
   const m = q.match(/(?:记住|以后(?:就)?叫|我的名字是|别忘(?:了|记))\s*(.+)/i);

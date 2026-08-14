@@ -14,18 +14,23 @@
       "types": "./lib/types/gatekeeper.d.ts",
       "default": "./lib/gatekeeper.js"
     },
+    "./bm25": {
+      "types": "./lib/types/bm25.d.ts",
+      "default": "./lib/bm25.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
     "lib/gatekeeper.js",
+    "lib/bm25.js",
     "lib/types/**/*.d.ts",
     "src"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node test/check.mjs"
+    "test": "node test/check.mjs && node test/check2.mjs"
   },
   "license": "MIT",
   "peerDependencies": {
@@ -33,6 +38,7 @@
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-agent-presets": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-commands": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-storage": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-storage-domain": "^0.1.0-rc.6",
@@ -44,6 +50,7 @@
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-agent-presets": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-commands": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-storage": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-storage-domain": "^0.1.0-rc.6",

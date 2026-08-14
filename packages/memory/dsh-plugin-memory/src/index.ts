@@ -20,12 +20,15 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain';
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
+import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
-import { decide, type MemoryAction, type Category } from './gatekeeper.js';
+import type {} from '@deepseek-ai/dsh-credentials';
+import { decide, hasTimeEvidence, classifyCategory, extractMemory, type MemoryAction, type Category } from './gatekeeper.js';
+import { search as bm25Search } from './bm25.js';
 
 export const name = 'aemeath-memory';
-export const inject = ['storageDomain', 'commands'];
+export const inject = ['storageDomain', 'commands', 'credentials'];
 
 // ===== 配置 =====
 export const Config = z.object({
@@ -35,13 +38,14 @@ export const Config = z.object({
     apiKey: z.string(),
     baseUrl: z.string(),
     model: z.string(),
+    batchSize: z.number(),
   }),
   decayDays: z.number(),
 });
 
 export interface MemoryConfig {
   l2RecallTopK?: number;
-  llm?: { enabled?: boolean; apiKey?: string; baseUrl?: string; model?: string };
+  llm?: { enabled?: boolean; apiKey?: string; baseUrl?: string; model?: string; batchSize?: number };
   decayDays?: number;
 }
 
@@ -91,13 +95,14 @@ function warn(msg: string): void {
   console.warn(`[aemeath-memory] ⚠ ${msg}`);
 }
 
-/** 攒批判定：每 N 轮 flush 一次 LLM 判定（M3 v1 简化：直接落 pending 审计，不真正调 LLM 除非启用）。 */
-const LLM_BATCH_SIZE = 8;
+/** 攒批判定：每 N 轮 flush 一次 LLM 判定（N 由 config.llm.batchSize 决定，默认 8）。 */
+const LLM_BATCH_SIZE_DEFAULT = 8;
 
 export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const topK = config.l2RecallTopK ?? 5;
   const decayDays = config.decayDays ?? 90;
-  const llm = config.llm ?? { enabled: false, apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' };
+  const llm = config.llm ?? { enabled: false, apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', batchSize: LLM_BATCH_SIZE_DEFAULT };
+  const llmBatchSize = Math.max(2, llm.batchSize ?? LLM_BATCH_SIZE_DEFAULT);
 
   // ---- 打开存储域 ----
   const domain = await ctx.storageDomain.open(MEMORY_DOMAIN);
@@ -148,6 +153,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   });
 
   const processTurn = async (sid: string, turn: PendingTurn): Promise<void> => {
+    log(`[dbg] processTurn sid=${sid.slice(0, 8)} query=${turn.query.slice(0, 24)}`);
     const decision = decide(turn.query, turn.reply);
     switch (decision.kind) {
       case 'blocked':
@@ -159,24 +165,48 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       case 'skip':
         break;
       case 'save': {
-        await saveMemory(turn.preset, decision.content, decision.category, decision.importance, 0.9, sid);
+        // 规则级冲突处理：时间证据 + BM25 查重命中 → update + supersede
+        const hits = bm25Search(`${turn.query} ${turn.reply}`, allMemories(), 1);
+        const conflictHit = hits.length > 0 && hits[0].score > 0.8 && hasTimeEvidence(turn.query);
+        if (conflictHit) {
+          await supersedeMemory(hits[0].id, turn.preset, decision.content, decision.category, sid);
+        } else {
+          await saveMemory(turn.preset, decision.content, decision.category, decision.importance, 0.9, sid, 'mode');
+        }
         break;
       }
       case 'pending': {
+        // 规则级冲突处理（pending 也检查）：时间证据 + BM25 查重命中 → supersede，不必等 LLM
+        const hits = bm25Search(`${turn.query} ${turn.reply}`, allMemories(), 1);
+        if (hits.length > 0 && hits[0].score > 0.8 && hasTimeEvidence(turn.query)) {
+          await supersedeMemory(hits[0].id, turn.preset, extractMemory(turn.query), classifyCategory(turn.query, turn.reply), sid);
+          break;
+        }
         const batch = pendingBatch.get(sid) ?? [];
         batch.push(turn);
         pendingBatch.set(sid, batch);
-        if (batch.length >= LLM_BATCH_SIZE) await flushLlm(sid, batch);
+        log(`[dbg] pending batch=${batch.length}/${llmBatchSize}`);
+        if (batch.length >= llmBatchSize) await flushLlm(sid, batch);
         break;
       }
     }
   };
 
-  const saveMemory = async (preset: string, content: string, category: Category, importance: number, confidence: number, sid: string): Promise<void> => {
+  /** 现存未删除记忆（供查重/召回）。 */
+  const allMemories = (): Array<{ id: string; content: string }> => {
+    const out: Array<{ id: string; content: string }> = [];
+    for (const [key, rec] of memories.entries()) {
+      if (rec.deleted) continue;
+      out.push({ id: key, content: rec.content });
+    }
+    return out;
+  };
+
+  const saveMemory = async (preset: string, content: string, category: Category, importance: number, confidence: number, sid: string, scope: 'mode' | 'global'): Promise<string> => {
     const id = randomUUID();
     const rec: MemoryRecord = {
       id,
-      scope: 'mode', // M3 v1：先按角色域存；跨角色提升由 LLM 层/后续升级决定
+      scope,
       preset,
       content,
       category,
@@ -188,26 +218,104 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       status: 'active',
     };
     await memories.put(id, rec);
-    await auditWrite('save', id, `importance=${importance} category=${category}`);
-    log(`记忆已写入 preset=${preset} cat=${category} imp=${importance}（${content.slice(0, 30)}…）`);
+    await auditWrite('save', id, `importance=${importance} category=${category} scope=${scope}`);
+    log(`记忆已写入 preset=${preset} cat=${category} imp=${importance} scope=${scope}（${content.slice(0, 30)}…）`);
+    return id;
+  };
+
+  /** 冲突 supersede：旧记忆标 superseded_by + dormant，新记忆写入。 */
+  const supersedeMemory = async (oldKey: string, preset: string, content: string, category: Category, sid: string): Promise<void> => {
+    const old = memories.get(oldKey);
+    if (!old) return;
+    const newId = await saveMemory(preset, content, category, Math.max(60, old.importance), 0.8, sid, old.scope);
+    await memories.put(oldKey, { ...old, superseded_by: newId, status: 'dormant', confidence: Math.max(0, old.confidence - 0.2) });
+    await auditWrite('supersede', oldKey, `被 ${newId.slice(0, 8)} 取代（时间证据冲突）`);
+    log(`冲突 supersede：${oldKey.slice(0, 8)} → ${newId.slice(0, 8)}（${content.slice(0, 30)}…）`);
+  };
+
+  /** LLM 判定动作执行（save/update/merge/reconsolidate/skip）。 */
+  const applyLlmAction = async (item: { action: string; importance?: number; category?: Category; content?: string; conflict?: boolean; target_id?: string }, preset: string, sid: string): Promise<void> => {
+    const action = item.action || 'skip';
+    const cat = item.category ?? 'session_summary';
+    const imp = item.importance ?? 50;
+    // target：动作显式给 id，否则取 BM25 top-1（query 对应记忆）
+    let targetKey = item.target_id;
+    if (!targetKey && item.content) {
+      const hits = bm25Search(item.content, allMemories(), 1);
+      if (hits.length) targetKey = hits[0].id;
+    }
+    const target = targetKey ? memories.get(targetKey) : undefined;
+
+    switch (action) {
+      case 'save':
+        if (item.content) await saveMemory(preset, item.content, cat, imp, 0.7, sid, item.conflict ? 'mode' : 'mode');
+        break;
+      case 'update':
+        if (item.content && target) await supersedeMemory(targetKey!, preset, item.content, cat, sid);
+        else if (item.content) await saveMemory(preset, item.content, cat, imp, 0.7, sid, 'mode');
+        break;
+      case 'merge': {
+        if (item.content && target) {
+          const merged = target.content.length + item.content.length < 200 ? `${target.content}；${item.content}` : item.content;
+          await memories.put(targetKey!, { ...target, content: merged, importance: Math.max(target.importance, imp), last_access: Date.now() });
+          await auditWrite('merge', targetKey, `合并新内容（${item.content.slice(0, 30)}…）`);
+          log(`记忆合并 → ${targetKey!.slice(0, 8)}`);
+        }
+        break;
+      }
+      case 'reconsolidate': {
+        if (target) {
+          await memories.put(targetKey!, { ...target, importance: Math.min(100, target.importance + 10), last_access: Date.now() });
+          await auditWrite('reconsolidate', targetKey, '再巩固（importance+10）');
+          log(`记忆再巩固 → ${targetKey!.slice(0, 8)}`);
+        }
+        break;
+      }
+      default:
+        await auditWrite(`llm_${action}`, targetKey, `conflict=${!!item.conflict}`);
+    }
   };
 
   const flushLlm = async (sid: string, batch: PendingTurn[]): Promise<void> => {
     pendingBatch.delete(sid);
-    if (!llm.enabled || !llm.apiKey) {
+    if (!llm.enabled) {
       await auditWrite('pending_skipped', undefined, `${batch.length} 轮待 LLM 判定（判定层未启用）`);
       return;
     }
+    let apiKey = llm.apiKey;
+    if (!apiKey) {
+      try {
+        const resolved = await ctx.credentials?.resolve(credentialRef('DEEPSEEK_API_KEY'));
+        apiKey = resolved?.value ?? '';
+      } catch {
+        apiKey = '';
+      }
+    }
+    if (!apiKey) {
+      await auditWrite('llm_no_key', undefined, 'LLM 判定层未配置 API key（credentialRef DEEPSEEK_API_KEY）');
+      warn('LLM 判定层未配置 API key（credentialRef DEEPSEEK_API_KEY）');
+      return;
+    }
     try {
+      // 每个候选查重 top-3（喂给 LLM 判断冲突/更新目标）
+      const candidates = batch.map((b) => ({
+        query: b.query,
+        reply: b.reply,
+        similar: bm25Search(`${b.query} ${b.reply}`, allMemories(), 3).map((h) => ({
+          id: h.id.slice(0, 8),
+          content: (memories.get(h.id)?.content ?? '').slice(0, 80),
+        })),
+      }));
       const prompt = [
-        '你是记忆守门员的判定层。对以下每轮对话，输出 JSON 数组，每项含：',
-        '{query, action: "save"|"update"|"merge"|"reconsolidate"|"skip", importance: 0-100, category: "user_fact"|"study_log"|"preference"|"relationship"|"session_summary", conflict: bool, content: "第一人称记忆内容"}',
-        '规则：只记关于用户的事实；知识/闲聊 skip；第一人称书写；有冲突标 conflict。',
-        JSON.stringify(batch.map((b) => ({ query: b.query, reply: b.reply }))),
+        '你是记忆守门员的判定层。对以下每轮对话（含与现有记忆的相似候选），输出 JSON 数组，每项含：',
+        '{query, action: "save"|"update"|"merge"|"reconsolidate"|"skip", importance: 0-100, category: "user_fact"|"study_log"|"preference"|"relationship"|"session_summary", conflict: bool, target_id: string|null, content: "第一人称记忆内容"}',
+        '规则：只记关于用户的事实；知识与闲聊 skip；第一人称书写；与候选记忆高度相似且事实有变化（如考完/学会）→ update（target_id 填相似记忆 id，content 写新状态）；相似但可合并 → merge；无冲突新事实 → save；无法确定 → skip。',
+        JSON.stringify(candidates),
       ].join('\n');
+      log(`LLM 判定开始：${batch.length} 轮（${sid}）`);
       const resp = await fetch(`${llm.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${llm.apiKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           model: llm.model,
           messages: [{ role: 'user', content: prompt }],
@@ -215,18 +323,17 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           max_tokens: 1024,
           temperature: 0.2,
         }),
+        signal: AbortSignal.timeout(60000),
       });
       if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
       const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
       const text = data.choices?.[0]?.message?.content ?? '[]';
-      const parsed = JSON.parse(text) as Array<{ action: string; importance?: number; category?: Category; content?: string; conflict?: boolean }>;
+      const parsed = JSON.parse(text) as Array<{ query?: string; action: string; importance?: number; category?: Category; content?: string; conflict?: boolean; target_id?: string }>;
       for (const item of parsed) {
-        if (item.action === 'save' && item.content) {
-          await saveMemory(batch[0].preset, item.content, item.category ?? 'session_summary', item.importance ?? 50, 0.7, sid);
-        } else {
-          await auditWrite(`llm_${item.action}`, undefined, `conflict=${!!item.conflict}`);
-        }
+        const preset = batch[0].preset;
+        await applyLlmAction(item, preset, sid);
       }
+      await auditWrite('llm_batch', undefined, `${batch.length} 轮判定完成（${parsed.length} 项）`);
       log(`LLM 判定完成：${parsed.length} 项（${sid}）`);
     } catch (e) {
       await auditWrite('llm_error', undefined, `LLM 判定失败: ${(e as Error).message}`);
