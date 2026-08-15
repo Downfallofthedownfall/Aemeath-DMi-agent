@@ -36,7 +36,7 @@ const MOM = {
   source: '第2周讲义 §2.2',
 };
 const BIO = {
-  id: 'scholar_bio',
+  id: 'physicist_bio',
   title: '星炬学霸自传',
   kind: 'identity',
   triggers: ['你是谁'],

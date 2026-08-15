@@ -1,7 +1,7 @@
 // ============================================================
 // 爱弥斯主题（M5 F1）——注册进 dsh 主题系统（ctx.theme.register）
 // 基于 dsh 的 --dsw-alias-* token 覆盖层；light/dark 双模式。
-// 配色灵感：爱弥斯（暖金 + 深蓝 + 米白），星炬（学术蓝）。
+// 配色灵感：爱弥斯（暖金 + 深蓝 + 米白），爱弥斯-拉贝尔学部学霸（学术蓝）。
 // ============================================================
 import type { ThemeDefinition } from '@deepseek-ai/dsh-client-ui-theme/client';
 
@@ -23,9 +23,9 @@ export const aemeathLight: ThemeDefinition = {
   },
 };
 
-/** 星炬主题：学术蓝主色（严谨的物理学习），深色基底。 */
-export const scholarDark: ThemeDefinition = {
-  id: 'scholar',
+/** 爱弥斯-拉贝尔学部学霸主题：学术蓝主色（严谨的物理学习），深色基底。 */
+export const physicistDark: ThemeDefinition = {
+  id: 'physicist',
   colorScheme: 'dark',
   tokens: {
     '--dsw-alias-state-business-primary': '#5b8def',
@@ -56,7 +56,7 @@ export function registerThemes(ctx: {
     /* 已注册：忽略 */
   }
   try {
-    theme.register(scholarDark);
+    theme.register(physicistDark);
   } catch {
     /* 已注册：忽略 */
   }

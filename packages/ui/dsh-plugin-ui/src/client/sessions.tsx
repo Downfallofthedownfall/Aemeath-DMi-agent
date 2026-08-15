@@ -83,7 +83,7 @@ function SessionListBody({
         ids.map((id) => {
           const s = byId[id];
           if (!s || s.blank) return null;
-          const presetLabel = s.agentPreset === 'aemeath' ? '爱弥斯' : s.agentPreset === 'scholar' ? '星炬' : s.agentPreset ?? '';
+          const presetLabel = s.agentPreset === 'aemeath' ? '小爱同学' : s.agentPreset === 'physicist' ? '爱弥斯-拉贝尔学部学霸' : s.agentPreset ?? '';
           return (
             <SessionRow
               key={id}

@@ -1,6 +1,6 @@
 # ============================================================
 # profiles/aemeath/cordis.patch.yml — Aemeath 主 profile（Web UI）
-# 双角色由 agent presets 承载（.dsh-home/.agent-presets/{aemeath,scholar}，
+# 双角色由 agent presets 承载（.dsh-home/.agent-presets/{aemeath,physicist}，
 # 由 scripts/dsh.ps1 同步）；本层只插入公共/世界书插件。
 # 注：路径相对仓库根（scripts/dsh.ps1 固定 cwd）
 # ============================================================
@@ -12,8 +12,8 @@
         personas:
           aemeath:
             file: 'profiles/aemeath/personas/aemeath.md'
-          scholar:
-            file: 'profiles/aemeath/personas/scholar.md'
+          physicist:
+            file: 'profiles/aemeath/personas/physicist.md'
         oocRules:
           aemeath:
             forbidPatterns:
@@ -23,7 +23,7 @@
               - '牛顿'
               - '焦耳'
               - '库仑'
-          scholar:
+          physicist:
             forbidPatterns:
               - '嘤嘤嘤'
               - '人家'
@@ -39,14 +39,14 @@
       name: '@aemeath/dsh-plugin-worldbook'
       config:
         libraries:
-          scholar: 'packages/worldbook/data/scholar'
+          physicist: 'packages/worldbook/data/physicist'
           aemeath: 'packages/worldbook/data/aemeath'
         maxInjectTokens: 3000
         hotReloadInterval: 3
     - id: aemeath-retriever
       name: '@aemeath/dsh-plugin-retriever'
       config:
-        notesDir: 'packages/library/scholar/notes'
+        notesDir: 'packages/library/physicist/notes'
         maxInjectTokens: 1500
     - id: aemeath-memory
       name: '@aemeath/dsh-plugin-memory'

@@ -17,6 +17,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
 import type { CredentialView } from '@deepseek-ai/dsh-client-connection/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
+import { MemoryPanel } from './memory.tsx';
 
 // ===== 功能开关清单 =====
 export interface FeatureSwitch {
@@ -67,7 +68,7 @@ export const FEATURES: FeatureSwitch[] = [
     ns: 'aemeath-workflow',
     field: 'enabled',
     label: '解题工作流',
-    hint: '星炬解题分流 + SymPy 验证',
+    hint: '学霸解题分流 + SymPy 验证',
     fallback: true,
   },
 ];
@@ -89,7 +90,7 @@ interface LoadedProps {
     set: (ref: string, value: string) => Promise<void>;
     unset: (ref: string) => Promise<void>;
   };
-  /** 角色模式（爱弥斯/星炬）：可订阅（useSyncExternalStore）保证切换后 UI 刷新 */
+  /** 角色模式（小爱同学/爱弥斯-拉贝尔学部学霸）：可订阅（useSyncExternalStore）保证切换后 UI 刷新 */
   role?: {
     subscribe: (l: () => void) => () => void;
     getSnapshot: () => string;
@@ -97,7 +98,7 @@ interface LoadedProps {
   };
 }
 
-/** 角色模式选择：爱弥斯（陪伴）/ 星炬（物理学习）。hooks 无条件调用。 */
+/** 角色模式选择：小爱同学（陪伴）/ 爱弥斯-拉贝尔学部学霸（物理学习）。hooks 无条件调用。 */
 function RoleSelector({
   role,
 }: {
@@ -105,8 +106,8 @@ function RoleSelector({
 }): JSX.Element {
   const current = useSyncExternalStore(role.subscribe, role.getSnapshot);
   const options = [
-    { id: 'aemeath', label: '爱弥斯', hint: '陪伴 · 日常聊天' },
-    { id: 'scholar', label: '星炬', hint: '物理学习 · 解题' },
+    { id: 'aemeath', label: '小爱同学', hint: '陪伴 · 日常聊天' },
+    { id: 'physicist', label: '爱弥斯-拉贝尔学部学霸', hint: '物理学习 · 解题' },
   ];
   return (
     <div
@@ -457,6 +458,23 @@ function Loaded({ scopes, credentials, role }: LoadedProps): JSX.Element {
         </div>
       </section>
 
+      {/* —— 记忆管理 —— */}
+      <section>
+        <h3 style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }}>
+          记忆管理
+        </h3>
+        <div
+          style={{
+            border: '1px solid var(--dsw-alias-border-l1)',
+            borderRadius: 12,
+            padding: '12px 14px',
+            background: 'var(--dsw-alias-bg-subtle)',
+          }}
+        >
+          <MemoryPanel />
+        </div>
+      </section>
+
       {/* —— API key —— */}
       <section>
         <h3 style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }}>
@@ -508,7 +526,7 @@ export interface AemeathSettingsSectionProps {
     set: (ref: string, value: string) => Promise<void>;
     unset: (ref: string) => Promise<void>;
   };
-  /** 角色模式（爱弥斯/星炬）切换：可订阅 */
+  /** 角色模式（小爱同学/爱弥斯-拉贝尔学部学霸）切换：可订阅 */
   role?: {
     subscribe: (l: () => void) => () => void;
     getSnapshot: () => string;
@@ -540,7 +558,7 @@ export function registerSettingsSection(
         name: 'settings.section',
         id: 'aemeath',
         order: 5,
-        label: () => '爱弥斯',
+        label: () => '小爱同学',
         inject: () => ({
           scopes: deps.scopes(),
           credentials: deps.credentials(),

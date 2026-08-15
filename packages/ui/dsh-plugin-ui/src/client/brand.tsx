@@ -1,6 +1,6 @@
 // ============================================================
 // 品牌层（M5 F1）——页面标题 + 侧边栏品牌位
-// 目标：告别 dsh 原版「开发工具」观感，呈现「爱弥斯 · 物理学习 Copilot」。
+// 目标：告别 dsh 原版「开发工具」观感，呈现爱弥斯陪伴品牌。
 // 手段：
 //   1. document.title：页面加载即设置（品牌标题）。
 //   2. sidebar.footer.action：侧边栏底部品牌标识（图标 + 标题）。
@@ -9,8 +9,8 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 
-export const BRAND_TITLE = '爱弥斯 · 物理学习 Copilot';
-export const BRAND_SUBTITLE = 'Aemeath-DMi · 星炬 & 爱弥斯';
+export const BRAND_TITLE = '小爱同学 & 爱弥斯-拉贝尔学部学霸 · Aemeath-DMi';
+export const BRAND_SUBTITLE = 'Aemeath-DMi · 小爱同学 & 爱弥斯-拉贝尔学部学霸';
 
 /** 品牌徽记：⚛ 爱弥斯。纯 inline SVG 避免外部资源。 */
 export function BrandMark(): JSX.Element {
@@ -31,7 +31,7 @@ export function BrandTitle(): JSX.Element {
       <span style={{ color: 'var(--dsw-alias-state-business-primary)' }}>
         <BrandMark />
       </span>
-      <span>爱弥斯 · 物理学习 Copilot</span>
+      <span>小爱同学 & 爱弥斯-拉贝尔学部学霸</span>
     </span>
   );
 }
@@ -59,7 +59,7 @@ export function SidebarBrand({ wide }: { wide: boolean }): JSX.Element {
       <span style={{ color: 'var(--dsw-alias-state-business-primary)', display: 'inline-flex' }}>
         <BrandMark />
       </span>
-      {wide ? '爱弥斯 · 物理学习 Copilot' : null}
+      {wide ? '小爱同学 & 爱弥斯-拉贝尔学部学霸' : null}
     </span>
   );
 }

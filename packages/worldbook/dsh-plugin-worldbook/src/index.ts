@@ -1,7 +1,7 @@
 // ============================================================
 // dsh-plugin-worldbook · Worldbook 知识库插件（M2）
 // 职责：
-//   1. 双馆隔离加载：libraries.scholar / libraries.aemeath（JSON 目录，兼容数组/单对象）
+//   1. 双馆隔离加载：libraries.physicist / libraries.aemeath（JSON 目录，兼容数组/单对象）
 //   2. 热重载：mtime 轮询（可配置间隔）
 //   3. 触发注入：agent/pre-step 追加匹配条目（constant + hits + chain，≤maxInjectTokens，
 //      带 MessageSource form='catalog'，模型可见即已记录）
@@ -202,14 +202,14 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
       description: '从 Worldbook 知识库检索物理/数学知识条目，返回带来源与可验证标记的条目列表与注入文本。',
       parameters: {
         query: { type: 'string', required: true, description: '检索词（中文/英文/德文均可）' },
-        library: { type: 'string', description: '知识馆：scholar（物理）或 aemeath（陪伴）；缺省取当前角色馆' },
+        library: { type: 'string', description: '知识馆：physicist（物理）或 aemeath（陪伴）；缺省取当前角色馆' },
       },
       output: {
         schema: { type: 'json' },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
       },
       execute: async (args: { query: string; library?: string }, exec) => {
-        const libName = args.library || exec?.agent?.id || 'scholar';
+        const libName = args.library || exec?.agent?.id || 'physicist';
         const entries = libs.get(libName)?.entries ?? [];
         const block = matchWorldbook(args.query, entries, maxTokens);
         return {

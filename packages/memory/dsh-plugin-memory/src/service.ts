@@ -152,6 +152,15 @@ export class MemoryService extends Service {
   scratchKeys(sessionId: string): string[] {
     return Object.keys(this.scratchMap.get(sessionId) ?? {});
   }
+
+  /** 全量 scratch 快照（M5 记忆面板 L1 展示用）：sessionId → {key → value}。 */
+  allScratch(): Record<string, Record<string, string>> {
+    const out: Record<string, Record<string, string>> = {};
+    for (const [sid, slot] of this.scratchMap) {
+      if (slot && Object.keys(slot).length > 0) out[sid] = { ...slot };
+    }
+    return out;
+  }
 }
 
 function toResult(key: string, rec: MemoryRecord): MemorySearchResult {

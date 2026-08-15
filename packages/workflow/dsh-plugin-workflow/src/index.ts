@@ -1,6 +1,6 @@
 // ============================================================
 // dsh-plugin-workflow · 星炬解题工作流（M6 v1）
-// 职责（仅 scholar preset 生效，config.workflow.enabled）：
+// 职责（仅 physicist preset 生效，config.workflow.enabled）：
 //   1. 分流（route.ts）：plan（解题触发词/长问题）vs direct（日常）
 //   2. 规范注入：plan 模式 pre-step 注入 SOLVER_PROMPT（soul 格式：
 //      计划→执行→✅/❌ 验证标记→结论+来源→诚实降级）
@@ -93,7 +93,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
       },
     },
   );
-  const defaultPreset = config.defaultPreset ?? 'scholar';
+  const defaultPreset = config.defaultPreset ?? 'physicist';
 
   // ---- compute_verify 工具：SymPy 回代验证 ----
   ctx.tools.register(
@@ -133,7 +133,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
   );
   log('工具 compute_verify 已注册（SymPy 回代验证）');
 
-  // ---- 分流 + 规范注入（agent/pre-step，仅 scholar） ----
+  // ---- 分流 + 规范注入（agent/pre-step，仅 physicist） ----
   const steeredPlans = new Map<string, number>();
 
   ctx.on('agent/pre-step', async (payload, next) => {
@@ -143,7 +143,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     if (!runtime.enabled) return decision;
 
     const preset = resolveSessionPreset(payload.agent.session as never) ?? defaultPreset;
-    if (preset !== 'scholar') return decision;
+    if (preset !== 'physicist') return decision;
 
     // 取用户原始消息
     let query = '';
@@ -159,14 +159,14 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     const route = routeQuery(query);
     if (route.kind !== 'plan') return decision;
 
-    log(`preset=scholar 分流=plan（${route.reason}）：${query.slice(0, 30)}…`);
+    log(`preset=physicist 分流=plan（${route.reason}）：${query.slice(0, 30)}…`);
     const injectMsg = createUserMessage({
       content: [{ type: 'text', text: SOLVER_PROMPT }],
       source: { kind: 'plugin', plugin: name, form: 'notice', summary: `解题工作流已启用（${route.reason}）` },
     });
     return { kind: 'enter', messages: [...decision.messages, injectMsg] };
   });
-  log('解题分流 + 规范注入已挂载（agent/pre-step，scholar 模式）');
+  log('解题分流 + 规范注入已挂载（agent/pre-step，physicist 模式）');
 
   // ---- Action Gate 简化：compute_verify 结果附加验证标记 + refresh≤2 ----
   const refreshCounts = new Map<string, number>();

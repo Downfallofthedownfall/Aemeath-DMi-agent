@@ -1,7 +1,7 @@
 {
   "name": "@aemeath/dsh-plugin-retriever",
   "version": "0.1.0",
-  "description": "Aemeath 讲义检索插件：分块 + SQLite FTS5 索引（bm25）+ scholar 注入（M4）",
+  "description": "Aemeath 讲义检索插件：分块 + SQLite FTS5 索引（bm25）+ physicist 注入（M4）",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

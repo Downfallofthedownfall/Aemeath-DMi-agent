@@ -30,8 +30,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 DEFAULT_V1_DB = os.path.join(REPO_ROOT, 'electron-app', 'data', 'memory.db')
 DEFAULT_V2_STORAGE = os.path.join(REPO_ROOT, '.dsh-home', 'storages', 'aemeath_memory.json')
 
-# v1 mode → v2 preset 映射（v1 config.json 用 physicist；v2 preset 用 scholar）
-MODE_MAP = {'physicist': 'scholar', 'aemeath': 'aemeath'}
+# v1 mode → v2 preset 映射（v1 config.json 用 physicist；v2 preset 用 physicist）
+MODE_MAP = {'physicist': 'physicist', 'aemeath': 'aemeath'}
 
 # v1 自由文本 category → v2 枚举
 CATEGORY_RULES = [
@@ -100,7 +100,7 @@ def migrate(v1_db, v2_storage, dry_run):
     for sid, mode, content, importance, category, source, status, created_at, updated_at in rows:
         if not content or not str(content).strip():
             continue
-        preset = MODE_MAP.get((mode or '').lower(), (mode or 'scholar').lower())
+        preset = MODE_MAP.get((mode or '').lower(), (mode or 'physicist').lower())
         key = 'v1-' + hashlib.sha1(f"{content}|{mode}|{created_at}".encode('utf-8')).hexdigest()[:32]
         if key in memories:
             skipped += 1

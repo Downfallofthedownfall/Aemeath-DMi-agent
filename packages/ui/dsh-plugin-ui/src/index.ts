@@ -19,7 +19,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-settings';
 
 export const name = 'aemeath-ui';
-export const inject = ['webServer', 'settings'];
+export const inject = ['webServer', 'settings', 'memory'];
 
 /** 本插件管理的 settings namespaces（与引擎插件注册名一致）。 */
 export const FEATURE_NAMESPACES = ['aemeath-common', 'aemeath-worldbook', 'aemeath-retriever', 'aemeath-memory', 'aemeath-workflow'];
@@ -44,6 +44,12 @@ function readBody(req: IncomingMessage): Promise<string> {
 export function apply(ctx: Context): void {
   const settings = ctx.settings;
   const webServer = ctx.webServer;
+  // memory 服务（host 侧运行时提供；类型用结构断言）
+  const memory = ctx.get('memory') as unknown as {
+    list(): Array<{ key: string; rec: Record<string, unknown> }>;
+    stats(): { active: number; dormant: number; byPreset: Record<string, number>; byScope: Record<string, number> };
+    softDelete(idPrefix: string): Promise<boolean>;
+  } | undefined;
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // CORS（同源 3081 下一般不需要，但为 Electron/开发端口留口）
@@ -89,7 +95,7 @@ export function apply(ctx: Context): void {
         if (parsed.ns === AGENT_PRESET_NAMESPACE) {
           const patch = parsed.patch as Record<string, unknown>;
           if (typeof patch.default !== 'string') return json(res, 400, { ok: false, error: 'agent-presets patch requires {default: string}' });
-          if (!['aemeath', 'scholar'].includes(patch.default)) return json(res, 400, { ok: false, error: `unsupported role: ${patch.default}` });
+          if (!['aemeath', 'scholar', 'physicist'].includes(patch.default)) return json(res, 400, { ok: false, error: `unsupported role: ${patch.default}` });
           await settings.update(settingsNamespace(AGENT_PRESET_NAMESPACE), { default: patch.default });
           json(res, 200, { ok: true });
           return;
@@ -110,7 +116,64 @@ export function apply(ctx: Context): void {
   const disposers = [
     webServer.register({ kind: 'exact', path: '/aemeath/api/settings', handler: handle }),
     webServer.register({ kind: 'exact', path: '/aemeath/api/settings/', handler: handle }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/memory', handler: handleMemory }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/memory/', handler: handleMemory }),
   ];
   ctx.effect(() => () => disposers.forEach((d) => d()));
   console.log('[aemeath-ui] 设置端点已注册: GET/POST /aemeath/api/settings');
+
+  // —— 记忆管理端点（M5 F2）：GET list/stats + POST delete ——
+  async function handleMemory(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    if (!memory) {
+      json(res, 503, { ok: false, error: 'memory service unavailable' });
+      return;
+    }
+    try {
+      if (req.method === 'GET') {
+        const items = memory.list().map(({ key, rec }) => ({
+          id: key,
+          content: String(rec.content ?? '').slice(0, 200),
+          category: rec.category ?? 'session_summary',
+          importance: typeof rec.importance === 'number' ? rec.importance : 0,
+          scope: rec.scope ?? 'mode',
+          preset: rec.preset ?? '',
+          status: rec.status ?? 'active',
+          created_at: rec.created_at ?? 0,
+        }));
+        const stats = memory.stats();
+        // L1 scratch（会话内暂存）+ L2 mode + L3 global 分组
+        const scratch = (memory as unknown as { allScratch?: () => Record<string, Record<string, string>> }).allScratch?.() ?? {};
+        const l1 = Object.entries(scratch).map(([sid, slot]) => ({
+          sessionId: sid,
+          items: Object.entries(slot).map(([k, v]) => ({ key: k, content: String(v).slice(0, 200) })),
+        })).filter((s) => s.items.length > 0);
+        const l2 = items.filter((m) => m.scope === 'mode');
+        const l3 = items.filter((m) => m.scope === 'global');
+        json(res, 200, { ok: true, l1, l2, l3, stats });
+        return;
+      }
+      if (req.method === 'POST') {
+        const raw = await readBody(req);
+        const parsed = JSON.parse(raw || '{}') as { idPrefix?: string };
+        if (!parsed.idPrefix) {
+          json(res, 400, { ok: false, error: 'idPrefix required' });
+          return;
+        }
+        const removed = await memory.softDelete(parsed.idPrefix);
+        json(res, 200, { ok: true, removed });
+        return;
+      }
+      json(res, 405, { ok: false, error: 'method not allowed' });
+    } catch (e) {
+      json(res, 400, { ok: false, error: (e as Error).message });
+    }
+  }
 }

@@ -25,7 +25,7 @@
 
 ## 内容轨（与开发并行，护城河本体）
 
-- **Worldbook 30 条**（M2 期间）：`packages/worldbook/data/scholar/`
+- **Worldbook 30 条**（M2 期间）：`packages/worldbook/data/physicist/`
 - **Altklausur 真题**（M4 前）：Fachschaft 收集 → `packages/benchmark/altklausur/`
 - **每周 ≥2h 真实学习**：`docs/usage-log.md`（本周记录：M0 冒烟）
 

@@ -3,9 +3,9 @@
 // 职责：
 //   1. 讲义分块（chunker.ts，按 ## 二级标题，≤2000 字符/块）
 //   2. SQLite FTS5 索引（node:sqlite 原生 bm25() 排序，D4 落地）
-//   3. scholar 注入：query>8 字或含物理术语 → top-3 块注入 "## Lecture Notes"（≤1500 token）
+//   3. physicist 注入：query>8 字或含物理术语 → top-3 块注入 "## Lecture Notes"（≤1500 token）
 //   4. 无讲义时优雅降级（目录空 → 不注入，日志提示）
-// 注：内容轨——library/scholar/notes/ 由用户后续填充真实讲义；世界书触发优先的联动优化留待 v2。
+// 注：内容轨——library/physicist/notes/ 由用户后续填充真实讲义；世界书触发优先的联动优化留待 v2。
 // ============================================================
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -80,7 +80,7 @@ function escapeFtsQuery(query: string): string {
   return terms.map((t) => `"${t}"`).join(' OR ');
 }
 
-/** 物理/数学术语触发模式（scholar 注入条件之一）。 */
+/** 物理/数学术语触发模式（physicist 注入条件之一）。 */
 const PHYSICS_TERM = /F\s*=\s*ma|牛顿|能量|动量|热力学|电磁|量子|波动|干涉|衍射|光|力学|统计|微分|积分|矩阵|特征值|熵|温度|压强|力|质量|速度|加速度|角动量|力矩|功|薛定谔|麦克斯韦|拉格朗日|哈密顿|简谐|谐振|电容|电感|磁场|电场|相对论|热容/i;
 
 export function apply(ctx: Context, config: RetrieverConfig): void {
@@ -107,7 +107,7 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
   );
 
   const maxTokens = config.maxInjectTokens ?? 1500;
-  const notesDir = isAbsolute(config.notesDir ?? '') ? config.notesDir! : join(process.cwd(), config.notesDir ?? 'packages/library/scholar/notes');
+  const notesDir = isAbsolute(config.notesDir ?? '') ? config.notesDir! : join(process.cwd(), config.notesDir ?? 'packages/library/physicist/notes');
 
   // ---- 构建 FTS5 索引（内存库，启动重建；讲义量小，足够） ----
   const db = new DatabaseSync(':memory:');
@@ -163,7 +163,7 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
   const reloadTimer = setInterval(scanMtimes, 5000);
   if (reloadTimer.unref) reloadTimer.unref();
 
-  // ---- scholar 注入（agent/pre-step） ----
+  // ---- physicist 注入（agent/pre-step） ----
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
@@ -172,7 +172,7 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
 
     const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     log(`[dbg] pre-step agent=${payload.agent.id.slice(0, 8)} preset=${preset} msgs=${decision.messages.length}`);
-    if (preset !== 'scholar') return decision;
+    if (preset !== 'physicist') return decision;
 
     // 取进入 step 的用户原始文本（跳过插件注入消息，如 worldbook/recall）
     let query = '';
@@ -207,12 +207,12 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
     if (!parts.length) return decision;
 
     const block = `## Lecture Notes\n${parts.join('\n\n')}`;
-    log(`preset=scholar 讲义注入 ${block.length} 字符（≤${maxTokens} tokens 预算）`);
+    log(`preset=physicist 讲义注入 ${block.length} 字符（≤${maxTokens} tokens 预算）`);
     const injectMsg = createUserMessage({
       content: [{ type: 'text', text: block }],
       source: { kind: 'plugin', plugin: name, form: 'catalog' },
     });
     return { kind: 'enter', messages: [...decision.messages, injectMsg] };
   });
-  log('讲义注入已挂载（agent/pre-step，scholar 模式）');
+  log('讲义注入已挂载（agent/pre-step，physicist 模式）');
 }
