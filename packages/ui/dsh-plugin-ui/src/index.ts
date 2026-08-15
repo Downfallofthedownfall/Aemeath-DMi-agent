@@ -44,6 +44,26 @@ function readBody(req: IncomingMessage): Promise<string> {
 export function apply(ctx: Context): void {
   const settings = ctx.settings;
   const webServer = ctx.webServer;
+
+  // —— UI 改造 P1：默认亮色迁移（决策 Q1：默认亮色，深色仅设置页可选）——
+  // 持久化偏好为 dark/system/缺失时 → 迁移为 light，避免每次启动先闪暗色；
+  // 插件侧（theme.ts）再把 light → aemeath（金强调亮色）。
+  // 用户若在设置页显式选过 aemeath/physicist，此处不覆盖。
+  void (async () => {
+    try {
+      const themeNs = settingsNamespace('ui-theme');
+      const cur = settings.get(themeNs) as { preference?: string } | undefined;
+      const pref = cur?.preference;
+      if (!pref || pref === 'dark' || pref === 'system') {
+        await settings.update(themeNs, { preference: 'light' });
+        console.log(`[aemeath-ui] ui-theme.preference → light（${pref ? '原 ' + pref : '缺省'}，默认亮色）`);
+      }
+    } catch (e) {
+      // settings 未就绪：忽略，下次启动再迁移
+      console.warn('[aemeath-ui] 主题偏好迁移失败（可忽略）:', (e as Error).message);
+    }
+  })();
+
   // memory 服务（host 侧运行时提供；类型用结构断言）
   const memory = ctx.get('memory') as unknown as {
     list(): Array<{ key: string; rec: Record<string, unknown> }>;

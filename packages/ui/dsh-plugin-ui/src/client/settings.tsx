@@ -1,16 +1,13 @@
 // ============================================================
-// 设置界面（M5 核心）——「爱弥斯」设置页（v2 官方模式重构）
+// 设置界面（M5 核心 → UI 改造 P3 瘦身）
 // 结构（对齐官方 ModelsSection 模式，修复 React #290）：
 //   AemeathSettingsSection（外层，零 hooks）→ props 未注入时 return null；
 //   注入后渲染 <Loaded>（内层，承载全部 hooks 与订阅）。
-//   #290 根因：外层直接渲染带 hooks 的子组件树时，slot 注入前后
-//   （props undefined → 完整）同一组件位置的 hooks 数量跳变。
-//   官方解法：外层只做注入检查（零 hooks），hooks 全部下沉到条件渲染
-//   的 Loaded 子组件 —— 注入前 Loaded 不存在（0 hooks），注入后首次
-//   挂载（hooks 从 0 计），天然无跳变。
-// 内容：
+// 内容（P3 瘦身后，常用项已前移主界面）：
 //   1. 功能开关组（引擎插件 settings namespaces 绑定，实时生效）
-//   2. API key 配置（ctx.remote.credentials：describe/set/unset）
+//   2. 记忆管理（L1/L2/L3，管理型辅助入口）
+//   3. API key 配置（ctx.remote.credentials：describe/set/unset）
+// 角色模式已前移：hero 欢迎屏 + 快速设置面板（quick-settings.tsx）
 // ============================================================
 import { useState, useSyncExternalStore } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
@@ -90,67 +87,6 @@ interface LoadedProps {
     set: (ref: string, value: string) => Promise<void>;
     unset: (ref: string) => Promise<void>;
   };
-  /** 角色模式（小爱同学/爱弥斯-拉贝尔学部学霸）：可订阅（useSyncExternalStore）保证切换后 UI 刷新 */
-  role?: {
-    subscribe: (l: () => void) => () => void;
-    getSnapshot: () => string;
-    set: (role: string) => Promise<void>;
-  };
-}
-
-/** 角色模式选择：小爱同学（陪伴）/ 爱弥斯-拉贝尔学部学霸（物理学习）。hooks 无条件调用。 */
-function RoleSelector({
-  role,
-}: {
-  role: NonNullable<LoadedProps['role']>;
-}): JSX.Element {
-  const current = useSyncExternalStore(role.subscribe, role.getSnapshot);
-  const options = [
-    { id: 'aemeath', label: '小爱同学', hint: '陪伴 · 日常聊天' },
-    { id: 'physicist', label: '爱弥斯-拉贝尔学部学霸', hint: '物理学习 · 解题' },
-  ];
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: 8,
-        padding: '12px 14px',
-        borderBottom: '1px solid var(--dsw-alias-border-l1)',
-      }}
-    >
-      {options.map((opt) => {
-        const active = current === opt.id;
-        return (
-          <button
-            key={opt.id}
-            type="button"
-            onClick={() => void role.set(opt.id)}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'flex-start',
-              gap: 2,
-              padding: '10px 12px',
-              borderRadius: 10,
-              cursor: 'pointer',
-              border: active
-                ? '1.5px solid var(--dsw-alias-state-business-primary)'
-                : '1px solid var(--dsw-alias-border-l2)',
-              background: active
-                ? 'color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent)'
-                : 'var(--dsw-alias-bg-base)',
-              color: 'var(--dsw-alias-label-primary)',
-              textAlign: 'left',
-            }}
-          >
-            <span style={{ fontSize: 14, fontWeight: 700 }}>{opt.label}</span>
-            <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-secondary)' }}>{opt.hint}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
 }
 
 function SwitchRow({
@@ -355,7 +291,7 @@ function ApiKeyRow({
 }
 
 /** 单行开关：独立组件以便使用 hook（React hooks 规则：不在循环/条件中调用）。 */
-function FeatureSwitchCell({
+export function FeatureSwitchCell({
   feature,
   scope,
   onChange,
@@ -391,7 +327,7 @@ function FeatureSwitchCell({
 }
 
 /** 内层：设置页完整内容（hooks 全在此）。 */
-function Loaded({ scopes, credentials, role }: LoadedProps): JSX.Element {
+function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
   const setFeature = async (f: FeatureSwitch, v: boolean): Promise<void> => {
     const scope = scopes[f.ns];
     if (!scope) return;
@@ -414,28 +350,6 @@ function Loaded({ scopes, credentials, role }: LoadedProps): JSX.Element {
         maxWidth: 560,
       }}
     >
-      {/* —— 角色模式 —— */}
-      {role ? (
-        <section>
-          <h3 style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }}>
-            角色模式
-          </h3>
-          <div
-            style={{
-              border: '1px solid var(--dsw-alias-border-l1)',
-              borderRadius: 12,
-              overflow: 'hidden',
-              background: 'var(--dsw-alias-bg-subtle)',
-            }}
-          >
-            <RoleSelector role={role} />
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginTop: 6 }}>
-            选择后对之后新建的会话生效；当前会话保持创建时的角色。
-          </div>
-        </section>
-      ) : null}
-
       {/* —— 功能开关 —— */}
       <section>
         <h3 style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }}>
@@ -526,18 +440,12 @@ export interface AemeathSettingsSectionProps {
     set: (ref: string, value: string) => Promise<void>;
     unset: (ref: string) => Promise<void>;
   };
-  /** 角色模式（小爱同学/爱弥斯-拉贝尔学部学霸）切换：可订阅 */
-  role?: {
-    subscribe: (l: () => void) => () => void;
-    getSnapshot: () => string;
-    set: (role: string) => Promise<void>;
-  };
 }
 
-export function AemeathSettingsSection({ scopes, credentials, role }: AemeathSettingsSectionProps): JSX.Element | null {
+export function AemeathSettingsSection({ scopes, credentials }: AemeathSettingsSectionProps): JSX.Element | null {
   // 零 hooks：注入未就绪时返回 null（官方模式），注入后首次挂载 Loaded。
   if (!scopes || !credentials) return null;
-  return <Loaded scopes={scopes} credentials={credentials} role={role} />;
+  return <Loaded scopes={scopes} credentials={credentials} />;
 }
 
 // ============================================================
@@ -549,7 +457,6 @@ export function registerSettingsSection(
   deps: {
     scopes: () => Record<string, SettingsScope<Record<string, unknown>>>;
     credentials: () => AemeathSettingsSectionProps['credentials'];
-    role: () => AemeathSettingsSectionProps['role'];
   },
 ): void {
   ctx.slots.inject('settings.section', () =>
@@ -562,7 +469,6 @@ export function registerSettingsSection(
         inject: () => ({
           scopes: deps.scopes(),
           credentials: deps.credentials(),
-          role: deps.role(),
         }),
       },
       AemeathSettingsSection,

@@ -1,10 +1,10 @@
 // ============================================================
-// 品牌层（M5 F1）——页面标题 + 侧边栏品牌位
+// 品牌层（M5 F1 → UI 改造 P2）——页面标题 + dsh 品牌元素隐藏
 // 目标：告别 dsh 原版「开发工具」观感，呈现爱弥斯陪伴品牌。
 // 手段：
 //   1. document.title：页面加载即设置（品牌标题）。
-//   2. sidebar.footer.action：侧边栏底部品牌标识（图标 + 标题）。
-//   3. settings.section：设置面板标题由注册者提供，见 settings.tsx。
+//   2. CSS 隐藏 dsh 鲸鱼 logo / wordmark（品牌位本身迁至侧边栏顶部
+//      sessions.tsx 的 SidebarBrandHeader，P2 起 footer 品牌位不再注册）。
 // ============================================================
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
@@ -98,16 +98,16 @@ export function applyBrand(ctx: ClientContext): void {
     ctx.effect(() => () => window.clearInterval(timer));
   }
 
-  // 2) 侧边栏底部品牌位（footer.action 列表槽）
-  ctx.slots.inject('sidebar.footer.action', () =>
-    ctx.slots.register(
-      {
-        name: 'sidebar.footer.action',
-        id: 'aemeath-brand',
-        order: -100,
-        inject: () => ({}),
-      },
-      SidebarBrand,
-    ),
-  );
+  // 2) 页面标题（立即生效 + 持续保持）
+  if (typeof document !== 'undefined') {
+    document.title = BRAND_TITLE;
+    const keep = (): void => {
+      if (document.title !== BRAND_TITLE) document.title = BRAND_TITLE;
+    };
+    // 某些 UI 可能改写 title，周期性兜底（低频，无感）
+    const timer = window.setInterval(keep, 5000);
+    ctx.effect(() => () => window.clearInterval(timer));
+  }
+  // 注：侧边栏品牌位（SidebarBrandHeader）注册见 sessions.tsx（P2 迁移）；
+  // footer 品牌位已移除，footer.action 槽位留给 P3 快速设置入口。
 }

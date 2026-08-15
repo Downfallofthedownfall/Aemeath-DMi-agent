@@ -1,7 +1,7 @@
 // ============================================================
-// 爱弥斯会话列表（M5 UI 精简 v2）——替换 dsh 的 workspace 浏览器
+// 爱弥斯会话列表（M5 UI 精简 v2 → UI 改造 P2 升级）
 // 注册进 sidebar.workspaces（single 槽，priority 更低 → shadow 官方 ui-workspace）
-// 内容：极简会话列表——只列历史会话（标题/预设徽章），点击打开。
+// 内容：品牌头部（⚛ 小爱同学）+ 极简会话列表——只列历史会话（标题/预设徽章）。
 //   「新会话」按钮由 dsh sidebar shell 自带（不重复添加）。
 // 数据：useSessions 来自框架注入的标准 kit（SessionStandardProps），
 //       不伪造——v1 的 bug 就是 inject 里塞了恒等函数导致列表恒空。
@@ -10,6 +10,7 @@ import { useState } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
+import { BrandMark } from './brand.tsx';
 
 /** 会话列表行（含删除按钮，hover 显示——纯 CSS）。 */
 function SessionRow({
@@ -56,7 +57,7 @@ function SessionRow({
         }}
         aria-label={title}
       >
-        <span style={{ fontSize: 13, fontWeight: active ? 700 : 500, lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
+        <span style={{ fontSize: 13, fontWeight: active ? 700 : 500, lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
           {title}
         </span>
         {subtitle ? (
@@ -93,6 +94,49 @@ function SessionRow({
   );
 }
 
+/** 品牌头部（UI 改造 P2）：侧边栏顶部身份位——⚛ 小爱同学 · 物理学习 Copilot。 */
+export function SidebarBrandHeader({ wide }: { wide: boolean }): JSX.Element {
+  return (
+    <div
+      data-aemeath-brand-header
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '14px 10px 12px',
+        borderBottom: '1px solid var(--dsw-alias-border-l1)',
+        marginBottom: 6,
+      }}
+    >
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 30,
+          height: 30,
+          borderRadius: 9,
+          flex: 'none',
+          background: 'var(--dsw-alias-state-business-tertiary)',
+          color: 'var(--dsw-alias-state-business-primary)',
+        }}
+      >
+        <BrandMark />
+      </span>
+      {wide ? (
+        <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.35 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' }}>
+            小爱同学
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            物理学习 Copilot
+          </span>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 /** 会话列表主体：useSessions 由框架注入（标准 kit），非伪造。 */
 function SessionListBody({
   useSessions,
@@ -111,7 +155,8 @@ function SessionListBody({
     byId?: Record<string, { id: string; displayTitle?: string; agentPreset?: string; running?: boolean; blank?: boolean }>;
     current?: string;
   };
-  const ids = (list.ids ?? []).filter((id) => !removed.has(id));
+  // 去重：极端重连/事件累积下 ids 可能出现重复（测试环境 18 次重连后实测每会话 3-4 份）
+  const ids = Array.from(new Set((list.ids ?? []).filter((id) => !removed.has(id))));
   const byId = list.byId ?? {};
   const current = list.current;
 
@@ -122,28 +167,31 @@ function SessionListBody({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 1, padding: '4px 8px 8px', minHeight: 0, flex: 1, overflowY: 'auto' }}>
-      {ids.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '12px 10px', textAlign: 'center' }}>
-          {wide ? '还没有会话，点上方「新会话」开始' : '—'}
-        </div>
-      ) : (
-        ids.map((id) => {
-          const s = byId[id];
-          if (!s || s.blank) return null;
-          const presetLabel = s.agentPreset === 'aemeath' ? '小爱同学' : s.agentPreset === 'physicist' ? '爱弥斯-拉贝尔学部学霸' : s.agentPreset ?? '';
-          return (
-            <SessionRow
-              key={id}
-              title={s.displayTitle ?? id.slice(0, 8)}
-              subtitle={presetLabel}
-              active={s.id === current}
-              onClick={() => open(id)}
-              onDelete={() => remove(id)}
-            />
-          );
-        })
-      )}
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1, overflowY: 'auto' }}>
+      <SidebarBrandHeader wide={wide} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 1, padding: '0 8px 8px', minHeight: 0, flex: 1, overflowY: 'auto' }}>
+        {ids.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '12px 10px', textAlign: 'center' }}>
+            {wide ? '还没有会话，点上方「新会话」开始' : '—'}
+          </div>
+        ) : (
+          ids.map((id) => {
+            const s = byId[id];
+            if (!s || s.blank) return null;
+            const presetLabel = s.agentPreset === 'aemeath' ? '小爱同学' : s.agentPreset === 'physicist' ? '爱弥斯-拉贝尔学部学霸' : s.agentPreset ?? '';
+            return (
+              <SessionRow
+                key={id}
+                title={s.displayTitle ?? id.slice(0, 8)}
+                subtitle={presetLabel}
+                active={s.id === current}
+                onClick={() => open(id)}
+                onDelete={() => remove(id)}
+              />
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }
@@ -160,12 +208,7 @@ function AemeathSessionList(props: {
   return <SessionListBody useSessions={useSessions} wide={!!wide} open={open} archive={archive} />;
 }
 
-/** 隐藏 hero 里的工作区 dropdown（shadow 官方 WorkspacePicker 为空）。 */
-function HiddenWorkspacePicker(): JSX.Element | null {
-  return null;
-}
-
-/** 注册：shadow 官方 sidebar.workspaces + hero 工作区 picker。 */
+/** 注册：shadow 官方 sidebar.workspaces（会话列表 + 品牌头部）。 */
 export function registerSessionList(ctx: ClientContext): void {
   // 注入 hover 显示删除按钮的 CSS
   if (typeof document !== 'undefined') {
@@ -192,14 +235,5 @@ export function registerSessionList(ctx: ClientContext): void {
       AemeathSessionList as never,
     ),
   );
-  // shadow 官方 hero 工作区 picker（WorkspacePicker）→ 空，隐藏 dropdown
-  ctx.slots.inject('conversation.hero.workspace', () =>
-    ctx.slots.register(
-      {
-        name: 'conversation.hero.workspace',
-        priority: -100,
-      },
-      HiddenWorkspacePicker as never,
-    ),
-  );
+  // 注：conversation.hero.workspace 已由 workspace-selector.tsx 接管（P3 恢复工作区选择）
 }
