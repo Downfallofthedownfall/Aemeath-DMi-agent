@@ -45,26 +45,50 @@ Built on [DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.1.0-rc.6`) a
 
 ### Quick start
 
-```bash
-# Prereqs: Node 22.13+, npm, Python 3.10+
-# Windows one-shot setup (recommended):
-setup.bat
+**⚡ Full setup (PowerShell)** — clone → install → launch the desktop shell:
 
-# or manually:
+```powershell
+# 1) Clone the repo anywhere you like (e.g. D:\dev)
+cd D:\dev
+git clone https://github.com/Downfallofthedownfall/Aemeath-DMi-agent.git
+cd Aemeath-DMi-agent
+
+# 2) Allow local scripts for this session (run once)
+Set-ExecutionPolicy -Scope Process Bypass -Force
+
+# 3) One-shot install (requires Node 22.13+ & Python 3.10+)
+.\setup.bat
+
+# 4) Launch the desktop pet (Electron shell: hosts dsh + branded window)
+cd app
+npm start
+```
+
+> `npm start` (inside `app/`) is the **daily driver** — it starts/hosts the dsh service on 3081 and opens the branded Electron window automatically. You can also use the browser UI or the other commands instead:
+
+```powershell
+# Browser UI (alternative to the desktop shell)
+.\scripts\dsh.ps1 --profile aemeath --port 3081   # → http://127.0.0.1:3081
+
+# Headless smoke test (no browser)
+.\scripts\dsh.ps1 --profile aemeath-run "Hi, introduce yourself"
+
+# Benchmark (headless, six metrics)
+python packages\benchmark\run_benchmark.py --limit 5
+
+# Memory admin endpoint (token is printed in the startup log)
+curl.exe -H "Authorization: Bearer <token>" http://127.0.0.1:18895/memory/stats
+```
+
+Equivalent manual install steps (bash):
+
+```bash
 npm install --cache .npm-cache
 npm run build
 cd profiles\aemeath && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
 cd profiles\aemeath-run && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
 pip install -r requirements.txt
-
-# One-shot smoke test (headless, no browser):
-.\scripts\dsh.ps1 --profile aemeath-run "Hi, introduce yourself"
-
-# Web UI (main profile, port 3081):
-.\scripts\dsh.ps1 --profile aemeath --port 3081
-
-# Desktop pet shell (optional, hosts dsh + branded window):
-cd app && npm install && npm start
+cd app && npm install
 ```
 
 > `scripts/dsh.ps1` pins a project-local DSH_HOME (`.dsh-home/`, gitignored) so it never touches your global dsh web profile. API key: Web UI **Settings → API Key**, or write `.dsh-home/.credentials.yaml`, falling back to the `DEEPSEEK_API_KEY` env var.
@@ -148,26 +172,50 @@ npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimens
 
 ### 快速开始
 
-```bash
-# 前置：Node 22.13+、npm、Python 3.10+
-# Windows 一键安装（推荐）：
-setup.bat
+**⚡ 全套流程（PowerShell）** —— clone → 安装 → 直接启动桌宠：
 
-# 或手动：
+```powershell
+# 1) 把仓库 clone 到任意目录（例如 D:\dev）
+cd D:\dev
+git clone https://github.com/Downfallofthedownfall/Aemeath-DMi-agent.git
+cd Aemeath-DMi-agent
+
+# 2) 允许本会话运行本地脚本（只需一次）
+Set-ExecutionPolicy -Scope Process Bypass -Force
+
+# 3) 一键安装（需 Node 22.13+ / Python 3.10+）
+.\setup.bat
+
+# 4) 启动桌宠（Electron 壳：自动托管 dsh + 品牌窗口）
+cd app
+npm start
+```
+
+> `npm start`（app/ 内）是**日常入口**：自动拉起/复用 3081 的 dsh 服务并打开品牌 Electron 窗口。也可改用浏览器 UI 或其他命令：
+
+```powershell
+# 浏览器 UI（替代桌宠壳）
+.\scripts\dsh.ps1 --profile aemeath --port 3081   # → http://127.0.0.1:3081
+
+# headless 冒烟测试（无需浏览器）
+.\scripts\dsh.ps1 --profile aemeath-run "你好，自我介绍"
+
+# 基准（headless，六指标）
+python packages\benchmark\run_benchmark.py --limit 5
+
+# 记忆管理端点（token 见启动日志）
+curl.exe -H "Authorization: Bearer <token>" http://127.0.0.1:18895/memory/stats
+```
+
+等价手动安装步骤（bash）：
+
+```bash
 npm install --cache .npm-cache
 npm run build
 cd profiles\aemeath && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
 cd profiles\aemeath-run && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
 pip install -r requirements.txt
-
-# 一次性冒烟（headless，无需浏览器）
-.\scripts\dsh.ps1 --profile aemeath-run "你好，自我介绍"
-
-# Web UI（主 profile，端口 3081）
-.\scripts\dsh.ps1 --profile aemeath --port 3081
-
-# 桌面壳（可选，托管 dsh + 品牌窗口）
-cd app && npm install && npm start
+cd app && npm install
 ```
 
 > `scripts/dsh.ps1` 固定项目内 DSH_HOME（`.dsh-home/`，gitignored），不干扰全局 web profile。API Key：Web「设置 → API 密钥」填写，或写入 `.dsh-home/.credentials.yaml`，缺省回退环境变量 `DEEPSEEK_API_KEY`。
