@@ -1,6 +1,7 @@
 // ============================================================
-// service.ts — ctx.memory 服务（M3 v3）
+// service.ts — ctx.memory 服务（M3 v3 · M3.4 分层）
 // 对外暴露：search / list / save / softDelete / stats / scratch（L1 暂存）
+//           l1（分层采集缓冲）/ knowledge（知识层，pending 评审门）
 // 供：pre-step 召回注入、/memory 命令、HTTP 管理端点、M5 记忆面板、其他插件
 // 生命周期：Service 构造时 super(ctx, 'memory') 即注册，随插件 fiber 自动注销
 // ============================================================
@@ -10,11 +11,14 @@ import { Service } from '@deepseek-ai/cordis';
 import type { Context } from '@deepseek-ai/cordis';
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain';
 import { search as bm25Search } from './bm25.js';
-import type { MemoryRecord, AuditRecord, UserProfile, Category } from './types.js';
+import { appendL1, removeL1Turns, shouldTriggerL1 } from './layers.js';
+import type { MemoryRecord, AuditRecord, KnowledgeRecord, UserProfile, Category, L1Turn } from './types.js';
 
 export interface MemoryServiceDeps {
   memories: KvTable<string, MemoryRecord>;
   audit: KvTable<string, AuditRecord>;
+  knowledge: KvTable<string, KnowledgeRecord>;
+  l1: KvTable<string, L1Turn[]>;
   profile: { get(): UserProfile; set(v: UserProfile): Promise<void> };
   auditWrite(action: string, memoryId: string | undefined, detail: string): Promise<void>;
 }
@@ -43,10 +47,15 @@ export class MemoryService extends Service {
   private readonly deps: MemoryServiceDeps;
   /** L1 工作缓存：会话内任务暂存区（scratch），内存态，随进程存活。 */
   private readonly scratchMap = new Map<string, Record<string, string>>();
+  /** L1 分层采集缓冲：持久化在域表（攒批省 token：未达最小批次跨会话继续攒）。 */
+  private readonly l1Capacity: number;
+  private readonly l1Threshold: number;
 
-  constructor(ctx: Context, deps: MemoryServiceDeps) {
+  constructor(ctx: Context, deps: MemoryServiceDeps, l1Options: { capacity?: number; threshold?: number } = {}) {
     super(ctx, 'memory');
     this.deps = deps;
+    this.l1Capacity = l1Options.capacity ?? 40;
+    this.l1Threshold = l1Options.threshold ?? 0.8;
   }
 
   private allActive(): Array<{ key: string; rec: MemoryRecord }> {
@@ -123,15 +132,94 @@ export class MemoryService extends Service {
   }
 
   /** 统计（/memory stats 与面板）。 */
-  stats(): { active: number; dormant: number; byPreset: Record<string, number>; byScope: Record<string, number> } {
-    const out = { active: 0, dormant: 0, byPreset: {} as Record<string, number>, byScope: {} as Record<string, number> };
+  stats(): { active: number; dormant: number; byPreset: Record<string, number>; byScope: Record<string, number>; l1: number; knowledge: Record<string, number> } {
+    const out = { active: 0, dormant: 0, byPreset: {} as Record<string, number>, byScope: {} as Record<string, number>, l1: 0, knowledge: { pending: 0, accepted: 0, rejected: 0 } };
     for (const { rec } of this.allActive()) {
       if (rec.status === 'active') out.active++;
       else out.dormant++;
       out.byPreset[rec.preset] = (out.byPreset[rec.preset] ?? 0) + 1;
       out.byScope[rec.scope] = (out.byScope[rec.scope] ?? 0) + 1;
     }
+    for (const [, turns] of this.deps.l1.entries()) out.l1 += turns.length;
+    for (const [, rec] of this.deps.knowledge.entries()) {
+      out.knowledge[rec.status] = (out.knowledge[rec.status] ?? 0) + 1;
+    }
     return out;
+  }
+
+  // ===== L1 分层采集缓冲（工作区 → 80% 阈值 / 攒批达标 → 总结卸载 → L2/L3） =====
+  /** 追加一轮（封顶丢弃最旧；域表持久化），返回当前缓冲长度。 */
+  async l1Append(turn: L1Turn): Promise<number> {
+    const cur = this.deps.l1.get(turn.sessionId) ?? [];
+    const next = appendL1(cur, turn, this.l1Capacity);
+    await this.deps.l1.put(turn.sessionId, next);
+    return next.length;
+  }
+
+  l1Count(sessionId: string): number {
+    return (this.deps.l1.get(sessionId) ?? []).length;
+  }
+
+  l1ShouldTrigger(sessionId: string): boolean {
+    return shouldTriggerL1(this.l1Count(sessionId), this.l1Capacity, this.l1Threshold);
+  }
+
+  l1Turns(sessionId: string): L1Turn[] {
+    return [...(this.deps.l1.get(sessionId) ?? [])];
+  }
+
+  /** 精确移除某批轮次（总结并发保护）；空则删整条。 */
+  async l1Remove(sessionId: string, toRemove: readonly L1Turn[]): Promise<void> {
+    const cur = this.deps.l1.get(sessionId);
+    if (!cur) return;
+    const next = removeL1Turns(cur, toRemove);
+    if (next.length) await this.deps.l1.put(sessionId, next);
+    else await this.deps.l1.delete(sessionId);
+  }
+
+  async l1Clear(sessionId: string): Promise<void> {
+    await this.deps.l1.delete(sessionId);
+  }
+
+  /** 全部有缓冲的会话（session/flush 遍历用）。 */
+  l1Sessions(): string[] {
+    return [...this.deps.l1.keys()].filter((sid) => this.l1Count(sid) > 0);
+  }
+
+  l1CapacityOf(): { capacity: number; threshold: number } {
+    return { capacity: this.l1Capacity, threshold: this.l1Threshold };
+  }
+
+  // ===== 知识层（知识路由写入目标；规则初筛直达 accepted / LLM 审核 pending） =====
+  knowledgeList(): Array<{ key: string; rec: KnowledgeRecord }> {
+    return [...this.deps.knowledge.entries()]
+      .map(([key, rec]) => ({ key, rec }))
+      .sort((a, b) => b.rec.created_at - a.rec.created_at);
+  }
+
+  async knowledgeAdd(input: { preset: string; content: string; topic: string; sourceKind: 'user_query' | 'llm_extract'; sourceSession: string; status?: 'pending' | 'accepted' }): Promise<string> {
+    const id = randomUUID();
+    const rec: KnowledgeRecord = {
+      id,
+      preset: input.preset,
+      content: input.content,
+      topic: input.topic,
+      source_kind: input.sourceKind,
+      status: input.status ?? 'pending',
+      created_at: Date.now(),
+      source_session: input.sourceSession,
+    };
+    await this.deps.knowledge.put(id, rec);
+    await this.deps.auditWrite('knowledge_add', id, `topic=${input.topic} source=${input.sourceKind} status=${rec.status}`);
+    return id;
+  }
+
+  async knowledgeSetStatus(idPrefix: string, status: 'accepted' | 'rejected'): Promise<boolean> {
+    const found = this.knowledgeList().find(({ key }) => key.startsWith(idPrefix));
+    if (!found) return false;
+    await this.deps.knowledge.update(found.key, (cur) => ({ ...cur, status }));
+    await this.deps.auditWrite(`knowledge_${status}`, found.key, `评审：${status}`);
+    return true;
   }
 
   // ===== L1 暂存区（scratch，会话内工作态） =====

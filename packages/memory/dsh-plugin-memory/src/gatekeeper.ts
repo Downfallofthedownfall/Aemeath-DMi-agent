@@ -2,13 +2,17 @@
 // gatekeeper.ts — 记忆守门员·规则层（纯函数，可单测）
 // 双层判定第一层：确定性规则，零成本，先于 LLM 判定。
 // 输入：一轮 (query, reply)；输出：动作决策。
-// 动作：save / update(冲突) / knowledge_routed / skip / blocked / pending(交 LLM 层)
+// 动作：
+//   save              —— 显式记忆命令（"记住/以后叫我…"关键词）→ 直接写 L2/L3（不经 LLM）
+//   knowledge_direct  —— 规则初筛命中强知识模式（公式/定律/数学术语）→ 直接进知识层/worldbook（不经 LLM）
+//   skip / blocked    —— 丢弃 / 凭据拦截
+//   pending           —— 规则层拿不准 → 进 L1 缓冲攒批 → LLM 总结审核（省 token）
 // ============================================================
 
 export type MemoryAction =
   | { kind: 'blocked'; reason: string }
   | { kind: 'skip'; reason: string }
-  | { kind: 'knowledge_routed'; reason: string }
+  | { kind: 'knowledge_direct'; content: string; topic: string; reason: string }
   | { kind: 'save'; importance: number; category: Category; content: string }
   | { kind: 'pending'; reason: string };
 
@@ -25,19 +29,39 @@ const CREDENTIAL_PATTERNS = [
   /(^|\s)token[=:\s]/i,
 ];
 
-/** 显式记忆命令：用户明确要求记住 → 高重要性直写。 */
+/**
+ * 显式记忆命令关键词：用户明确要求记录 → 规则初筛直达（不经 LLM）。
+ * 不只公式：这类"记住/记一下"关键词同样是 worldbook/知识层入口的规则层信号。
+ */
 const EXPLICIT_SAVE_PATTERNS = [
   /记住/i, /记得[，。！？!?]*我/, /以后(就)?叫/, /别忘(了|记)/, /我的名字是/,
+  /记一下|记下来|记着/, /收藏|存一下|收录/,
   /我(的)?(生日|年龄|专业|学校|家乡)/, /我(正在|要)学/, /我(喜欢|讨厌|最爱)/,
   /remember/i, /my name is/i, /i (like|love|hate)/i, /call me/i,
 ];
 
-/** 物理/数学公式或术语特征 → knowledge_routed（进知识层，不进用户记忆）。 */
+/**
+ * 强知识模式（公式/定律/数学术语）：规则初筛命中的知识 → knowledge_direct，
+ * 直接进知识层/worldbook，不经 LLM 审核。
+ */
 const KNOWLEDGE_PATTERNS = [
   /F\s*=\s*ma/, /E\s*=\s*mc/, /Σ|∫|∂|∇|Δ/, /d\/dx|dy\/dx/, /牛顿第/, /能量守恒/,
   /动量守恒/, /热力学第/, /薛定谔/, /麦克斯韦/, /电磁感应/, /简谐振动/, /sine|cos|tan/i,
-  /积分|微分|导数|矩阵|特征值/i,
+  /积分|微分|导数|矩阵|特征值/i, /波长|频率|折射|衍射|干涉/i, /洛伦兹|安培|欧姆|焦耳/,
 ];
+
+/** 规则初筛：文本是否含强知识模式（供 save 分支二次判断"显式命令+知识内容"）。 */
+export function isStrongKnowledge(text: string): boolean {
+  return KNOWLEDGE_PATTERNS.some((re) => re.test(text));
+}
+
+/** 从提问中提取知识主题（topic）：优先取公式/拉丁符号，其次取连续中文片段（≤6 字）。 */
+export function classifyKnowledgeTopic(query: string): string {
+  const latin = (query || '').match(/[A-Za-z]{1,6}/);
+  if (latin) return latin[0];
+  const cjk = (query || '').match(/[\u4e00-\u9fff]{2,6}/);
+  return cjk ? cjk[0] : '物理/数学';
+}
 
 /** 闲聊/情绪模式 → skip。 */
 const CHAT_PATTERNS = [
@@ -104,15 +128,20 @@ export function decide(query: string, reply: string): MemoryAction {
     };
   }
 
-  // 3) 物理/数学知识 → knowledge_routed
-  if (KNOWLEDGE_PATTERNS.some((re) => re.test(q) || re.test(r))) {
-    return { kind: 'knowledge_routed', reason: '物理/数学知识，不进用户记忆' };
+  // 3) 强知识模式（公式/定律/数学术语）→ knowledge_direct（规则初筛直达，不经 LLM）
+  if (isStrongKnowledge(q) || isStrongKnowledge(r)) {
+    return {
+      kind: 'knowledge_direct',
+      content: extractMemory(q),
+      topic: classifyKnowledgeTopic(q),
+      reason: '规则初筛：强知识模式（公式/定律/术语），直达知识层',
+    };
   }
 
   // 4) 闲聊/纯情绪 → skip
   if (CHAT_PATTERNS.some((re) => re.test(q))) return { kind: 'skip', reason: '闲聊/情绪' };
   if (q.length < MIN_INFORMATIVE_LENGTH) return { kind: 'skip', reason: '过短无信息量' };
 
-  // 5) 信息量充足但规则无法确定 → pending（交 LLM 判定层）
-  return { kind: 'pending', reason: '待 LLM 判定层' };
+  // 5) 信息量充足但规则拿不准 → pending（进 L1 攒批，交 LLM 总结审核）
+  return { kind: 'pending', reason: '待 LLM 总结层（攒批审核）' };
 }

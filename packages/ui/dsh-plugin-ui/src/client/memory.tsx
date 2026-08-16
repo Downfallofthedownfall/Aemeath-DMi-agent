@@ -5,7 +5,7 @@
 //   L3 共享记忆：scope=global（跨角色共享）
 // 数据源：host 端点 /aemeath/api/memory（GET {l1,l2,l3,stats} + POST delete）
 // ============================================================
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export interface MemoryItem {
   id: string;
@@ -133,6 +133,12 @@ function MemoryPanelBody(): JSX.Element {
       setLoading(false);
     }
   };
+
+  // 挂载即加载（此前缺失：初始 loading=true 且 data=null → 一直"加载中…"无数据，点刷新才正常）
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时加载一次；load 内部只用稳定 setter
+  }, []);
 
   const remove = async (idPrefix: string): Promise<void> => {
     setDeleting(idPrefix);

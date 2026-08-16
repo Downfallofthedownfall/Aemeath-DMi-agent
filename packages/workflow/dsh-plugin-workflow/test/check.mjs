@@ -52,4 +52,11 @@ t('SOLVER_PROMPT 含关键规范要素', () => {
   assert.ok(SOLVER_PROMPT.includes('查证'));
 });
 
+t('SOLVER_PROMPT 含 M6 v2 要素（plan_step 落 scratch + check_dimensions 量纲）', () => {
+  assert.ok(SOLVER_PROMPT.includes('plan_step'), '应引导模型用 plan_step 落计划');
+  assert.ok(SOLVER_PROMPT.includes('plan_status'), '应引导模型用 plan_status 核对');
+  assert.ok(SOLVER_PROMPT.includes('check_dimensions'), '应引导模型用量纲检查');
+  assert.ok(SOLVER_PROMPT.includes('scratch'), '应提到 scratch');
+});
+
 console.log(`\n[workflow-route] ${passed} 项断言全部通过`);
