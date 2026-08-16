@@ -145,7 +145,22 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const l1Capacity = Math.max(8, config.l1Capacity ?? 40);
   const l1Threshold = Math.min(1, Math.max(0.1, config.l1Threshold ?? 0.8));
   const knowledgeEnabled = config.knowledge?.enabled ?? true;
-  const worldbook = { enabled: config.worldbook?.enabled ?? false, libraries: config.worldbook?.libraries ?? { physicist: 'packages/worldbook/data/physicist', aemeath: 'packages/worldbook/data/aemeath' } };
+  // C8：worldbook 桥接的 preset→馆目录映射优先取 worldbook 插件（service）的配置，
+  // 避免 cordis.patch.yml 里 libraries 在两个插件各抄一份造成漂移；service 未加载
+  // （worldbook 插件未挂）时退回自身配置/内置默认。
+  const worldbookLibrariesFromService = ((): Record<string, string> | undefined => {
+    try {
+      const svc = (ctx as unknown as { reflect?: { get(n: string): unknown } }).reflect?.get('worldbook') as
+        { libraries?: Record<string, string> } | undefined;
+      return svc?.libraries && Object.keys(svc.libraries).length ? svc.libraries : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const worldbook = {
+    enabled: config.worldbook?.enabled ?? false,
+    libraries: config.worldbook?.libraries ?? worldbookLibrariesFromService ?? { physicist: 'packages/worldbook/data/physicist', aemeath: 'packages/worldbook/data/aemeath' },
+  };
   const decayDays = config.decayDays ?? 90;
   const llm = config.llm ?? { enabled: false, apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', batchSize: LLM_BATCH_SIZE_DEFAULT, minBatch: 4 };
   const llmMinBatch = Math.max(2, llm.minBatch ?? 4);

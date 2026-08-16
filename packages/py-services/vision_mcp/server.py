@@ -142,6 +142,9 @@ def _yolo_detections(img_cv):
         results = model(img_cv, conf=0.3)
     detections = []
     for r in results:
+        # C21：空屏时 r.boxes 可能为 None（ultralytics 行为），返回空结果而非报错
+        if r.boxes is None:
+            continue
         for box in r.boxes:
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             conf = float(box.conf[0])
@@ -171,19 +174,19 @@ def _start_warmup():
     """后台预热：模型在首个用户调用前就绪（首调不再等 30-45s）。"""
     def _warm():
         try:
-            import contextlib
-            with contextlib.redirect_stdout(sys.stderr):
-                _ensure_deps()
-                # YOLO 首次推理不在此预热：与工具线程并发首推会触发 ultralytics
-                # predictor 懒初始化竞态（self.predictor=None）。YOLO 首次推理
-                # 由工具线程串行完成（_model_infer_lock），预热只负责 EasyOCR。
-                try:
-                    # 只加载 reader（检测+识别模型在 init 时装载）。
-                    # ⚠ 不能在此做空图像 readtext：会把 reader 搞坏（后续 readtext 返回空）。
-                    _get_ocr()
-                except Exception as e:  # noqa: BLE001
-                    print(f"[vision_mcp] 预热 EasyOCR 失败: {e}", file=sys.stderr)
-                print("[vision_mcp] 预热完成（EasyOCR 已就绪）", file=sys.stderr)
+            # stdout 已被 mcp_core.run() 永久重定向到 stderr（进程级、所有线程），
+            # 预热线程的库输出不会污染协议通道，无需临时 redirect_stdout。
+            _ensure_deps()
+            # YOLO 首次推理不在此预热：与工具线程并发首推会触发 ultralytics
+            # predictor 懒初始化竞态（self.predictor=None）。YOLO 首次推理
+            # 由工具线程串行完成（_model_infer_lock），预热只负责 EasyOCR。
+            try:
+                # 只加载 reader（检测+识别模型在 init 时装载）。
+                # ⚠ 不能在此做空图像 readtext：会把 reader 搞坏（后续 readtext 返回空）。
+                _get_ocr()
+            except Exception as e:  # noqa: BLE001
+                print(f"[vision_mcp] 预热 EasyOCR 失败: {e}", file=sys.stderr)
+            print("[vision_mcp] 预热完成（EasyOCR 已就绪）", file=sys.stderr)
         except Exception as e:  # noqa: BLE001
             print(f"[vision_mcp] 预热异常: {e}", file=sys.stderr)
     threading.Thread(target=_warm, daemon=True, name='vision-warmup').start()

@@ -4,10 +4,10 @@
   "description": "Aemeath 前端 UI 插件（M5）：爱弥斯主题、品牌层、设置界面（功能开关 + API key）、记忆面板、审批 diff",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./client": {
@@ -20,11 +20,11 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
-    "lib/types/**/*.d.ts",
+    "lib/*.d.ts",
     "src"
   ],
   "scripts": {
-    "build": "node build.mjs && tsc -p tsconfig.json",
+    "build": "node build.mjs && tsc -p tsconfig.json && tsc -p tsconfig.client.json",
     "build:client": "node build.mjs",
     "typecheck": "tsc -p tsconfig.client.json"
   },

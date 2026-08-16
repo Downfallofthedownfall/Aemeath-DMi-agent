@@ -33,7 +33,8 @@ try {
     bundle: true,
     format: 'cjs',
     platform: 'browser',
-    target: ['es2020'],
+    // C16：AbortSignal.timeout 等 ES2022 API——target 与 client lib(ES2022) 对齐
+    target: ['es2022'],
     jsx: 'automatic',
     external,
     banner: {
@@ -51,12 +52,16 @@ Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });`,
   });
   console.log(`[dsh-plugin-ui] client bundle 已产出: lib/client.js (${ID})`);
 } catch (e) {
-  // 沙箱下 esbuild 服务进程 spawn 被 EPERM 拒绝（named-pipe 边界）。
-  // 若已有产物则跳过（用完整权限重跑 build.mjs 可重新打包）；否则抛错。
+  // C4 修复：只吞「沙箱下 esbuild 服务进程 spawn 被 EPERM 拒」这一种情况
+  //（有既有产物时保留；用户需以完整权限重跑 build.mjs 重新打包）。
+  // 其他任何 esbuild 失败（语法错误/构建错误等）一律重抛，绝不带过期 bundle 静默出货。
   const { existsSync } = await import('node:fs');
-  if (existsSync(outPath)) {
-    console.warn('[dsh-plugin-ui] ⚠ esbuild 在当前权限下不可用，保留既有 client bundle（完整权限重跑 build.mjs 重新打包）');
+  const msg = e && e.message ? String(e.message) : String(e);
+  const isSandboxSpawnBlock = /spawn.*EPERM|EPERM|EACCES|operation not permitted/i.test(msg);
+  if (existsSync(outPath) && isSandboxSpawnBlock) {
+    console.warn(`[dsh-plugin-ui] ⚠ esbuild 在当前权限下不可用（${msg.slice(0, 80)}…），保留既有 client bundle（完整权限重跑 build.mjs 重新打包）`);
   } else {
+    console.error('[dsh-plugin-ui] esbuild 构建失败:');
     throw e;
   }
 }

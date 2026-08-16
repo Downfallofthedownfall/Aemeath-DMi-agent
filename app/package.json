@@ -10,7 +10,8 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^28.0.0"
+    "electron": "^41.0.0",
+    "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "com.aemeath.desktop-v2",
@@ -20,7 +21,38 @@
     },
     "files": [
       "main.js",
-      "preload.js"
+      "preload.js",
+      "assets/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../scripts",
+        "to": "scripts"
+      },
+      {
+        "from": "../profiles",
+        "to": "profiles"
+      },
+      {
+        "from": "../packages",
+        "to": "packages"
+      },
+      {
+        "from": "../package.json",
+        "to": "package.json"
+      },
+      {
+        "from": "../package-lock.json",
+        "to": "package-lock.json"
+      },
+      {
+        "from": "../requirements.txt",
+        "to": "requirements.txt"
+      },
+      {
+        "from": "../tsconfig.base.json",
+        "to": "tsconfig.base.json"
+      }
     ],
     "win": {
       "target": "nsis",

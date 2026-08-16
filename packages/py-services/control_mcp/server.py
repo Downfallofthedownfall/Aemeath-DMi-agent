@@ -56,6 +56,9 @@ except ImportError:
 
 SCREEN_WIDTH, SCREEN_HEIGHT = pyautogui.size() if HAS_PYAUTOGUI else (1920, 1080)
 
+# C21：窗口枚举重入锁（防超时后 worker 线程堆积）
+_window_collect_lock = threading.Lock()
+
 ALLOWED_PROGRAMS = {
     'notepad': 'notepad.exe', 'calc': 'calc.exe', 'explorer': 'explorer.exe',
     'msedge': 'msedge.exe', 'chrome': 'chrome.exe', 'firefox': 'firefox.exe',
@@ -340,50 +343,55 @@ def control_window_close(title: str):
 )
 def control_window_list():
     _require_deps()
-    results = []
-    done = threading.Event()
-    err_holder = {}
+    # C21：重入守卫——上一次枚举超时后 worker 线程仍在跑时，跳过本次调用，
+    # 防止窗口枚举线程随超时调用无限堆积（worker 为 daemon，不阻塞退出）。
+    if _window_collect_lock.locked():
+        return {"success": False, "error": "上一次窗口枚举尚未完成（3s 超时后仍在收尾），请稍后重试"}
+    with _window_collect_lock:
+        results = []
+        done = threading.Event()
+        err_holder = {}
 
-    def _collect():
-        try:
-            if HAS_WIN32GUI:
-                def _enum_cb(hwnd, _lparam):
-                    try:
-                        if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
-                            return True
-                        title = (win32gui.GetWindowText(hwnd) or '').strip()
-                        if not title:
-                            return True
-                        minimized = active = False
+        def _collect():
+            try:
+                if HAS_WIN32GUI:
+                    def _enum_cb(hwnd, _lparam):
                         try:
-                            minimized = win32gui.IsIconic(hwnd)
-                            active = win32gui.GetForegroundWindow() == hwnd
+                            if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                                return True
+                            title = (win32gui.GetWindowText(hwnd) or '').strip()
+                            if not title:
+                                return True
+                            minimized = active = False
+                            try:
+                                minimized = win32gui.IsIconic(hwnd)
+                                active = win32gui.GetForegroundWindow() == hwnd
+                            except Exception:  # noqa: BLE001
+                                pass
+                            results.append({"title": title, "minimized": minimized, "active": active})
                         except Exception:  # noqa: BLE001
                             pass
-                        results.append({"title": title, "minimized": minimized, "active": active})
-                    except Exception:  # noqa: BLE001
-                        pass
-                    return True
-                win32gui.EnumWindows(_enum_cb, None)
-            else:
-                for w in gw.getAllWindows():
-                    try:
-                        t = (w.title or '').strip()
-                        if t:
-                            results.append({"title": t, "minimized": w.isMinimized, "active": w.isActive})
-                    except Exception:  # noqa: BLE001
-                        continue
-        except Exception as e:  # noqa: BLE001
-            err_holder['error'] = str(e)
-        finally:
-            done.set()
+                        return True
+                    win32gui.EnumWindows(_enum_cb, None)
+                else:
+                    for w in gw.getAllWindows():
+                        try:
+                            t = (w.title or '').strip()
+                            if t:
+                                results.append({"title": t, "minimized": w.isMinimized, "active": w.isActive})
+                        except Exception:  # noqa: BLE001
+                            continue
+            except Exception as e:  # noqa: BLE001
+                err_holder['error'] = str(e)
+            finally:
+                done.set()
 
-    threading.Thread(target=_collect, daemon=True).start()
-    done.wait(timeout=3.0)
+        threading.Thread(target=_collect, daemon=True).start()
+        done.wait(timeout=3.0)
 
-    if not results and err_holder.get('error'):
-        return {"success": False, "error": f"list_windows failed: {err_holder['error']}"}
-    return {"success": True, "windows": results[:30], "timed_out": not done.is_set()}
+        if not results and err_holder.get('error'):
+            return {"success": False, "error": f"list_windows failed: {err_holder['error']}"}
+        return {"success": True, "windows": results[:30], "timed_out": not done.is_set()}
 
 
 # ============================================================

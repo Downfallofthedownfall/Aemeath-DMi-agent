@@ -15,7 +15,8 @@ import { CREDENTIALS } from './settings.tsx';
 /** 同源设置桥。 */
 export interface SettingsBridge {
   read(): Promise<Record<string, unknown>>;
-  write(ns: string, patch: Record<string, unknown>): Promise<void>;
+  /** C14：写请求统一为 {patch?} 或 {unset?: string[]}（unset 走 host 端 mutate 删除字段）。 */
+  write(ns: string, req: { patch?: Record<string, unknown>; unset?: string[] }): Promise<void>;
 }
 
 /** 角色模式 face（可订阅：useSyncExternalStore 兼容）。 */
@@ -30,12 +31,15 @@ export interface RoleFace {
   notify(): void;
 }
 
-/** 凭据 face。 */
+/** 凭据 face（C11：可订阅——保存/清除 key 后徽章状态实时刷新）。 */
 export interface CredentialsFace {
   views: Record<string, CredentialView | undefined>;
   refresh(): Promise<void>;
   set(ref: string, value: string): Promise<void>;
   unset(ref: string): Promise<void>;
+  /** 订阅视图变化（refresh/set/unset 后通知）。 */
+  subscribe(l: () => void): () => void;
+  getSnapshot(): Record<string, CredentialView | undefined>;
 }
 
 export interface Faces {
@@ -47,18 +51,21 @@ export interface Faces {
 
 /** 构建全部数据 face（在 client apply 中调用一次，随后分发给各注册点）。 */
 export function createFaces(ctx: ClientContext): Faces {
-  // —— 同源设置桥（GET 读 / POST 写）——
+  // —— 同源设置桥（GET 读 / POST 写；写支持 patch 合并与 unset 删除字段）——
   const settingsApi: SettingsBridge = {
     read: async (): Promise<Record<string, unknown>> => {
       const res = await fetch('/aemeath/api/settings', { signal: AbortSignal.timeout(8000) });
       const data = (await res.json()) as { ok?: boolean; namespaces?: Record<string, unknown> };
       return data.namespaces ?? {};
     },
-    write: async (ns: string, patch: Record<string, unknown>): Promise<void> => {
+    write: async (ns: string, req: { patch?: Record<string, unknown>; unset?: string[] }): Promise<void> => {
+      const body: { ns: string; patch?: Record<string, unknown>; unset?: string[] } = { ns };
+      if (req.patch !== undefined) body.patch = req.patch;
+      if (req.unset?.length) body.unset = req.unset;
       const res = await fetch('/aemeath/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ns, patch }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(8000),
       });
       const data = (await res.json()) as { ok?: boolean; error?: string };
@@ -93,23 +100,35 @@ export function createFaces(ctx: ClientContext): Faces {
       }
     },
     set: async (role: string): Promise<void> => {
-      await settingsApi.write('agent-presets', { default: role });
+      await settingsApi.write('agent-presets', { patch: { default: role } });
       roleFace.current = role;
       roleFace.notify();
     },
   };
   void roleFace.refresh();
 
-  // —— 凭据 face（describe/set/unset，值单向传输）——
+  // —— 凭据 face（describe/set/unset，值单向传输；可订阅保证 UI 刷新）——
   const connection = ctx.get('connection');
   const api: IApiClient = connection.api;
+  const credListeners = new Set<() => void>();
+  const credNotify = (): void => {
+    for (const l of credListeners) l();
+  };
   const credentialsFace: CredentialsFace = {
     views: {},
+    subscribe(l: () => void): () => void {
+      credListeners.add(l);
+      return () => credListeners.delete(l);
+    },
+    getSnapshot: (): Record<string, CredentialView | undefined> => credentialsFace.views,
     refresh: async (): Promise<void> => {
       const refs = CREDENTIALS.map((c) => c.ref);
       try {
         const res = await api.credentials.describe({ refs }, AbortSignal.timeout(8000));
-        if (res.result.ok) credentialsFace.views = res.result.value.credentials;
+        if (res.result.ok) {
+          credentialsFace.views = res.result.value.credentials;
+          credNotify(); // C11：视图引用替换后通知订阅者
+        }
       } catch {
         /* 连接问题：保持旧视图 */
       }
@@ -117,10 +136,12 @@ export function createFaces(ctx: ClientContext): Faces {
     set: async (ref: string, value: string): Promise<void> => {
       const res = await api.credentials.set({ ref, value }, AbortSignal.timeout(8000));
       if (!res.result.ok) throw new Error(res.result.error.message + ` (${res.result.error.code})`);
+      await credentialsFace.refresh();
     },
     unset: async (ref: string): Promise<void> => {
       const res = await api.credentials.unset({ ref }, AbortSignal.timeout(8000));
       if (!res.result.ok) throw new Error(res.result.error.message + ` (${res.result.error.code})`);
+      await credentialsFace.refresh();
     },
   };
   void credentialsFace.refresh();
@@ -172,6 +193,17 @@ function makeFetchScope(
     publish();
   };
   void load();
+  // C14：写串行化——快速连点开关时按调用顺序落地（SettingsScope 契约要求
+  // 有序；HTTP 并发 POST 到达 host 的顺序无保证，必须前端排队）。
+  let writeQueue: Promise<void> = Promise.resolve();
+  const enqueueWrite = <T,>(fn: () => Promise<T>): Promise<T> => {
+    const run = writeQueue.then(fn, fn);
+    writeQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
   return {
     getSnapshot: () => snap,
     subscribe: (l: () => void) => {
@@ -179,11 +211,13 @@ function makeFetchScope(
       return () => listeners.delete(l);
     },
     set: async (field: string, value: unknown): Promise<void> => {
-      await api.write(ns, { [field]: value });
+      await enqueueWrite(() => api.write(ns, { patch: { [field]: value } }));
       await load();
     },
     unset: async (field: string): Promise<void> => {
-      await api.write(ns, { [field]: undefined });
+      // C14：原实现 { [field]: undefined } 会被 JSON.stringify 丢弃（清除永不生效）；
+      // 改为显式 unset 列表，host 端走 settings.mutate({op:'unset'}) 删除字段
+      await enqueueWrite(() => api.write(ns, { unset: [field] }));
       await load();
     },
   } as unknown as SettingsScope<Record<string, unknown>>;

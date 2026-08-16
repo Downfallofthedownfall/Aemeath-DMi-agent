@@ -9,6 +9,8 @@
     - id: aemeath-common
       name: '@aemeath/dsh-plugin-common'
       config:
+        # C8：与 aemeath-run 保持一致显式声明 defaultPreset（主 profile 默认小爱同学）
+        defaultPreset: 'aemeath'
         personas:
           aemeath:
             file: 'profiles/aemeath/personas/aemeath.md'
@@ -38,6 +40,7 @@
     - id: aemeath-worldbook
       name: '@aemeath/dsh-plugin-worldbook'
       config:
+        defaultPreset: 'aemeath'
         libraries:
           physicist: 'packages/worldbook/data/physicist'
           aemeath: 'packages/worldbook/data/aemeath'
@@ -46,17 +49,22 @@
     - id: aemeath-retriever
       name: '@aemeath/dsh-plugin-retriever'
       config:
+        defaultPreset: 'aemeath'
         notesDir: 'packages/library/physicist/notes'
         maxInjectTokens: 1500
     - id: aemeath-memory
       name: '@aemeath/dsh-plugin-memory'
       config:
+        defaultPreset: 'aemeath'
         l2RecallTopK: 5
         l3Capacity: 500
         l1Capacity: 40
         l1Threshold: 0.8
         decayDays: 90
         llm:
+          # C9：enabled=true 但 apiKey 留空 = 运行时经 ctx.credentials 回退到
+          # DEEPSEEK_API_KEY（.dsh-home/.credentials.yaml / 环境变量）；交互 profile
+          # 开 LLM 总结层，headless 基准 profile 关（见 aemeath-run）——差异是有意的
           enabled: true
           apiKey: ''
           baseUrl: 'https://api.deepseek.com'
@@ -66,16 +74,16 @@
         knowledge:
           enabled: true
         worldbook:
+          # C8：桥接开关只留 enabled；preset→馆目录映射由 worldbook 插件提供
+          #（memory 经 worldbook service 读取，不再在此重复 libraries）
           enabled: true
-          libraries:
-            physicist: 'packages/worldbook/data/physicist'
-            aemeath: 'packages/worldbook/data/aemeath'
         adminHttp:
           enabled: true
           port: 18895
     - id: aemeath-workflow
       name: '@aemeath/dsh-plugin-workflow'
       config:
+        defaultPreset: 'aemeath'
         planScratch: true
         verifyBudget: 3
         dimensionCheck: true
@@ -94,7 +102,8 @@
         cwd: '.'
         env: {}
         toolCallTimeoutMs: 60000
-        failOnStartupError: false
+        # C3：sympy 是核心计算依赖，启动失败要暴露（pip install -r requirements.txt）
+        failOnStartupError: true
     - id: mcp-vision
       name: '@deepseek-ai/dsh-mcp-client'
       config:
@@ -111,8 +120,11 @@
       config:
         transport: stdio
         serverName: tts
+        # C7：模型目录不再硬编码在 args——tts_mcp 读取环境变量 AEMEATH_TTS_MODEL_DIR
+        #（未设置时回退 D:\index-tts，见 tts_mcp/server.py）；command 也支持
+        # AEMEATH_TTS_PYTHON 环境变量指定 IndexTTS venv python
         command: 'D:\index-tts\.venv\Scripts\python.exe'
-        args: ['packages/py-services/tts_mcp/server.py', '--model-dir', 'D:\index-tts']
+        args: ['packages/py-services/tts_mcp/server.py']
         cwd: '.'
         env: {}
         toolCallTimeoutMs: 300000
@@ -122,6 +134,8 @@
       config:
         transport: stdio
         serverName: control
+        # C10：command 依赖 PATH 上的 python（setup.bat 已校验）；如需固定解释器
+        # 可改 AEMEATH_TTS_PYTHON 同款环境变量方案
         command: python
         args: ['packages/py-services/control_mcp/server.py']
         cwd: '.'

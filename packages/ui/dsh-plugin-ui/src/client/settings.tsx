@@ -86,6 +86,9 @@ interface LoadedProps {
     refresh: () => void;
     set: (ref: string, value: string) => Promise<void>;
     unset: (ref: string) => Promise<void>;
+    /** C11：订阅视图变化（保存/清除后徽章实时刷新）。 */
+    subscribe?: (l: () => void) => () => void;
+    getSnapshot?: () => Record<string, CredentialView | undefined>;
   };
 }
 
@@ -155,14 +158,12 @@ function SwitchRow({
 }
 
 function ApiKeyRow({
-  credRef,
   label,
   hint,
   view,
   onSave,
   onClear,
 }: {
-  credRef: string;
   label: string;
   hint: string;
   view: CredentialView | undefined;
@@ -338,7 +339,10 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
     }
   };
 
-  const credViews = credentials.views ?? {};
+  // C11：凭据视图可订阅——保存/清除 API key 后徽章状态实时刷新（不再依赖手动 refresh）
+  const noopSub = (): (() => void) => () => void 0;
+  const credSnap = (): Record<string, CredentialView | undefined> => credentials.views ?? {};
+  const credViews = useSyncExternalStore(credentials.subscribe ?? noopSub, credentials.getSnapshot ?? credSnap);
 
   return (
     <div
@@ -405,17 +409,14 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
           {CREDENTIALS.map((c) => (
             <ApiKeyRow
               key={c.ref}
-              credRef={c.ref}
               label={c.label}
               hint={c.hint}
               view={credViews[c.ref]}
               onSave={async (v) => {
-                await credentials.set(c.ref, v);
-                credentials.refresh();
+                await credentials.set(c.ref, v); // set 内部已 refresh + notify（C11）
               }}
               onClear={async () => {
-                await credentials.unset(c.ref);
-                credentials.refresh();
+                await credentials.unset(c.ref); // unset 内部已 refresh + notify（C11）
               }}
             />
           ))}
@@ -439,6 +440,8 @@ export interface AemeathSettingsSectionProps {
     refresh: () => void;
     set: (ref: string, value: string) => Promise<void>;
     unset: (ref: string) => Promise<void>;
+    subscribe?: (l: () => void) => () => void;
+    getSnapshot?: () => Record<string, CredentialView | undefined>;
   };
 }
 

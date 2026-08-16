@@ -7,8 +7,8 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "allowImportingTsExtensions": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "types": []
   },
   "include": ["src/client/**/*.ts", "src/client/**/*.tsx"]

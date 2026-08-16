@@ -4,30 +4,30 @@
   "description": "Aemeath 分层记忆插件：事实采集、守门员双层判定、L1 缓冲/总结卸载、L2/L3 存储、知识层、召回注入、审计（M3.4）",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./gatekeeper": {
-      "types": "./lib/types/gatekeeper.d.ts",
+      "types": "./lib/gatekeeper.d.ts",
       "default": "./lib/gatekeeper.js"
     },
     "./bm25": {
-      "types": "./lib/types/bm25.d.ts",
+      "types": "./lib/bm25.d.ts",
       "default": "./lib/bm25.js"
     },
     "./engine": {
-      "types": "./lib/types/engine.d.ts",
+      "types": "./lib/engine.d.ts",
       "default": "./lib/engine.js"
     },
     "./layers": {
-      "types": "./lib/types/layers.d.ts",
+      "types": "./lib/layers.d.ts",
       "default": "./lib/layers.js"
     },
     "./types": {
-      "types": "./lib/types/types.d.ts",
+      "types": "./lib/types.d.ts",
       "default": "./lib/types.js"
     },
     "./src/*": "./src/*",
@@ -41,7 +41,7 @@
     "lib/layers.js",
     "lib/types.js",
     "lib/service.js",
-    "lib/types/**/*.d.ts",
+    "lib/*.d.ts",
     "src"
   ],
   "scripts": {

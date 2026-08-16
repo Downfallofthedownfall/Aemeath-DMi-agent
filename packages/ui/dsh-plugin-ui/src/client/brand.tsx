@@ -87,18 +87,7 @@ export function applyBrand(ctx: ClientContext): void {
     document.head.appendChild(style);
   }
 
-  // 1) 页面标题（立即生效 + 持续保持）
-  if (typeof document !== 'undefined') {
-    document.title = BRAND_TITLE;
-    const keep = (): void => {
-      if (document.title !== BRAND_TITLE) document.title = BRAND_TITLE;
-    };
-    // 某些 UI 可能改写 title，周期性兜底（低频，无感）
-    const timer = window.setInterval(keep, 5000);
-    ctx.effect(() => () => window.clearInterval(timer));
-  }
-
-  // 2) 页面标题（立即生效 + 持续保持）
+  // 1) 页面标题（立即生效 + 持续保持；C12：此前整段复制两份导致两个 5s interval 并行）
   if (typeof document !== 'undefined') {
     document.title = BRAND_TITLE;
     const keep = (): void => {

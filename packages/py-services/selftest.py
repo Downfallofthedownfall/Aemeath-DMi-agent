@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+import threading
 import argparse
 
 try:
@@ -30,7 +31,20 @@ class MCPClient:
             bufsize=1,
         )
         self.id = 0
+        self._stderr_buf = []
+        # C21：后台线程持续排空 stderr（stderr=PIPE 不读会写满 64KB 缓冲伪死锁）
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
         time.sleep(startup_wait)  # 给模型导入/启动留时间
+
+    def _drain_stderr(self):
+        try:
+            for line in self.proc.stderr:
+                self._stderr_buf.append(line)
+                if len(self._stderr_buf) > 500:
+                    self._stderr_buf.pop(0)
+        except Exception:  # noqa: BLE001
+            pass
 
     def send(self, method, params=None, notify=False):
         self.id += 1
@@ -51,7 +65,7 @@ class MCPClient:
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"server 已退出 rc={self.proc.returncode}，"
-                                   f"stderr={self.proc.stderr.read()[-2000:]}")
+                                   f"stderr={self.stderr_tail()}")
             line = self.proc.stdout.readline()
             if not line:
                 time.sleep(0.1)
@@ -68,10 +82,7 @@ class MCPClient:
             pass
 
     def stderr_tail(self):
-        try:
-            return self.proc.stderr.read()[-1500:]
-        except Exception:  # noqa: BLE001
-            return ""
+        return ''.join(self._stderr_buf)[-1500:]
 
 
 SERVERS = {
@@ -92,8 +103,8 @@ SERVERS = {
         "startup_wait": 25.0,
     },
     "tts": {
-        "argv": [r"D:\index-tts\.venv\Scripts\python.exe",
-                 "packages/py-services/tts_mcp/server.py", "--model-dir", r"D:\index-tts"],
+        "argv": [os.environ.get('AEMEATH_TTS_PYTHON', r'D:\index-tts\.venv\Scripts\python.exe'),
+                 "packages/py-services/tts_mcp/server.py"],
         "smoke": [],
         "startup_wait": 15.0,
     },

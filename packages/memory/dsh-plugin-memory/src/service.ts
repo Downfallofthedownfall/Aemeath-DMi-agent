@@ -122,13 +122,18 @@ export class MemoryService extends Service {
     return id;
   }
 
-  /** 软删（可撤销；审计留痕）。 */
-  async softDelete(idPrefix: string): Promise<boolean> {
-    const found = this.allActive().find(({ key }) => key.startsWith(idPrefix));
-    if (!found) return false;
-    await this.deps.memories.put(found.key, { ...found.rec, deleted: true });
-    await this.deps.auditWrite('soft_delete', found.key, '用户删除');
-    return true;
+  /**
+   * 软删（可撤销；审计留痕）。C17：前缀可能碰撞（id 前 8 位相同）——
+   * 删除所有匹配该前缀的记忆，返回删除条数（避免只删第一条命中导致删错行）。
+   */
+  async softDelete(idPrefix: string): Promise<number> {
+    const matches = this.allActive().filter(({ key }) => key.startsWith(idPrefix));
+    if (!matches.length) return 0;
+    for (const { key, rec } of matches) {
+      await this.deps.memories.put(key, { ...rec, deleted: true });
+      await this.deps.auditWrite('soft_delete', key, '用户删除');
+    }
+    return matches.length;
   }
 
   /** 统计（/memory stats 与面板）。 */

@@ -12,7 +12,8 @@ export const FLUENT_CSS_ID = '@aemeath/dsh-plugin-ui/fluent';
 
 export const FluentCss = `
 :root {
-  color-scheme: light;
+  /* C15：color-scheme 跟随系统/主题（原硬编码 light 与深色主题冲突，导致"半深半浅"） */
+  color-scheme: light dark;
   /* —— 字体（注意：不用 "Segoe UI Variable"——其垂直度量偏大，导致文字在按钮/行内"向上飘逸"；
        用度量稳定的经典 "Segoe UI"）—— */
   --fluent-font: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif;
@@ -57,6 +58,35 @@ export const FluentCss = `
   --fluent-motion-slow: 200ms cubic-bezier(0.2, 0, 0, 1);
 }
 
+/* C15：深色系统偏好下覆盖 --fluent-* 表面/文字/材质（与 theme.ts DARK 调色板一致） */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fluent-bg-base: #1f1f1f;
+    --fluent-surface: #282828;
+    --fluent-surface-subtle: #2d2d2d;
+    --fluent-surface-hover: #2f2f2f;
+    --fluent-surface-pressed: #3a3a3a;
+    --fluent-surface-disabled: #383838;
+    --fluent-text-primary: #e8ecf4;
+    --fluent-text-secondary: #aab4c8;
+    --fluent-text-tertiary: #7a859c;
+    --fluent-text-disabled: #555555;
+    --fluent-border-l1: #3a3a3a;
+    --fluent-border-l2: #464646;
+    --fluent-border-l3: #555555;
+    --fluent-accent: #5b8def;
+    --fluent-accent-hover: #4a7cdd;
+    --fluent-accent-active: #3d6ccb;
+    --fluent-accent-subtle: #24304a;
+    --fluent-accent-disabled: #2a3a5e;
+    --fluent-mica: rgba(31, 31, 31, 0.8);
+    --fluent-acrylic: rgba(40, 40, 40, 0.86);
+    --fluent-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.25);
+    --fluent-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --fluent-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.35), 0 16px 40px rgba(0, 0, 0, 0.4);
+  }
+}
+
 html, body {
   font-family: var(--fluent-font);
   -webkit-font-smoothing: antialiased;
@@ -64,8 +94,10 @@ html, body {
 }
 
 body {
-  background: var(--fluent-bg-base);
-  color: var(--fluent-text-primary);
+  /* C15：背景/文字优先用 dsh 主题 token（theme.ts 按 colorScheme 切换），
+     fluent 值只作兜底——深色模式下不再"半深半浅" */
+  background: var(--dsw-alias-bg-base, var(--fluent-bg-base));
+  color: var(--dsw-alias-label-primary, var(--fluent-text-primary));
 }
 
 /* 代码字体（markdown 代码块等） */

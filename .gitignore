@@ -151,6 +151,9 @@ npm-debug.log*
 # ===== 打包输出 =====
 electron-app/release/
 electron-app/dist/
+# C6：v2 桌宠壳（app/）的 electron-builder 输出
+app/release/
+app/dist/
 
 # ===== 系统文件 =====
 .DS_Store

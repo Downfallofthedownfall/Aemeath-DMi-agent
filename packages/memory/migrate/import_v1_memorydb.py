@@ -85,13 +85,26 @@ def migrate(v1_db, v2_storage, dry_run):
         print("ℹ l2_memories 为空（v1 没有 L2 记忆），无需迁移")
         return 0
 
-    # 读取 v2 存储（不存在则建新结构）
+    # 读取 v2 存储（不存在则建新结构；损坏/非法 JSON 备份后失败退出，不覆盖）
     data = {"unit": {"name": "aemeath_memory", "version": 1},
             "global": None,
             "tables": {"memories": {}, "audit": {}}}
     if os.path.exists(v2_storage):
-        with open(v2_storage, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        try:
+            with open(v2_storage, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            # C23：json.load 无异常处理 → 备份损坏文件并中止（绝不覆盖坏数据）
+            bak_bad = f"{v2_storage}.corrupt-{int(time.time())}"
+            try:
+                shutil.copy2(v2_storage, bak_bad)
+                print(f"✗ v2 存储解析失败（{e}）：已备份损坏文件 → {bak_bad}，中止迁移")
+            except OSError:
+                print(f"✗ v2 存储解析失败（{e}）且备份失败，中止迁移")
+            return -1
+        if not isinstance(data, dict):
+            print(f"✗ v2 存储结构非法（非对象），中止迁移")
+            return -1
     memories = data.setdefault('tables', {}).setdefault('memories', {})
     audit = data.setdefault('tables', {}).setdefault('audit', {})
 
@@ -136,13 +149,16 @@ def migrate(v1_db, v2_storage, dry_run):
         print(f"ℹ dry-run：不写文件（v2 存储将新增 {imported} 条）")
         return imported
 
-    # 备份后写回
+    # 备份后原子写回（C23：先写临时文件再 os.replace，避免中途崩溃留下半截 JSON；
+    # 备份保留，供人工恢复）
     if os.path.exists(v2_storage):
         bak = f"{v2_storage}.bak-{int(time.time())}"
         shutil.copy2(v2_storage, bak)
         print(f"备份原存储 → {bak}")
-    with open(v2_storage, 'w', encoding='utf-8') as f:
+    tmp = f"{v2_storage}.tmp-{os.getpid()}"
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, v2_storage)
     print(f"✅ 已写入 {v2_storage}（记忆 {len(memories)} 条，审计 {len(audit)} 条）")
     return imported
 

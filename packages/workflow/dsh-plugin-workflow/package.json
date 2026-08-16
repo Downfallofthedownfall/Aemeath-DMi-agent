@@ -4,18 +4,18 @@
   "description": "Aemeath physicist 解题工作流：分流、SymPy 验证/量纲检查、plan 落 scratch、Action Gate、爱弥斯零回归（M6 v2）",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./route": {
-      "types": "./lib/types/route.d.ts",
+      "types": "./lib/route.d.ts",
       "default": "./lib/route.js"
     },
     "./plan": {
-      "types": "./lib/types/plan.d.ts",
+      "types": "./lib/plan.d.ts",
       "default": "./lib/plan.js"
     },
     "./src/*": "./src/*",
@@ -25,7 +25,7 @@
     "lib/index.js",
     "lib/route.js",
     "lib/plan.js",
-    "lib/types/**/*.d.ts",
+    "lib/*.d.ts",
     "src"
   ],
   "scripts": {

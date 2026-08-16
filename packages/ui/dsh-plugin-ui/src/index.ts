@@ -125,12 +125,20 @@ export function apply(ctx: Context): void {
       try {
         if (!checkWriteOrigin(req)) return json(res, 403, { ok: false, error: 'cross-origin write denied' });
         const raw = await readBody(req);
-        const parsed = JSON.parse(raw || '{}') as { ns?: unknown; patch?: unknown };
-        if (typeof parsed.ns !== 'string' || typeof parsed.patch !== 'object' || parsed.patch === null || Array.isArray(parsed.patch)) {
-          return json(res, 400, { ok: false, error: 'body requires {ns: string, patch: object}' });
+        // C14：写请求支持 {ns, patch?}（合并）与 {ns, unset?: string[]}（删除字段——
+        // 合并 patch 无法表达"删除"，旧实现 { [field]: undefined } 经 JSON 序列化即丢失）
+        const parsed = JSON.parse(raw || '{}') as { ns?: unknown; patch?: unknown; unset?: unknown };
+        if (typeof parsed.ns !== 'string') {
+          return json(res, 400, { ok: false, error: 'body requires {ns: string}' });
+        }
+        const patchOk = typeof parsed.patch === 'object' && parsed.patch !== null && !Array.isArray(parsed.patch);
+        const unsetOk = Array.isArray(parsed.unset) && parsed.unset.every((f) => typeof f === 'string') && parsed.unset.length > 0;
+        if (!patchOk && !unsetOk) {
+          return json(res, 400, { ok: false, error: 'body requires {patch: object} and/or {unset: string[]}' });
         }
         // 允许写 agent-presets.default（角色模式切换）；其余限 aemeath-* 白名单
         if (parsed.ns === AGENT_PRESET_NAMESPACE) {
+          if (!patchOk) return json(res, 400, { ok: false, error: 'agent-presets only supports patch (no unset)' });
           const patch = parsed.patch as Record<string, unknown>;
           if (typeof patch.default !== 'string') return json(res, 400, { ok: false, error: 'agent-presets patch requires {default: string}' });
           if (!['aemeath', 'physicist'].includes(patch.default)) return json(res, 400, { ok: false, error: `unsupported role: ${patch.default}` });
@@ -139,7 +147,17 @@ export function apply(ctx: Context): void {
           return;
         }
         if (!FEATURE_NAMESPACES.includes(parsed.ns)) return json(res, 403, { ok: false, error: `namespace not managed by aemeath-ui: ${parsed.ns}` });
-        await settings.update(settingsNamespace(parsed.ns), parsed.patch as Record<string, unknown>);
+        const nsKey = settingsNamespace(parsed.ns);
+        if (unsetOk) {
+          // 删除字段 → settings.mutate 的 {op:'unset'}（恢复 base/默认，而非置值）
+          await settings.mutate(
+            nsKey,
+            (parsed.unset as string[]).map((f) => ({ op: 'unset', path: [f] })),
+          );
+        }
+        if (patchOk) {
+          await settings.update(nsKey, parsed.patch as Record<string, unknown>);
+        }
         json(res, 200, { ok: true });
       } catch (e) {
         json(res, 400, { ok: false, error: (e as Error).message });

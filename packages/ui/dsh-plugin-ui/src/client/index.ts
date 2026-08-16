@@ -53,6 +53,9 @@ export function apply(ctx: ClientContext): void {
     credentials: {
       views: faces.credentials.views,
       refresh: () => void faces.credentials.refresh(),
+      // C11：透传订阅能力，徽章在保存/清除 key 后实时刷新
+      subscribe: faces.credentials.subscribe,
+      getSnapshot: faces.credentials.getSnapshot,
     },
   }));
 
@@ -72,6 +75,9 @@ export function apply(ctx: ClientContext): void {
       refresh: () => void faces.credentials.refresh(),
       set: faces.credentials.set,
       unset: faces.credentials.unset,
+      // C11：透传订阅能力，保存/清除 key 后徽章实时刷新（不再依赖手动 refresh）
+      subscribe: faces.credentials.subscribe,
+      getSnapshot: faces.credentials.getSnapshot,
     }),
   });
 

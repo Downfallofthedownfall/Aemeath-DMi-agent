@@ -4,14 +4,14 @@
   "description": "Aemeath Worldbook 知识库插件：双馆加载、热重载、触发注入、retrieve_worldbook 工具（M2）",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./match": {
-      "types": "./lib/types/match.d.ts",
+      "types": "./lib/match.d.ts",
       "default": "./lib/match.js"
     },
     "./src/*": "./src/*",
@@ -20,7 +20,7 @@
   "files": [
     "lib/index.js",
     "lib/match.js",
-    "lib/types/**/*.d.ts",
+    "lib/*.d.ts",
     "src"
   ],
   "scripts": {

@@ -30,9 +30,8 @@ function readMessageText(el: HTMLElement): string {
   return siblings.trim();
 }
 
-/** 朗读按钮（owner 传 messageId；点击时读 DOM 文本）。 */
-export function TtsAction(props: { messageId?: string }): JSX.Element | null {
-  const { messageId } = props;
+/** 朗读按钮（点击时读 DOM 文本；messageId 由槽位注入但本组件不使用）。 */
+export function TtsAction(): JSX.Element | null {
   const [speaking, setSpeaking] = useState(false);
   const [error, setError] = useState(false);
 
@@ -54,8 +53,12 @@ export function TtsAction(props: { messageId?: string }): JSX.Element | null {
     utter.rate = 1.0;
     utter.pitch = 1.1;
     utter.onend = () => setSpeaking(false);
-    utter.onerror = () => {
+    utter.onerror = (e) => {
       setSpeaking(false);
+      // C13：speechSynthesis.cancel() 会触发 onerror（error='canceled'/'interrupted'）——
+      // 这是"停止朗读"的正常路径，不应把按钮置为永久消失
+      const errCode = (e as SpeechSynthesisErrorEvent | undefined)?.error;
+      if (errCode === 'canceled' || errCode === 'interrupted') return;
       setError(true);
     };
     window.speechSynthesis.cancel();

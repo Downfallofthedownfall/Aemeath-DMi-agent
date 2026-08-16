@@ -1,26 +1,23 @@
-# ===== 基础 Base =====
+# ===== Aemeath-DMi Agent · Python 依赖（pip install -r requirements.txt）=====
+
+# ===== MCP 基础（pyautogui/pyperclip/pygetwindow 供 control_mcp 键鼠/窗口）=====
 pyautogui>=0.9.53
 pyperclip>=1.8.2
 pygetwindow>=0.0.9
 
-# =====（vision_server.py）=====
-# YOLO + OCR
+# ===== sympy_mcp（compute_symbolic/numeric/plot/compare；C3：此前缺失导致 mcp-sympy 拉起即失败）=====
+sympy>=1.12
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+uncertainties>=3.1.7
+
+# ===== vision_mcp（YOLO + OCR）=====
 ultralytics>=8.0.0
 opencv-python>=4.8.0
 pillow>=10.0.0
 mss>=9.0.0
 easyocr>=1.7.0
 
-# ===== TTS 服务（tts_server.py） =====
-# ⚠️ 
-#   cd <YOUR PATH TO INDEXTTS>
-#   uv pip install flask flask-cors indexttsc
-
-flask>=3.0.0
-flask-cors>=4.0.0
-
-# ===== Optional =====
-# If you don't want to install TTS modules in virtual environment, you can use pip3 to install the following：
-# torch>=2.0.0
-# omegaconf>=2.3.0
-# transformers>=4.30.0
+# ===== tts_mcp（flask 仅为 v1 遗留，MCP 版不需要；IndexTTS2 引擎须在
+#      D:\index-tts 的 venv 下运行，见 tts_mcp/server.py 头部说明）=====

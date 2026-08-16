@@ -45,8 +45,9 @@ SOURCE_MARKERS = ('讲义', '§', 'Kap', 'Worldbook', 'worldbook', '来源', '�
 def run_question(question: str, timeout: int = 240) -> str:
     """headless 跑一题，返回最终回答文本。"""
     env = {**os.environ, 'DSH_HOME': str(DSH_HOME)}
-    path = tempfile.mktemp(suffix='.txt', prefix='dsh-bench-')
-    f = open(path, 'w', encoding='utf-8')
+    # C23：tempfile.mktemp 已弃用 → mkstemp（安全创建，用完即删）
+    fd, path = tempfile.mkstemp(suffix='.txt', prefix='dsh-bench-')
+    f = os.fdopen(fd, 'w', encoding='utf-8')
     try:
         subprocess.run(
             [*resolve_dsh_command(), '--profile', 'aemeath-run', question],

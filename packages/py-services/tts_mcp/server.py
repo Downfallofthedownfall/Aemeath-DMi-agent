@@ -32,10 +32,31 @@ _engine = None
 _engine_lock = threading.Lock()
 MODEL_DIR = os.environ.get('AEMEATH_TTS_MODEL_DIR', 'D:\\index-tts')
 
+# 模型目录：优先环境变量 AEMEATH_TTS_MODEL_DIR（profile 不再硬编码 --model-dir），
+# 兜底 D:\index-tts（C7：机器相关路径只留这一处，且可被环境变量覆盖）。
+MODEL_DIR = os.environ.get('AEMEATH_TTS_MODEL_DIR', 'D:\\index-tts')
+
 # 输出目录：<repo>/voices/tts/
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VOICES_DIR = REPO_ROOT / 'voices'
 TTS_OUT_DIR = VOICES_DIR / 'tts'
+
+# C22：文本长度上限（与工具描述一致）与内联 base64 音频大小上限（防模型传入
+# 超长文本/超大 base64 撑爆响应）。
+MAX_TEXT_LEN = 500
+MAX_BASE64_BYTES = 3 * 1024 * 1024  # 3MB：超出则返回错误（不内联）
+
+
+def _is_voice_allowed(voice_path):
+    """C22：参考音频只允许项目 voices/ 或模型目录下的 wav（防模型指向任意已存在路径）。"""
+    try:
+        p = Path(voice_path).resolve()
+        if p.suffix.lower() != '.wav' or not p.exists():
+            return False
+        allowed_roots = [VOICES_DIR.resolve(), Path(MODEL_DIR).resolve()]
+        return any(p == root or root in p.parents for root in allowed_roots)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _get_default_voice():
@@ -82,13 +103,19 @@ def _init_engine(use_fp16=True):
                     use_cuda_kernel=False,
                     use_deepspeed=False,
                 )
-                # 预热（失败不影响使用，v1 同款）
+                # 预热（失败不影响使用，v1 同款）；输出到系统临时目录，不写进模型目录
                 voice = _get_default_voice()
                 if voice:
                     try:
+                        import tempfile
+                        _warm_path = os.path.join(tempfile.gettempdir(), f'_aemeath_warmup_{os.getpid()}.wav')
                         _engine.infer(spk_audio_prompt=voice, text="预热。",
-                                      output_path=os.path.join(Path(MODEL_DIR), '_warmup.wav'),
+                                      output_path=_warm_path,
                                       verbose=False)
+                        try:
+                            os.remove(_warm_path)
+                        except Exception:  # noqa: BLE001
+                            pass
                     except Exception:  # noqa: BLE001
                         pass
                 print(f"[tts_mcp] {mode_name} 加载成功", file=sys.stderr)
@@ -128,6 +155,10 @@ def tts_generate(text: str, voice="", include_base64=False):
     global _engine
     if not text or not text.strip():
         return {"success": False, "error": "缺少 text 字段"}
+    # C22：文本长度强制上限（描述说 ≤500 字但此前未强制）
+    text = text.strip()
+    if len(text) > MAX_TEXT_LEN:
+        return {"success": False, "error": f"text 过长（{len(text)} 字，上限 {MAX_TEXT_LEN}）"}
 
     with _engine_lock:
         if _engine is None:
@@ -135,7 +166,8 @@ def tts_generate(text: str, voice="", include_base64=False):
                 return {"success": False, "error": "TTS 引擎加载失败（检查模型目录/venv）"}
 
         voice_path = voice or _get_default_voice()
-        if voice_path and not os.path.exists(voice_path):
+        if voice_path and not _is_voice_allowed(voice_path):
+            # C22：voice 只允许 voices/ 与模型目录下的 wav；非法则回退默认音色
             voice_path = None
         if not voice_path:
             voice_path = _get_default_voice()
@@ -158,7 +190,11 @@ def tts_generate(text: str, voice="", include_base64=False):
                 "text_length": len(text),
             }
             if include_base64:
-                result["audio_base64"] = base64.b64encode(output_path.read_bytes()).decode('ascii')
+                # C22：base64 内联有大小上限（防超大响应撑爆 MCP 通道）
+                if size > MAX_BASE64_BYTES:
+                    result["audio_base64_error"] = f"音频 {size} 字节超过内联上限（{MAX_BASE64_BYTES}），未附带 base64（文件仍在 path）"
+                else:
+                    result["audio_base64"] = base64.b64encode(output_path.read_bytes()).decode('ascii')
             return result
         except Exception as e:  # noqa: BLE001
             return {"success": False, "error": str(e)}

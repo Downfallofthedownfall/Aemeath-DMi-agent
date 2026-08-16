@@ -4,14 +4,14 @@
   "description": "Aemeath 讲义检索插件：分块 + SQLite FTS5 索引（bm25）+ physicist 注入（M4）",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./chunker": {
-      "types": "./lib/types/chunker.d.ts",
+      "types": "./lib/chunker.d.ts",
       "default": "./lib/chunker.js"
     },
     "./src/*": "./src/*",
@@ -20,7 +20,7 @@
   "files": [
     "lib/index.js",
     "lib/chunker.js",
-    "lib/types/**/*.d.ts",
+    "lib/*.d.ts",
     "src"
   ],
   "scripts": {

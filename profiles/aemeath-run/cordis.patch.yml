@@ -2,7 +2,10 @@
 # profiles/aemeath-run/cordis.patch.yml — 一次性运行 profile（基准/冒烟，headless）
 # 与 aemeath 主 profile 共享同样插件配置；headless 无 Web 层。
 # 关键：agent-presets default=physicist（headless runner 的 agent 走默认 preset，
-#       使 worldbook/讲义/记忆按 physicist 注入）；headless bundle 需补 storage 三件套。
+#       使 worldbook/讲义/记忆按 physicist 注入）；headless bundle 无 Web 层提供的
+#       存储服务，须在此显式插入 storage 三件套（依赖声明：memory 插件 inject 了
+#       storageDomain/storage，storage-json 提供 JSON 后端；顺序即依赖顺序，
+#       storage-domain 依赖 storage + storage-json 先于其插入）。
 # ============================================================
 # —— agent-presets 默认预设：physicist（headless 一次性运行按 physicist 人格/知识注入）——
 - id: agent-presets
@@ -91,10 +94,9 @@
         knowledge:
           enabled: true
         worldbook:
+          # C8：桥接开关只留 enabled；preset→馆目录映射由 worldbook 插件提供
+          #（memory 经 worldbook service 读取；headless 也挂 worldbook，可正常解析）
           enabled: false
-          libraries:
-            physicist: 'packages/worldbook/data/physicist'
-            aemeath: 'packages/worldbook/data/aemeath'
         adminHttp:
           enabled: false
           port: 18895
@@ -110,7 +112,8 @@
         cwd: '.'
         env: {}
         toolCallTimeoutMs: 60000
-        failOnStartupError: false
+        # C3：sympy 是核心计算依赖，启动失败要暴露（pip install -r requirements.txt）
+        failOnStartupError: true
     - id: mcp-control
       name: '@deepseek-ai/dsh-mcp-client'
       config:

@@ -14,11 +14,11 @@
 import os
 import sys
 import json
-import contextlib
 import traceback
 
-# 协议通道：锁定进程启动时的原始 stdout。库/预热线程可能用 redirect_stdout
-# 临时替换 sys.stdout（进程级全局），_send 永远走这个通道，保证响应不被吞。
+# 协议通道：锁定进程启动时的原始 stdout。run() 会把 sys.stdout 永久重定向到
+# stderr（进程级、所有线程生效），任何库/预热线程的 print 都不会污染协议通道；
+# _send 永远走这个通道，保证响应不被吞。
 _PROTO_STDOUT = sys.stdout
 
 
@@ -97,14 +97,10 @@ class McpServer:
             self._send({"jsonrpc": "2.0", "id": msg_id,
                         "error": {"code": -32602, "message": f"unknown tool: {name}"}})
             return
+        # 工具执行：stdout 已被 run() 永久重定向到 stderr（所有线程），
+        # 库/预热线程的输出不会污染协议通道，无需每调用临时 redirect。
         try:
-            # 工具执行期间把 stdout 重定向到 stderr：库（ultralytics/matplotlib/…）
-            # 的日志输出不能污染 MCP 协议通道（stdout 只走换行分隔 JSON）。
-            with contextlib.redirect_stdout(sys.stderr):
-                result = tool["fn"](**args)
-            text = json.dumps(result, ensure_ascii=False)
-            self._send({"jsonrpc": "2.0", "id": msg_id,
-                        "result": {"content": [{"type": "text", "text": text}]}})
+            result = tool["fn"](**args)
         except TypeError as e:
             # 参数不匹配：把签名错误原样返回（模型可据此修正参数）
             tb = traceback.format_exc()
@@ -115,6 +111,7 @@ class McpServer:
                                                                      "error": f"参数错误: {e}"},
                                                                     ensure_ascii=False)}],
                                    "isError": True}})
+            return
         except Exception as e:  # noqa: BLE001
             tb = traceback.format_exc()
             self._log(f"[{self.name}] 工具 {name} 执行异常:\n{tb}")
@@ -124,6 +121,16 @@ class McpServer:
                                                                      "error": str(e)},
                                                                     ensure_ascii=False)}],
                                    "isError": True}})
+            return
+        # 结果序列化独立 try（C20：json.dumps 失败不应被误报为"参数错误"）
+        try:
+            text = json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError) as e:  # noqa: BLE001
+            self._log(f"[{self.name}] 工具 {name} 结果序列化失败: {traceback.format_exc()}")
+            text = json.dumps({"success": False, "error": f"结果序列化失败: {e}"},
+                              ensure_ascii=False)
+        self._send({"jsonrpc": "2.0", "id": msg_id,
+                    "result": {"content": [{"type": "text", "text": text}]}})
 
     # ---- 主循环 ----
     def run(self):
@@ -132,6 +139,11 @@ class McpServer:
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         except Exception:  # noqa: BLE001
             pass
+        # C20：永久重定向 stdout → stderr（进程级，所有线程生效）。_send 写
+        # _PROTO_STDOUT（启动时锁定的原始 stdout）；库/预热线程的任何 print
+        # 一律进 stderr，杜绝并发输出污染协议通道（原先的临时 redirect_stdout
+        # 是进程级全局，与 vision 预热线程交错时仍可能漏出原始 stdout）。
+        sys.stdout = sys.stderr
         self._log(f"[{self.name}] MCP server 启动（{self.name} v{self.version}，"
                   f"{len(self._tools)} 个工具）")
         for line in sys.stdin:

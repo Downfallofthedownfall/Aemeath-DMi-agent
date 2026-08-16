@@ -92,7 +92,8 @@ function MemoryRow({ m, onDelete, deleting }: { m: MemoryItem; onDelete: (id: st
       </div>
       <button
         type="button"
-        onClick={() => onDelete(m.id.slice(0, 8))}
+        // C17：传完整 id 而非 8 位前缀（前缀可能碰撞，softDelete 前缀语义会删到多条）
+        onClick={() => onDelete(m.id)}
         disabled={deleting}
         title="删除这条记忆（软删，可审计）"
         style={{
@@ -164,7 +165,6 @@ function MemoryPanelBody(): JSX.Element {
   const l2 = data ? sortByImp(data.l2) : [];
   const l3 = data ? sortByImp(data.l3) : [];
   const l1 = data?.l1 ?? [];
-  const stats = data?.stats;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -223,7 +223,7 @@ function MemoryPanelBody(): JSX.Element {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {l2.map((m) => (
-              <MemoryRow key={m.id} m={m} deleting={deleting === m.id.slice(0, 8)} onDelete={(id) => void remove(id)} />
+              <MemoryRow key={m.id} m={m} deleting={deleting === m.id} onDelete={(id) => void remove(id)} />
             ))}
           </div>
         )}
@@ -240,7 +240,7 @@ function MemoryPanelBody(): JSX.Element {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {l3.map((m) => (
-              <MemoryRow key={m.id} m={m} deleting={deleting === m.id.slice(0, 8)} onDelete={(id) => void remove(id)} />
+              <MemoryRow key={m.id} m={m} deleting={deleting === m.id} onDelete={(id) => void remove(id)} />
             ))}
           </div>
         )}

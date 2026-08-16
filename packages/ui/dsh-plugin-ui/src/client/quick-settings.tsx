@@ -23,6 +23,8 @@ export interface QuickSettingsDeps {
   credentials?: {
     views: Record<string, CredentialView | undefined>;
     refresh: () => void;
+    subscribe?: (l: () => void) => () => void;
+    getSnapshot?: () => Record<string, CredentialView | undefined>;
   };
 }
 
@@ -74,7 +76,10 @@ function QuickSettingsLoaded({
   onClose: () => void;
 }): JSX.Element {
   const currentRole = useSyncExternalStore(role.subscribe, role.getSnapshot);
-  const credViews = credentials.views ?? {};
+  // C11：凭据徽章可订阅——设置页保存/清除 key 后，面板开启期间也实时刷新
+  const noopSub = (): (() => void) => () => void 0;
+  const credSnap = (): Record<string, CredentialView | undefined> => credentials.views ?? {};
+  const credViews = useSyncExternalStore(credentials.subscribe ?? noopSub, credentials.getSnapshot ?? credSnap);
   const apiConfigured = credViews['DEEPSEEK_API_KEY']?.configured ?? false;
 
   // 视口钳制定位：触发器在侧边栏底部，向下空间不足时向上弹出（同 workspace 菜单策略）。

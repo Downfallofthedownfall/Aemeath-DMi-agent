@@ -12,7 +12,7 @@
 
 import { existsSync, readFileSync, statSync, readdirSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
-import type { Context } from '@deepseek-ai/cordis';
+import { Service, type Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -49,6 +49,22 @@ function log(msg: string): void {
 
 function warn(msg: string): void {
   console.warn(`[aemeath-worldbook] ⚠ ${msg}`);
+}
+
+/**
+ * C8 修复：worldbook 配置 service（name='worldbook'）——把 preset→馆目录映射
+ * 暴露给其他插件（memory 的 worldbook 桥接直接读取），消除 cordis.patch.yml 里
+ * libraries 在 worldbook 与 memory 各抄一份的漂移。memory 插件经
+ * ctx.reflect.get('worldbook') 读取（未加载时优雅降级到自身配置/默认）。
+ */
+export class WorldbookService extends Service {
+  readonly libraries: Record<string, string>;
+  readonly maxInjectTokens: number;
+  constructor(ctx: Context, opts: { libraries: Record<string, string>; maxInjectTokens: number }) {
+    super(ctx, 'worldbook');
+    this.libraries = opts.libraries;
+    this.maxInjectTokens = opts.maxInjectTokens;
+  }
 }
 
 /** 读取一个馆目录下全部 .json（兼容数组=多条 / 单对象=一条）。 */
@@ -125,6 +141,9 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
   const maxTokens = config.maxInjectTokens ?? 3000;
   const reloadSec = config.hotReloadInterval ?? 3;
   const libs = new Map<string, LibState>();
+
+  // C8：注册配置 service（供 memory 等插件读取 libraries，消除配置漂移）
+  new WorldbookService(ctx, { libraries: config.libraries ?? {}, maxInjectTokens: maxTokens });
 
   const resolveDir = (p: string): string => (isAbsolute(p) ? p : join(process.cwd(), p));
 
