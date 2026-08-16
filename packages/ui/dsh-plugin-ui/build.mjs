@@ -16,10 +16,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(here, 'package.json'), 'utf-8'));
 const ID = pkg.name;
 
-/** 外部依赖：react + dsh client 包（浏览器 module 表提供）。 */
+/** 外部依赖：react / react-dom + dsh client 包（浏览器 module 表提供）。 */
 const external = [
   'react',
   'react/*',
+  'react-dom',
   '@deepseek-ai/*',
 ];
 

@@ -106,7 +106,7 @@ async function main() {
   report.brandHeader = await evalJs(`!!document.querySelector('[data-aemeath-brand-header]')`);
   report.heroGreeting = await evalJs(`[...document.querySelectorAll('div')].some(e => e.children.length === 0 && e.textContent.includes('你好呀，我是爱弥斯'))`);
   report.roleCards = await evalJs(`(() => { const btns = [...document.querySelectorAll('button')]; return btns.filter(b => (b.textContent||'').includes('陪伴 · 日常聊天') || (b.textContent||'').includes('物理学习 · 解题')).length; })()`);
-  report.wsHero = await evalJs(`!!document.querySelector('[data-aemeath-ws="hero"]')`);
+  report.wsHeroHidden = await evalJs(`!document.querySelector('[data-aemeath-ws="hero"]')`);
   report.wsChip = await evalJs(`!!document.querySelector('[data-aemeath-ws="chip"]')`);
   report.wsChipLabel = await evalJs(`document.querySelector('[data-aemeath-ws="chip"]')?.textContent?.trim()`);
   report.quickSettings = await evalJs(`!!document.querySelector('[data-aemeath-quick-settings-trigger]')`);

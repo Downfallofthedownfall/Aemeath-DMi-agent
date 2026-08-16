@@ -6,7 +6,6 @@
 // 数据：useSessions 来自框架注入的标准 kit（SessionStandardProps），
 //       不伪造——v1 的 bug 就是 inject 里塞了恒等函数导致列表恒空。
 // ============================================================
-import { useState } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
@@ -137,33 +136,36 @@ export function SidebarBrandHeader({ wide }: { wide: boolean }): JSX.Element {
   );
 }
 
-/** 会话列表主体：useSessions 由框架注入（标准 kit），非伪造。 */
+/** 会话列表主体：useSessions / useWorkspaces 由框架注入（标准 kit），非伪造。 */
 function SessionListBody({
   useSessions,
+  useWorkspaces,
   wide,
   open,
   archive,
 }: {
   useSessions: (selector: (s: unknown) => unknown) => unknown;
+  useWorkspaces?: (selector: (s: unknown) => unknown) => unknown;
   wide: boolean;
   open: (id: string) => void;
   archive: (id: string) => void;
 }): JSX.Element {
-  const [removed, setRemoved] = useState<Set<string>>(new Set());
   const list = useSessions((s: unknown) => s) as {
     ids?: string[];
     byId?: Record<string, { id: string; displayTitle?: string; agentPreset?: string; running?: boolean; blank?: boolean }>;
     current?: string;
   };
+  // ⚠ 删除 = 归档（dsh 无真删接口，日志保留但必须从列表隐藏）。
+  //   归档集合来自 workspaces 状态（archiveSession 后实时更新）→ 刷新后也不会"复活"。
+  const ws = useWorkspaces?.((s: unknown) => s) as { archivedSessionIds?: readonly string[] } | undefined;
+  const archived = new Set(ws?.archivedSessionIds ?? []);
   // 去重：极端重连/事件累积下 ids 可能出现重复（测试环境 18 次重连后实测每会话 3-4 份）
-  const ids = Array.from(new Set((list.ids ?? []).filter((id) => !removed.has(id))));
+  const ids = Array.from(new Set((list.ids ?? []).filter((id) => !archived.has(id))));
   const byId = list.byId ?? {};
   const current = list.current;
 
   const remove = (id: string): void => {
-    // 本地立即移除（乐观），再归档到 host
-    setRemoved((prev) => new Set(prev).add(id));
-    archive(id);
+    archive(id); // 归档成功后 workspaces.archivedSessionIds 更新 → 本列表自动隐藏
   };
 
   return (
@@ -200,12 +202,13 @@ function SessionListBody({
 function AemeathSessionList(props: {
   wide?: boolean;
   useSessions?: (selector: (s: unknown) => unknown) => unknown;
+  useWorkspaces?: (selector: (s: unknown) => unknown) => unknown;
   open?: (id: string) => void;
   archive?: (id: string) => void;
 }): JSX.Element | null {
-  const { wide, useSessions, open, archive } = props;
+  const { wide, useSessions, useWorkspaces, open, archive } = props;
   if (!useSessions || !open || !archive) return null;
-  return <SessionListBody useSessions={useSessions} wide={!!wide} open={open} archive={archive} />;
+  return <SessionListBody useSessions={useSessions} useWorkspaces={useWorkspaces} wide={!!wide} open={open} archive={archive} />;
 }
 
 /** 注册：shadow 官方 sidebar.workspaces（会话列表 + 品牌头部）。 */

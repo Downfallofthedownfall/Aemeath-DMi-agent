@@ -129,8 +129,10 @@ out.wsMenu = await evalJs(`(() => {
     anchoredLeft: cardRect ? Math.abs(rect.left - cardRect.left) <= 4 : null,
     // 视口内（修复"点了没反应"：原菜单在输入框下方=视口外）
     inViewport: rect.top >= 0 && rect.bottom <= vh && rect.width > 0,
-    // 输入框在屏幕底部 → 应向上弹出
-    openedAbove: cardRect ? rect.bottom <= cardRect.top + 2 : null,
+    // 贴住输入框：菜单贴着卡的下沿（向下）或上沿（向上）
+    hugsCard: cardRect ? Math.abs(rect.top - cardRect.bottom) <= 8 || Math.abs(rect.bottom - cardRect.top) <= 8 : null,
+    // 方向（向下优先）
+    openedDown: cardRect ? rect.top >= cardRect.bottom - 1 : null,
   };
 })()`);
 

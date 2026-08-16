@@ -110,12 +110,9 @@ button[class*="_newSession"]:hover {
 [class*="_settingsArea"] {
   border-radius: var(--fluent-radius-md, 8px) !important;
 }
-
-/* 7.4 hero 工作区行：隐藏 dsh 自带 WorkspaceChip（首个子按钮），
-     保留我们的工作区选择器（hero.workspace 槽位）——避免双 chip 挤歪居中布局 */
-[class*="_heroWorkspaceRow"] > :first-child {
-  display: none !important;
-}
+/* 注：§7.4（隐藏官方 hero WorkspaceChip）已移除——官方 chip + 官方选择器回归原位，
+   作为 inert 态（"选择一个工作区开始"）的原生出口；用户要求工作区 dropdown
+   只保留对话框的（我们的 hero chip 已移除，见 workspace-selector.tsx）。 */
 
 /* ============ §8 hero 残留（配合 hero.tsx 替换） ============ */
 /* hero 工作区触发器在 P3 恢复前保持隐藏（sessions.tsx 空组件 shadow）； */

@@ -14,12 +14,17 @@
 // ============================================================
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { settingsNamespace } from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-settings';
 
 export const name = 'aemeath-ui';
 export const inject = ['webServer', 'settings', 'memory'];
+
+/** 无工作区时的自动兜底工作区：项目内空文件夹（打开即聊，用户无需选择）。 */
+export const DEFAULT_WORKSPACE_DIR = '.chat';
 
 /** 本插件管理的 settings namespaces（与引擎插件注册名一致）。 */
 export const FEATURE_NAMESPACES = ['aemeath-common', 'aemeath-worldbook', 'aemeath-retriever', 'aemeath-memory', 'aemeath-workflow'];
@@ -138,9 +143,35 @@ export function apply(ctx: Context): void {
     webServer.register({ kind: 'exact', path: '/aemeath/api/settings/', handler: handle }),
     webServer.register({ kind: 'exact', path: '/aemeath/api/memory', handler: handleMemory }),
     webServer.register({ kind: 'exact', path: '/aemeath/api/memory/', handler: handleMemory }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/boot-info', handler: handleBootInfo }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/boot-info/', handler: handleBootInfo }),
   ];
   ctx.effect(() => () => disposers.forEach((d) => d()));
   console.log('[aemeath-ui] 设置端点已注册: GET/POST /aemeath/api/settings');
+
+  // —— 启动信息端点（M5 P3.5）：暴露默认兜底工作区路径（项目内空文件夹 .chat）——
+  // 前端在「零工作区」时据此自动挂载，实现"打开即聊、无需选择工作区"。
+  async function handleBootInfo(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    if (req.method !== 'GET') {
+      json(res, 405, { ok: false, error: 'method not allowed' });
+      return;
+    }
+    try {
+      const defaultWorkspacePath = join(process.cwd(), DEFAULT_WORKSPACE_DIR);
+      mkdirSync(defaultWorkspacePath, { recursive: true }); // 确保空文件夹存在（幂等）
+      json(res, 200, { ok: true, defaultWorkspacePath });
+    } catch (e) {
+      json(res, 500, { ok: false, error: (e as Error).message });
+    }
+  }
 
   // —— 记忆管理端点（M5 F2）：GET list/stats + POST delete ——
   async function handleMemory(req: IncomingMessage, res: ServerResponse): Promise<void> {

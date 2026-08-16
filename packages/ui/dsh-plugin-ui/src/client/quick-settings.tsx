@@ -9,6 +9,7 @@
 // 完整设置仍走官方 SettingsRoot（下方 ⚙ 设置入口）。
 // ============================================================
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client';
 import type { CredentialView } from '@deepseek-ai/dsh-client-connection/client';
@@ -76,6 +77,12 @@ function QuickSettingsLoaded({
   const credViews = credentials.views ?? {};
   const apiConfigured = credViews['DEEPSEEK_API_KEY']?.configured ?? false;
 
+  // 视口钳制定位：触发器在侧边栏底部，向下空间不足时向上弹出（同 workspace 菜单策略）。
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const MAX_H = Math.min(560, vh - 16);
+  const below = vh - (anchor.top + 8);
+  const panelTop = below >= 200 ? anchor.top + 8 : Math.max(8, anchor.top - MAX_H - 8);
+
   const setFeature = async (f: FeatureSwitch, v: boolean): Promise<void> => {
     const scope = scopes[f.ns];
     if (!scope) return;
@@ -94,10 +101,10 @@ function QuickSettingsLoaded({
       style={{
         position: 'fixed',
         left: Math.max(8, anchor.left - 280),
-        top: anchor.top + 8,
+        top: panelTop,
         zIndex: 9999,
         width: 312,
-        maxHeight: 'min(560px, 75vh)',
+        maxHeight: MAX_H,
         overflowY: 'auto',
         display: 'flex',
         flexDirection: 'column',
@@ -249,7 +256,11 @@ function QuickSettingsInner({
       >
         ⚙
       </button>
-      {open && anchor ? <QuickSettingsLoaded role={role} scopes={scopes} credentials={credentials} anchor={anchor} onClose={() => setOpen(false)} /> : null}
+      {open && anchor
+        ? // ⚠ portal 到 body：Electron 28 下 fixed 弹层挂在侧边栏深树里会被错误偏移
+          //   （同 workspace-selector 的菜单，实测偏移到视口外）；挂 body 下正常。
+          createPortal(<QuickSettingsLoaded role={role} scopes={scopes} credentials={credentials} anchor={anchor} onClose={() => setOpen(false)} />, document.body)
+        : null}
     </>
   );
 }

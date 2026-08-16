@@ -14,6 +14,7 @@ import { registerHero } from './hero.tsx';
 import { registerTts } from './tts.tsx';
 import { registerQuickSettings } from './quick-settings.tsx';
 import { registerWorkspaceSelector } from './workspace-selector.tsx';
+import { registerWorkspaceBootstrap } from './bootstrap.ts';
 import { injectFluentStyles } from './styles/fluent.ts';
 import { injectDeDshStyles } from './styles/de-dsh.ts';
 import { createFaces } from './faces.ts';
@@ -55,11 +56,14 @@ export function apply(ctx: ClientContext): void {
     },
   }));
 
-  // 2.9) 工作区选择器（输入框工具行 chip + hero 欢迎屏）
-  // 「无工作区」= 移除当前工作区关联（workspaces.delete，仅删注册，会话文件不受影响）
+  // 2.9) 工作区选择器（仅输入框工具行 chip，用户要求：dropdown 只保留对话框的）
   registerWorkspaceSelector(ctx, {
     workspaces: ctx.workspaces as never,
+    openSession: (id: string) => ctx.sessions.open(id as never),
   });
+
+  // 2.9.5) 无工作区自动兜底：零工作区时挂项目内空文件夹为工作区，打开即聊
+  registerWorkspaceBootstrap(ctx);
   // 3) 设置页（P3 瘦身：功能开关 / 记忆管理 / API key；角色已前移主界面）
   registerSettingsSection(ctx, {
     scopes: () => Object.fromEntries(faces.scopes),
