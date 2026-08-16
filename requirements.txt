@@ -1,23 +1,32 @@
 # ===== Aemeath-DMi Agent · Python 依赖（pip install -r requirements.txt）=====
+# 汇总自 packages/py-services/*/requirements.txt，与各 MCP server 实际 import 对齐
+# （详见 packages/py-services/README.md；运行环境：Windows · Python 3.10+）
 
-# ===== MCP 基础（pyautogui/pyperclip/pygetwindow 供 control_mcp 键鼠/窗口）=====
+# ===== MCP 基础（control_mcp 键鼠/窗口）=====
 pyautogui>=0.9.53
 pyperclip>=1.8.2
 pygetwindow>=0.0.9
+pywin32>=306            # 可选：control_window_list 用 win32gui；缺省自动回退 pygetwindow
 
-# ===== sympy_mcp（compute_symbolic/numeric/plot/compare；C3：此前缺失导致 mcp-sympy 拉起即失败）=====
-sympy>=1.12
-numpy>=1.24
+# ===== sympy_mcp（compute_symbolic/numeric/plot/compare）=====
+# 受限子进程沙箱白名单五模块：numpy/scipy/sympy/math/uncertainties（见 server.py _ALLOWED）
+sympy>=1.13
+numpy>=1.26
 scipy>=1.10
-matplotlib>=3.7
-uncertainties>=3.1.7
+matplotlib>=3.8         # compute_plot 需要
+uncertainties>=3.1.7    # 误差传播（沙箱白名单成员）
 
 # ===== vision_mcp（YOLO + OCR）=====
+# torch 显式声明：ultralytics/easyocr 传递依赖 torch，明确版本避免拉起即失败（C3）
+torch>=2.0
 ultralytics>=8.0.0
 opencv-python>=4.8.0
 pillow>=10.0.0
 mss>=9.0.0
 easyocr>=1.7.0
 
-# ===== tts_mcp（flask 仅为 v1 遗留，MCP 版不需要；IndexTTS2 引擎须在
-#      D:\index-tts 的 venv 下运行，见 tts_mcp/server.py 头部说明）=====
+# ===== tts_mcp（IndexTTS2）=====
+# 无需在本环境安装：引擎须在独立 IndexTTS venv 下运行（默认 D:\index-tts\.venv，
+# 解释器可用环境变量 AEMEATH_TTS_PYTHON 指定，模型目录 AEMEATH_TTS_MODEL_DIR；
+# 详见 tts_mcp/server.py 头部说明）。参考依赖（在 IndexTTS venv 内装）：
+#   torch>=2.0、transformers>=4.30.0、librosa、soundfile、numpy

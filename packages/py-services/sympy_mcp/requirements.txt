@@ -1,4 +1,8 @@
-# sympy_mcp — SymPy 计算（系统 Python 3.14 已具备）
+# sympy_mcp — SymPy 计算（系统 Python 3.10+）
+# 注意：受限子进程沙箱白名单五模块 = numpy/scipy/sympy/math/uncertainties（server.py _ALLOWED），
+#       计算工具 compute_numeric/compare_answers 直接依赖 scipy 与 uncertainties，必须一并安装。
 sympy>=1.13
 numpy>=1.26
+scipy>=1.10
 matplotlib>=3.8        # compute_plot 需要
+uncertainties>=3.1.7   # 误差传播（沙箱白名单成员）
