@@ -120,10 +120,12 @@
       config:
         transport: stdio
         serverName: tts
-        # C7：模型目录不再硬编码在 args——tts_mcp 读取环境变量 AEMEATH_TTS_MODEL_DIR
-        #（未设置时回退 D:\index-tts，见 tts_mcp/server.py）；command 也支持
-        # AEMEATH_TTS_PYTHON 环境变量指定 IndexTTS venv python
-        command: 'D:\index-tts\.venv\Scripts\python.exe'
+        # C7 补全：command 用 PATH 上的 python（setup.bat 已校验），解释器与模型目录
+        # 全部经环境变量接线（mcp-client 的 env 继承父进程环境）：
+        #   AEMEATH_TTS_PYTHON    → IndexTTS venv python（tts_mcp 启动时 execv 换入）
+        #   AEMEATH_TTS_MODEL_DIR → 模型目录（server.py 读取）
+        # 未设置时回退 D:\index-tts（仅代码内一处兜底）；换机器只改环境变量即可
+        command: python
         args: ['packages/py-services/tts_mcp/server.py']
         cwd: '.'
         env: {}

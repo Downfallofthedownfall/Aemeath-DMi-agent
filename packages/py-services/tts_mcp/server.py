@@ -5,10 +5,12 @@
 #   输入 text（可选 voice 参考音频路径）→ 合成 wav
 #   输出：写入 <repo>/voices/tts/<uuid>.wav，返回 path/size/duration；
 #         需要内联音频时 include_base64=true 返回 base64。
-# 运行环境：D:\index-tts\.venv\Scripts\python.exe（torch 2.8 + transformers 4.52）
-#   模型目录：--model-dir 或环境变量 AEMEATH_TTS_MODEL_DIR，默认 D:\index-tts
+# 运行环境：IndexTTS venv python（torch 2.8 + transformers 4.52）
+#   解释器：环境变量 AEMEATH_TTS_PYTHON（未设置回退 D:\index-tts\.venv\Scripts\python.exe）。
+#           MCP profile 以系统 python 拉起本脚本时，_maybe_relaunch() 会重新执行到
+#           目标解释器（stdin/stdout 管道句柄不变），换机器只需设环境变量。
+#   模型目录：环境变量 AEMEATH_TTS_MODEL_DIR（未设置回退 D:\index-tts）。
 #   引擎加载：首次调用懒加载（FP16 → FP32 自动回退 + 预热），加锁串行推理。
-# 运行：D:\index-tts\.venv\Scripts\python.exe packages/py-services/tts_mcp/server.py
 # ============================================================
 import os
 import sys
@@ -30,9 +32,8 @@ server = McpServer("tts_mcp", "2.0.0-m0")
 
 _engine = None
 _engine_lock = threading.Lock()
-MODEL_DIR = os.environ.get('AEMEATH_TTS_MODEL_DIR', 'D:\\index-tts')
 
-# 模型目录：优先环境变量 AEMEATH_TTS_MODEL_DIR（profile 不再硬编码 --model-dir），
+# 模型目录：优先环境变量 AEMEATH_TTS_MODEL_DIR（经 mcp-client 的父进程环境透传），
 # 兜底 D:\index-tts（C7：机器相关路径只留这一处，且可被环境变量覆盖）。
 MODEL_DIR = os.environ.get('AEMEATH_TTS_MODEL_DIR', 'D:\\index-tts')
 
@@ -200,7 +201,36 @@ def tts_generate(text: str, voice="", include_base64=False):
             return {"success": False, "error": str(e)}
 
 
+def _maybe_relaunch():
+    """第三关补全：MCP profile 用系统 python（PATH）拉起本脚本时，重新执行到
+    IndexTTS venv python（AEMEATH_TTS_PYTHON 环境变量，未设置回退 D:\\index-tts）。
+
+    dsh-mcp-client 的 command 是字面量、无 env 插值——靠本函数在进程内完成
+    "env 变量决定解释器"的接线：os.execv 同进程替换（MCP stdin/stdout 管道句柄
+    不变）；execv 在 Windows 上不可靠（实测 Errno 12），失败则回退为子进程默认
+    继承句柄运行（不显式传 stdio，避免父进程持有副本导致 EOF 语义变化）。
+    已在目标解释器下运行则直接返回。
+    """
+    py = os.environ.get('AEMEATH_TTS_PYTHON') or r'D:\index-tts\.venv\Scripts\python.exe'
+    if not os.path.exists(py):
+        print(f'[tts_mcp] 未找到 IndexTTS venv python: {py}', file=sys.stderr)
+        print('[tts_mcp] 请设置环境变量 AEMEATH_TTS_PYTHON 指向本机 IndexTTS venv 的 python.exe（否则 tts_generate 不可用，不影响其他服务）', file=sys.stderr)
+        sys.exit(3)
+    if os.path.abspath(sys.executable) == os.path.abspath(py):
+        return  # 已在目标解释器下
+    script = os.path.abspath(__file__)
+    args = [py, script] + sys.argv[1:]
+    try:
+        os.execv(py, args)  # 同进程替换；成功则不返回
+    except Exception as e:  # noqa: BLE001
+        print(f'[tts_mcp] execv 失败（{e}），改用子进程运行（继承 stdio 句柄）', file=sys.stderr)
+    import subprocess
+    proc = subprocess.run(args)  # 不显式传 stdio：子进程继承同一组 OS 句柄（MCP 管道）
+    sys.exit(proc.returncode)
+
+
 if __name__ == "__main__":
+    _maybe_relaunch()
     parser = argparse.ArgumentParser(description='IndexTTS2 MCP server')
     parser.add_argument('--model-dir', type=str, default=MODEL_DIR, help='IndexTTS2 模型目录')
     parser.add_argument('--no-fp16', action='store_true', help='跳过 FP16 直接 FP32')
