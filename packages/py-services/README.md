@@ -74,5 +74,3 @@ python packages/py-services/selftest.py --server sympy    # 单个
 5. **YOLO 首次推理不能在预热线程做**：与工具线程并发首次推理会触发 ultralytics
    predictor 懒初始化竞态（`self.predictor` 为 None → "'NoneType' object is not
    callable"）。预热只管 EasyOCR；YOLO 首推由工具线程在 `_model_infer_lock` 内串行完成。
-6. **调试**：`AEMEATH_MCP_DEBUG=1` 时异常堆栈额外写 `%TEMP%\mcp_core_debug.log`
-   （管道 stderr 常被客户端丢弃，这是唯一可靠取堆栈的方式）。

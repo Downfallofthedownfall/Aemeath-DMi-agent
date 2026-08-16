@@ -4,7 +4,7 @@
 # 关键：agent-presets default=physicist（headless runner 的 agent 走默认 preset，
 #       使 worldbook/讲义/记忆按 physicist 注入）；headless bundle 需补 storage 三件套。
 # ============================================================
-# —— agent-presets 默认预设：physicist（headless 一次性运行按星炬人格/知识注入）——
+# —— agent-presets 默认预设：physicist（headless 一次性运行按 physicist 人格/知识注入）——
 - id: agent-presets
   config:
     default: physicist
@@ -99,7 +99,7 @@
           enabled: false
           port: 18895
     # —— Python 微服务（headless 只挂轻量：sympy 计算 + control；vision/tts 重依赖
-    #    每问一次进程拉起成本高，不挂——基准按星炬纯知识/检索/计算作答）——
+    #    每问一次进程拉起成本高，不挂——基准按 physicist 纯知识/检索/计算作答）——
     - id: mcp-sympy
       name: '@deepseek-ai/dsh-mcp-client'
       config:

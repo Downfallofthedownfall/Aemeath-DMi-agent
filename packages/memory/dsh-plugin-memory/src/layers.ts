@@ -61,7 +61,7 @@ export function removeL1Turns(turns: L1Turn[], toRemove: readonly L1Turn[]): L1T
  * @param similar 每条缓冲轮的相似记忆（BM25 top-k，喂给 LLM 做合并/冲突参考）
  */
 export function buildSummarizePrompt(turns: L1Turn[], similar: Array<{ id: string; content: string }>): string {
-  const lines = turns.map((t) => `- [${t.kind}] ${t.preset}｜用户：${t.query}｜星炬：${t.reply || '（无）'}`);
+  const lines = turns.map((t) => `- [${t.kind}] ${t.preset}｜用户：${t.query}｜physicist：${t.reply || '（无）'}`);
   const similarBlock = similar.length ? similar.map((s) => `  - ${s.id}：${s.content}`).join('\n') : '  （无相似记忆）';
   return [
     '你是分层记忆的总结层。下面是一段 L1 工作区缓冲的对话轮次（每轮含用户提问与回复；kind=fact 是用户事实，kind=knowledge 是物理/数学知识）。',

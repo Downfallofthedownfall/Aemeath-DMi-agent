@@ -1,5 +1,5 @@
 {
-  "description": "星炬物理基准题集（M4）。当前为教科书种子题，内容轨：M4 前以 Fachschaft Altklausur 真题替换（真题占比 ≥50% 并记录 source_year）。",
+  "description": "physicist 物理基准题集（M4）。当前为教科书种子题，内容轨：M4 前以 Fachschaft Altklausur 真题替换（真题占比 ≥50% 并记录 source_year）。",
   "created": "2026-08-14",
   "source_note": "种子题：标准教材（Demtröder / 讲义示例）改编；真题待用户替换",
   "questions": [

@@ -37,7 +37,7 @@ const MOM = {
 };
 const BIO = {
   id: 'physicist_bio',
-  title: '星炬学霸自传',
+  title: 'physicist 学霸自传',
   kind: 'identity',
   triggers: ['你是谁'],
   constant: true,
@@ -67,14 +67,14 @@ t('德文触发命中（traegheit）', () => {
 
 t('constant 无条件注入', () => {
   const block = matchWorldbook('帮我做道题', all, 3000);
-  assert.ok(block.includes('星炬学霸自传'));
+  assert.ok(block.includes('physicist 学霸自传'));
   assert.ok(block.includes('先算后答'));
 });
 
 t('priority 排序：高优先级在前', () => {
   const block = matchWorldbook('动量守恒怎么用', all, 3000);
   // 命中的动量守恒(170) + constant 自传(200)：自传在前
-  assert.ok(block.indexOf('星炬学霸自传') < block.indexOf('动量守恒'));
+  assert.ok(block.indexOf('physicist 学霸自传') < block.indexOf('动量守恒'));
 });
 
 t('chain 防环（A→B→A 不死循环）', () => {

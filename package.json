@@ -2,7 +2,7 @@
   "name": "aemeath-dmi-agent",
   "version": "2.0.0-m0",
   "private": true,
-  "description": "Aemeath-DMi Agent v2 — 物理学习 Copilot（星炬）+ 陪伴桌宠（爱弥斯），基于 DeepSeek Harness 插件体系",
+  "description": "Aemeath-DMi Agent v2 — 物理学习 Copilot（physicist）+ 陪伴桌宠（爱弥斯），基于 DeepSeek Harness 插件体系",
   "workspaces": [
     "packages/**"
   ],

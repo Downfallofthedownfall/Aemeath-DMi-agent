@@ -348,7 +348,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
           .join('')
           .trim();
         if (!text) return;
-        const personaName = preset === 'aemeath' ? '爱弥斯（桌宠，活泼俏皮，不讲物理公式）' : '星炬（物理学霸，严谨专业，不卖萌）';
+        const personaName = preset === 'aemeath' ? '爱弥斯（桌宠，活泼俏皮，不讲物理公式）' : 'physicist（物理学霸，严谨专业，不卖萌）';
         let apiKey = oocLlm.apiKey;
         if (!apiKey) {
           try {

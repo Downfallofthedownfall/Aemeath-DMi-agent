@@ -1,5 +1,5 @@
 // ============================================================
-// dsh-plugin-workflow · 星炬解题工作流（M6 v2）
+// dsh-plugin-workflow · physicist 解题工作流（M6 v2）
 // 职责（仅 physicist preset 生效，config.workflow.enabled）：
 //   1. 分流（route.ts）：plan（解题触发词/长问题）vs direct（日常）
 //   2. 规范注入：plan 模式 pre-step 注入 SOLVER_PROMPT（soul 格式）
@@ -487,7 +487,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     };
     for (const agent of ctx.agents.list()) applyCodeMode(agent);
     ctx.on('agent/created', ({ agent }) => applyCodeMode(agent));
-    log('codeMode 已启用（presentAs("code")，星炬计算密集流）');
+    log('codeMode 已启用（presentAs("code")，physicist 计算密集流）');
   } else {
     log('codeMode 默认关闭（presentAs("code") 可选，需 codeRuntime）');
   }

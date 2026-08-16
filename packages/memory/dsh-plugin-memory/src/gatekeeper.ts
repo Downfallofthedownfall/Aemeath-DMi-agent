@@ -107,7 +107,7 @@ export function extractMemory(query: string): string {
 /**
  * 规则层主入口：返回动作决策。
  * @param query 用户输入
- * @param reply 星炬/爱弥斯回复
+ * @param reply physicist/爱弥斯回复
  */
 export function decide(query: string, reply: string): MemoryAction {
   const q = (query || '').trim();

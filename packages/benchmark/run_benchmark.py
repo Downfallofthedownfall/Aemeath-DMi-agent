@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ============================================================
-# run_benchmark.py — 星炬基准（M4，框架无关，独立运行）
+# run_benchmark.py — physicist 基准（M4，框架无关，独立运行）
 # 驱动：对每道题调用 `dsh --profile aemeath-run "<题目>"`（headless 一次性）
 #       收集回答 → 六项指标 → 输出 report.json（可复现）
 # 指标：
@@ -84,7 +84,7 @@ def main():
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
         pass
-    parser = argparse.ArgumentParser(description='星炬物理基准（headless 驱动）')
+    parser = argparse.ArgumentParser(description='physicist 物理基准（headless 驱动）')
     parser.add_argument('--questions', default=str(REPO_ROOT / 'packages' / 'benchmark' / 'questions.json'))
     parser.add_argument('--limit', type=int, default=0, help='只跑前 N 题（0=全部）')
     parser.add_argument('--report', default=str(REPO_ROOT / 'packages' / 'benchmark' / 'report.json'))
@@ -135,7 +135,7 @@ def main():
     }
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     m = report['metrics']
-    print('\n==== 星炬基准报告 ====')
+    print('\n==== physicist 基准报告 ====')
     for k, v in m.items():
         mark = '✅' if k in report['thresholds'] and v >= report['thresholds'][k] else ('⚠️' if k in report['thresholds'] else '·')
         print(f"  {mark} {k}: {v}")

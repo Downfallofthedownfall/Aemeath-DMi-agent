@@ -1,6 +1,6 @@
-# 🤖 Aemeath-DMi Agent v2 · 星炬 · 物理学习 Copilot
+# 🤖 Aemeath-DMi Agent v2 · physicist · 物理学习 Copilot
 
-> **定位：物理学习 Copilot**。用汉堡大学 Physik I / Math I 的真实讲义、历年 Altklausur 真题和每周真实使用记录，训练一个"会算、会证、会带来源、不会就承认"的学习引擎——星炬。
+> **定位：物理学习 Copilot**。用汉堡大学 Physik I / Math I 的真实讲义、历年 Altklausur 真题和每周真实使用记录，训练一个"会算、会证、会带来源、不会就承认"的学习引擎——physicist。
 >
 > 爱弥斯（桌宠）是它的脸：注意力入口与陪伴，人格与知识完全隔离。一个引擎，两种皮肤。
 >
@@ -8,11 +8,11 @@
 
 ---
 
-## 🎓 星炬能做什么（当前进度：M0 引擎骨架）
+## 🎓 physicist 能做什么（当前进度：M0 引擎骨架）
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
-| 双角色（星炬/爱弥斯）双 agent 隔离 | ✅ M0 | dsh-persona 机制，人格按 agent 隔离 |
+| 双角色（physicist/爱弥斯）双 agent 隔离 | ✅ M0 | dsh-persona 机制，人格按 agent 隔离 |
 | OOC 规则层 | ✅ M0 | 越界回复自动纠偏（LLM 判定层 M6） |
 | 冒烟工具 aemeath/version | ✅ M0 | 工具注册 + 会话日志验证 |
 | Worldbook 物理知识库（30 条） | 🧪 M2 | 计划中：30 条 Physik I + Math I |

@@ -1,7 +1,7 @@
 {
   "name": "@aemeath/dsh-plugin-workflow",
   "version": "0.1.0",
-  "description": "Aemeath 星炬解题工作流：分流、SymPy 验证/量纲检查、plan 落 scratch、Action Gate、爱弥斯零回归（M6 v2）",
+  "description": "Aemeath physicist 解题工作流：分流、SymPy 验证/量纲检查、plan 落 scratch、Action Gate、爱弥斯零回归（M6 v2）",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

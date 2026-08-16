@@ -26,8 +26,7 @@
   "scripts": {
     "build": "node build.mjs && tsc -p tsconfig.json",
     "build:client": "node build.mjs",
-    "typecheck": "tsc -p tsconfig.client.json",
-    "test": "node test/check.mjs"
+    "typecheck": "tsc -p tsconfig.client.json"
   },
   "license": "MIT",
   "dsh": {

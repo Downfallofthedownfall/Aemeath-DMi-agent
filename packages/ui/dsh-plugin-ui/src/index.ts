@@ -120,7 +120,7 @@ export function apply(ctx: Context): void {
         if (parsed.ns === AGENT_PRESET_NAMESPACE) {
           const patch = parsed.patch as Record<string, unknown>;
           if (typeof patch.default !== 'string') return json(res, 400, { ok: false, error: 'agent-presets patch requires {default: string}' });
-          if (!['aemeath', 'scholar', 'physicist'].includes(patch.default)) return json(res, 400, { ok: false, error: `unsupported role: ${patch.default}` });
+          if (!['aemeath', 'physicist'].includes(patch.default)) return json(res, 400, { ok: false, error: `unsupported role: ${patch.default}` });
           await settings.update(settingsNamespace(AGENT_PRESET_NAMESPACE), { default: patch.default });
           json(res, 200, { ok: true });
           return;

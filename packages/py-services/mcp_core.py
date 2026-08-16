@@ -21,22 +21,6 @@ import traceback
 # 临时替换 sys.stdout（进程级全局），_send 永远走这个通道，保证响应不被吞。
 _PROTO_STDOUT = sys.stdout
 
-# 调试：AEMEATH_MCP_DEBUG=1 时把异常堆栈额外写进文件（管道 stderr 常被客户端丢弃）
-_DEBUG_FILE = None
-if os.environ.get('AEMEATH_MCP_DEBUG'):
-    import tempfile
-    _DEBUG_FILE = open(os.path.join(tempfile.gettempdir(), "mcp_core_debug.log"), "a",
-                       encoding="utf-8")
-
-
-def _debug_log(text: str):
-    if _DEBUG_FILE is not None:
-        try:
-            _DEBUG_FILE.write(text + "\n")
-            _DEBUG_FILE.flush()
-        except Exception:  # noqa: BLE001
-            pass
-
 
 class McpServer:
     def __init__(self, name: str, version: str = "0.1.0"):
@@ -125,7 +109,6 @@ class McpServer:
             # 参数不匹配：把签名错误原样返回（模型可据此修正参数）
             tb = traceback.format_exc()
             self._log(f"[{self.name}] 工具 {name} TypeError:\n{tb}")
-            _debug_log(f"[{self.name}] 工具 {name} TypeError:\n{tb}")
             self._send({"jsonrpc": "2.0", "id": msg_id,
                         "result": {"content": [{"type": "text",
                                                  "text": json.dumps({"success": False,
@@ -135,7 +118,6 @@ class McpServer:
         except Exception as e:  # noqa: BLE001
             tb = traceback.format_exc()
             self._log(f"[{self.name}] 工具 {name} 执行异常:\n{tb}")
-            _debug_log(f"[{self.name}] 工具 {name} 执行异常:\n{tb}")
             self._send({"jsonrpc": "2.0", "id": msg_id,
                         "result": {"content": [{"type": "text",
                                                  "text": json.dumps({"success": False,
