@@ -235,7 +235,8 @@ export function apply(ctx: Context, config: CommonConfig): void {
       },
       execute: async (args: { query: string }) => {
         try {
-          const url = `http://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(args.query)}&max_results=5`;
+          // 第三关：http → https（明文泄露查询内容）
+          const url = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(args.query)}&max_results=5`;
           const resp = await fetch(url, {
             headers: { 'User-Agent': 'Aemeath/1.0' },
             signal: AbortSignal.timeout(10_000),
@@ -301,6 +302,15 @@ export function apply(ctx: Context, config: CommonConfig): void {
 
   // ---- 3) OOC 规则层（agent/pre-step） ----
   const steeredTurns = new Map<string, number>();
+  // 第三关：steeredTurns 防无界增长（长跑会话/多 agent 累积），超上限淘汰最旧
+  const STEERED_MAX = 2000;
+  const trimSteered = (): void => {
+    while (steeredTurns.size > STEERED_MAX) {
+      const oldest = steeredTurns.keys().next().value;
+      if (oldest === undefined) break;
+      steeredTurns.delete(oldest);
+    }
+  };
 
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next();
@@ -334,6 +344,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
     const key = `${payload.agent.id}:${payload.turn}`;
     if (steeredTurns.get(key)) return decision; // 每回合最多纠偏一次
     steeredTurns.set(key, 1);
+    trimSteered();
 
     log(`[OOC] preset=${preset} 命中禁止模式 pattern=${violation.pattern} matched=${violation.matched.slice(0, 40)} turn=${payload.turn} → steer 纠偏`);
     payload.agent.steer({
@@ -377,6 +388,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
         const llmTurnKey = `${session.id}:${(event.data as { turn?: number }).turn ?? 0}`;
         if (steeredTurns.get(llmTurnKey)) return;
         steeredTurns.set(llmTurnKey, 1);
+        trimSteered();
         const resp = await fetch(`${oocLlm.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },

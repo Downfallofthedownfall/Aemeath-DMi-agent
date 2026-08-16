@@ -111,7 +111,9 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
 
   // ---- 构建 FTS5 索引（内存库，启动重建；讲义量小，足够） ----
   const db = new DatabaseSync(':memory:');
-  db.exec('CREATE VIRTUAL TABLE notes USING fts5(id, file, section, content, idx)');
+  // 第三关：FTS5 默认索引全部列（含 id/file/section 原始文本）——检索只走 bigram 化的
+  // idx 列，其余列标 UNINDEXED（仍可 SELECT，不参与 MATCH），消除冗余索引。
+  db.exec('CREATE VIRTUAL TABLE notes USING fts5(id UNINDEXED, file UNINDEXED, section UNINDEXED, content UNINDEXED, idx)');
   const insert = db.prepare('INSERT INTO notes (id, file, section, content, idx) VALUES (?, ?, ?, ?, ?)');
 
   let chunkCount = 0;
@@ -171,7 +173,6 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
     if (!runtime.enabled) return decision;
 
     const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
-    log(`[dbg] pre-step agent=${payload.agent.id.slice(0, 8)} preset=${preset} msgs=${decision.messages.length}`);
     if (preset !== 'physicist') return decision;
 
     // 取进入 step 的用户原始文本（跳过插件注入消息，如 worldbook/recall）
@@ -189,11 +190,20 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
     if (!query) return decision;
     // 注入条件：query>8 字 或 含物理术语
     if (query.length <= 8 && !PHYSICS_TERM.test(query)) return decision;
-    log(`[dbg] query="${query.slice(0, 30)}" len=${query.length}`);
 
-    const rows = db
-      .prepare('SELECT id, file, section, content FROM notes WHERE notes MATCH ? ORDER BY bm25(notes) LIMIT 3')
-      .all(escapeFtsQuery(query)) as Array<{ id: string; file: string; section: string; content: string }>;
+    // 第三关：escapeFtsQuery 对纯标点/无索引词返回 ''——MATCH '' 会抛异常，
+    // 且 pre-step 无 try/catch 会冒泡；这里显式跳过 + 整体兜底
+    const fts = escapeFtsQuery(query);
+    if (!fts) return decision;
+    let rows: Array<{ id: string; file: string; section: string; content: string }> = [];
+    try {
+      rows = db
+        .prepare('SELECT id, file, section, content FROM notes WHERE notes MATCH ? ORDER BY bm25(notes) LIMIT 3')
+        .all(fts) as typeof rows;
+    } catch (e) {
+      warn(`讲义检索失败（query=${query.slice(0, 30)}）: ${(e as Error).message}`);
+      return decision;
+    }
     if (!rows.length) return decision;
     const parts: string[] = [];
     let used = 0;

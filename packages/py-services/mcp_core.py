@@ -59,10 +59,15 @@ class McpServer:
         try:
             if method == "initialize":
                 params = msg.get("params", {}) or {}
-                proto = params.get("protocolVersion", "2024-11-05")
+                # 第三关：不再无条件回显客户端协议版本（未知/未来版本会掩盖协商失败）——
+                # 只接受受支持集合，否则回服务端首选版本
+                SUPPORTED_PROTOCOLS = {'2025-06-18', '2024-11-05', '2024-10-07'}
+                proto = params.get("protocolVersion", "2025-06-18")
+                if proto not in SUPPORTED_PROTOCOLS:
+                    proto = '2025-06-18'
                 self._send({
                     "jsonrpc": "2.0", "id": msg_id, "result": {
-                        "protocolVersion": proto,          # 回显客户端版本，避免协商失败
+                        "protocolVersion": proto,
                         "capabilities": {"tools": {"listChanged": False}},
                         "serverInfo": {"name": self.name, "version": self.version},
                     },
@@ -153,7 +158,10 @@ class McpServer:
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
+                # 第三关：JSON-RPC 解析失败应回 -32700（id=null），而非只记日志静默丢弃
                 self._log(f"[mcp_core] 忽略无法解析的行: {line[:200]}")
+                self._send({"jsonrpc": "2.0", "id": None,
+                            "error": {"code": -32700, "message": "Parse error"}})
                 continue
             if isinstance(msg, dict):
                 try:

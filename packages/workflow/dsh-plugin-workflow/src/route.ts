@@ -4,8 +4,9 @@
 // direct（日常对话）：其余
 // ============================================================
 
-/** 解题触发词（中文 + 英文/德文）。 */
-const PLAN_TRIGGERS = /解|推导|证明|计算|分析|求解|求导|积分|求极限|应用题|证明题|怎么算|怎么解|berechnen|ableiten|integrieren|lösen|beweisen|compute|derive|integrate|prove|solve/i;
+/** 解题触发词（中文 + 英文/德文）。第三关：去掉单字"解"（"解决/了解/解剖"都会误命中），
+ *  只保留多字解题形态；"解这个方程"这类中间夹词的也覆盖（解.{0,4}方程）。 */
+const PLAN_TRIGGERS = /推导|证明|计算|分析|求解|求导|积分|求极限|应用题|证明题|怎么算|怎么解|解(?:方程|答|出|题|.{0,4}方程)|berechnen|ableiten|integrieren|lösen|beweisen|compute|derive|integrate|prove|solve/i;
 
 /** 长问题阈值（字符）。 */
 export const LONG_QUERY_LENGTH = 80;

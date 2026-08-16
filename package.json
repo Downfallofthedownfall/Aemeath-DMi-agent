@@ -11,7 +11,7 @@
     "build:common": "npm run build -w @aemeath/dsh-plugin-common"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "^0.1.0-rc.6"

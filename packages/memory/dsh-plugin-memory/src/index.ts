@@ -35,7 +35,7 @@ import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-credentials';
 import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, type Category } from './gatekeeper.js';
-import { search as bm25Search } from './bm25.js';
+import { search as bm25Search, overlapScore } from './bm25.js';
 import { selectEviction, suggestProfileFacts } from './engine.js';
 import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
 import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn } from './types.js';
@@ -180,7 +180,9 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
   const auditWrite = async (action: string, memoryId: string | undefined, detail: string): Promise<void> => {
     try {
-      await audit.put(randomUUID(), { id: randomUUID(), ts: Date.now(), action, memory_id: memoryId, detail });
+      // 第三关：audit 记录 key 与记录内 id 用同一个 UUID（原实现两次 randomUUID 不一致）
+      const id = randomUUID();
+      await audit.put(id, { id, ts: Date.now(), action, memory_id: memoryId, detail });
     } catch (e) {
       warn(`审计写入失败: ${(e as Error).message}`);
     }
@@ -193,6 +195,16 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   // ---- 事实采集：缓冲每轮 (query, reply)，配对后进入 L1 分层 ----
   interface CollectedTurn { query: string; reply: string; preset: string; ts: number }
   const turnBuffer = new Map<string, CollectedTurn>();
+  // 第三关：turnBuffer 防无界增长——单轮未配对（assistant 消息缺失/会话中断）会滞留，
+  // 超过上限时淘汰最旧（Map 保持插入序）
+  const TURN_BUFFER_MAX = 200;
+  const trimTurnBuffer = (): void => {
+    while (turnBuffer.size > TURN_BUFFER_MAX) {
+      const oldest = turnBuffer.keys().next().value;
+      if (oldest === undefined) break;
+      turnBuffer.delete(oldest);
+    }
+  };
 
   ctx.on('session/event', (session, event) => {
     try {
@@ -203,7 +215,10 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           .map((b: { type?: string; text?: string }) => (b.type === 'text' ? b.text ?? '' : ''))
           .join('')
           .trim();
-        if (text) turnBuffer.set(sid, { query: text, reply: '', preset: resolveSessionPreset(session) ?? config.defaultPreset ?? '', ts: Date.now() });
+        if (text) {
+          turnBuffer.set(sid, { query: text, reply: '', preset: resolveSessionPreset(session) ?? config.defaultPreset ?? '', ts: Date.now() });
+          trimTurnBuffer();
+        }
       } else if (event.type === 'assistant/message') {
         const buf = turnBuffer.get(sid);
         if (!buf) return;
@@ -292,9 +307,12 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       case 'skip':
         break;
       case 'save': {
-        // 显式记忆命令 → 即时写入（规则级冲突：时间证据 + BM25 命中 → supersede）
-        const hits = bm25Search(`${turn.query} ${turn.reply}`, allMemories(), 1);
-        const conflictHit = hits.length > 0 && hits[0].score > 0.8 && hasTimeEvidence(turn.query);
+        // 显式记忆命令 → 即时写入（规则级冲突：时间证据 + 高相似 → supersede）
+        const mems = allMemories();
+        const hits = bm25Search(`${turn.query} ${turn.reply}`, mems, 1);
+        // 第三关：相似度判定改用有界 overlapScore（原裸 BM25 分数阈值 0.8 无量纲、随语料漂移）
+        const hitRec = hits.length > 0 ? mems.find((m) => m.id === hits[0].id) : undefined;
+        const conflictHit = !!hitRec && overlapScore(`${turn.query} ${turn.reply}`, hitRec.content) >= 0.5 && hasTimeEvidence(turn.query);
         // L3 升级：user_fact 类显式事实 → global（跨角色稳定）
         const scope: 'mode' | 'global' = decision.category === 'user_fact' ? 'global' : 'mode';
         if (conflictHit) {
@@ -546,15 +564,18 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   });
   log('记忆召回注入已挂载（agent/pre-step）');
 
-  // ---- session/flush 接入：会话结束时把 L1 缓冲总结卸载落盘 ----
+  // ---- session/flush 接入：会话结束时把 L1 缓冲总结卸载落盘；顺带清理会话级残留 ----
   ctx.on('session/flush', async (session) => {
     const sid = session.id;
     if (memoryService.l1Count(sid) > 0) {
       log(`session/flush：${sid.slice(0, 8)} 有 ${memoryService.l1Count(sid)} 轮 L1 缓冲，触发总结卸载`);
       await summarizeL1(sid);
     }
+    // 第三关：清理本会话的未配对采集缓冲与 scratch（防长跑无界增长）
+    turnBuffer.delete(sid);
+    memoryService.clearScratch(sid);
   });
-  log('session/flush 已接入（L1 缓冲总结卸载）');
+  log('session/flush 已接入（L1 缓冲总结卸载 + 会话残留清理）');
 
   // ---- 衰减（宿主级定时）+ 沉淀 ----
   const decayTimer = setInterval(() => {

@@ -324,8 +324,13 @@ except Exception as e:
     print(json.dumps({{"success": False, "error": "表达式解析/求值失败: " + str(e)}}))
     sys.exit(0)
 
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei',
-                                   'Arial Unicode MS', 'DejaVu Sans']
+import sys as _sys
+# 第三关：字体不再硬编码 Windows 字体——按平台选择（Linux/macOS 用 Noto/WQY/DejaVu）
+if _sys.platform.startswith('win'):
+    _FONTS = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS', 'DejaVu Sans']
+else:
+    _FONTS = ['Noto Sans CJK SC', 'WenQuanYi Zen Hei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
+plt.rcParams['font.sans-serif'] = _FONTS
 plt.rcParams['axes.unicode_minus'] = False
 y_label = {y_label!r}
 caption = {caption!r}

@@ -162,6 +162,12 @@ Thumbs.db
 # voices
 .wav
 
+# ===== 第三关：运行数据与本地环境 =====
+# memory 插件桥接生成的 worldbook 条目（运行数据，勿提交）
+packages/worldbook/data/**/generated_knowledge.json
+# Python 虚拟环境
+.venv/
+
 node_modules/
 *.log
 __pycache__/

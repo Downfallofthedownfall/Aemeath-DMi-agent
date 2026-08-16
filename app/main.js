@@ -315,5 +315,6 @@ app.on('before-quit', () => {
   stopDsh();
 });
 
-// 兜底：进程异常退出也停 dsh
-process.on('exit', () => stopDsh());
+// 注：不注册 process.on('exit') 的 stopDsh——exit 处理器里 spawnSync(taskkill)
+// 属于同步阻塞式清理，可能挂住进程退出；正常退出路径（window-all-closed →
+// before-quit）已覆盖 stopDsh。异常崩溃时 dsh 子进程可能残留，由用户手动清理。

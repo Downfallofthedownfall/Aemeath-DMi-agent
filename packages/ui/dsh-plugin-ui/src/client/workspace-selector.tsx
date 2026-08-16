@@ -15,7 +15,7 @@
 // ⚠ dsh 硬约束：inert（无工作区空白会话/无会话）下输入框工具行座位不渲染
 //   （leftItems = zone===undefined ? null : ...）——inert 态由官方 hero 流程接管。
 // ============================================================
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
@@ -242,13 +242,13 @@ function SelectorLoaded({
       : { left: Math.min(anchorRect.left, vw - 392), bottom: vh - anchorRect.top + 6, maxHeight: Math.max(MENU_MIN_H, anchorRect.top - 20) }
     : null;
 
-  const wsState = useWorkspaces((s) => s) as {
-    items?: Array<{ workspaceId: string; title: string; path: string; sessionIds: string[] }>;
-    archivedSessionIds?: readonly string[];
-  } | undefined;
-  const sessState = useSessions((s) => s) as { byId?: Record<string, { blank?: boolean }>; current?: string } | undefined;
-  const items = wsState?.items ?? [];
-  const resolvedSessionId = sessionId ?? sessState?.current;
+  // 第三关：selector 收窄到所需切片（原 (s) => s 全量选择，任何状态变化都重渲染）
+  const wsItems = useWorkspaces((s) => (s as { items?: Array<{ workspaceId: string; title: string; path: string; sessionIds: string[] }> })?.items) as Array<{ workspaceId: string; title: string; path: string; sessionIds: string[] }> | undefined;
+  const wsArchived = useWorkspaces((s) => (s as { archivedSessionIds?: readonly string[] })?.archivedSessionIds) as readonly string[] | undefined;
+  const sessCurrent = useSessions((s) => (s as { current?: string })?.current) as string | undefined;
+  const sessByBlank = useSessions((s) => (s as { byId?: Record<string, { blank?: boolean }> })?.byId) as Record<string, { blank?: boolean }> | undefined;
+  const items = wsItems ?? [];
+  const resolvedSessionId = sessionId ?? sessCurrent;
   const current = currentWorkspace(items, resolvedSessionId);
   const currentId = current?.workspaceId;
   const currentTitle = current?.title;
@@ -267,6 +267,19 @@ function SelectorLoaded({
     setOpenMenu(true);
     setError(null);
   };
+
+  // 第三关：菜单开启期间窗口 resize/滚动时重钳制定位（placement 按当前 vw/vh 重算，
+  // 防止菜单随视口变化跑出屏幕）
+  useEffect(() => {
+    if (!openMenu) return;
+    const reclamp = (): void => setAnchorRect((r) => (r ? { ...r } : r));
+    window.addEventListener('resize', reclamp);
+    window.addEventListener('scroll', reclamp, true);
+    return () => {
+      window.removeEventListener('resize', reclamp);
+      window.removeEventListener('scroll', reclamp, true);
+    };
+  }, [openMenu]);
 
   const pick = async (id: string): Promise<void> => {
     setBusy(true);
@@ -291,8 +304,8 @@ function SelectorLoaded({
     setOpenMenu(false);
     try {
       if (ungrouped || !currentId) return; // 当前已在无工作区状态
-      const byId = (sessState?.byId ?? {}) as Record<string, { blank?: boolean }>;
-      const archived = new Set(wsState?.archivedSessionIds ?? []);
+      const byId = (sessByBlank ?? {}) as Record<string, { blank?: boolean }>;
+      const archived = new Set(wsArchived ?? []);
       const usable = Object.keys(byId).filter(
         (id) => !byId[id]?.blank && !archived.has(id) && !items.some((w) => w.sessionIds.includes(id)),
       );

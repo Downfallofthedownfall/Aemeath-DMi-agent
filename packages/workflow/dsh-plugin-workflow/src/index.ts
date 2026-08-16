@@ -81,7 +81,10 @@ try:
             checked.append({'claimed': c, 'ok': bool(ok), 'residual': float(abs(val))})
         except Exception:
             checked.append({'claimed': c, 'ok': False, 'residual': None})
-    print(json.dumps({'verified': bool(sols) and all(c['ok'] for c in checked), 'solutions': [str(s) for s in sols], 'checked': checked}))
+    # 第三关：solve 返回空（无解析解/恒等式）时，只要声称的解全部回代成立也算通过——
+    # 原实现 bool(sols) 为空时一律 verified:false，即使答案正确
+    verified = all(c['ok'] for c in checked) if checked else bool(sols)
+    print(json.dumps({'verified': verified, 'solutions': [str(s) for s in sols], 'checked': checked}))
 except Exception as e:
     print(json.dumps({'error': str(e)}))
 `;
@@ -424,6 +427,11 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     return decision;
   });
   log(`工具流已挂载（tools/pre-execute，dsh 原版 allow/deny，verifyBudget=${verifyBudget}）`);
+
+  // 第三关：verifyCounts 随会话结束清理（防长跑无界增长）
+  ctx.on('session/flush', async (session) => {
+    verifyCounts.delete(session.id);
+  });
 
   // 注：mcp__control__*（键鼠/程序控制）的强制审批在 dsh-plugin-common（S4 修复），
   // 放公共插件可保证与 workflow.enabled 开关无关、始终挂载（全 preset）。

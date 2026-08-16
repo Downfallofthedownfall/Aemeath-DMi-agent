@@ -6,6 +6,7 @@
 // 数据：useSessions 来自框架注入的标准 kit（SessionStandardProps），
 //       不伪造——v1 的 bug 就是 inject 里塞了恒等函数导致列表恒空。
 // ============================================================
+import { memo, useCallback } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
@@ -136,7 +137,9 @@ export function SidebarBrandHeader({ wide }: { wide: boolean }): JSX.Element {
   );
 }
 
-/** 会话列表主体：useSessions / useWorkspaces 由框架注入（标准 kit），非伪造。 */
+/** 会话列表主体：useSessions / useWorkspaces 由框架注入（标准 kit），非伪造。
+ *  第三关：selector 收窄到所需切片（原全量 (s) => s 每次状态变化都重渲染），
+ *  行组件 memo + useCallback，无关更新时跳过重渲染。 */
 function SessionListBody({
   useSessions,
   useWorkspaces,
@@ -150,19 +153,15 @@ function SessionListBody({
   open: (id: string) => void;
   archive: (id: string) => void;
 }): JSX.Element {
-  const list = useSessions((s: unknown) => s) as {
-    ids?: string[];
-    byId?: Record<string, { id: string; displayTitle?: string; agentPreset?: string; running?: boolean; blank?: boolean }>;
-    current?: string;
-  };
-  // ⚠ 删除 = 归档（dsh 无真删接口，日志保留但必须从列表隐藏）。
-  //   归档集合来自 workspaces 状态（archiveSession 后实时更新）→ 刷新后也不会"复活"。
-  const ws = useWorkspaces?.((s: unknown) => s) as { archivedSessionIds?: readonly string[] } | undefined;
-  const archived = new Set(ws?.archivedSessionIds ?? []);
+  const idsRaw = useSessions((s: unknown) => (s as { ids?: string[] })?.ids) as string[] | undefined;
+  const current = useSessions((s: unknown) => (s as { current?: string })?.current) as string | undefined;
+  const byId = useSessions((s: unknown) => (s as { byId?: Record<string, SessionInfo> })?.byId) as Record<string, SessionInfo> | undefined;
+  // 归档集合只订阅 archivedSessionIds 切片（数组引用稳定，非每次全量状态变化都触发）
+  const archived = useWorkspaces?.((s: unknown) => (s as { archivedSessionIds?: readonly string[] })?.archivedSessionIds) as readonly string[] | undefined;
+
   // 去重：极端重连/事件累积下 ids 可能出现重复（测试环境 18 次重连后实测每会话 3-4 份）
-  const ids = Array.from(new Set((list.ids ?? []).filter((id) => !archived.has(id))));
-  const byId = list.byId ?? {};
-  const current = list.current;
+  const archivedSet = new Set(archived ?? []);
+  const ids = Array.from(new Set((idsRaw ?? []).filter((id) => !archivedSet.has(id))));
 
   const remove = (id: string): void => {
     archive(id); // 归档成功后 workspaces.archivedSessionIds 更新 → 本列表自动隐藏
@@ -177,26 +176,51 @@ function SessionListBody({
             {wide ? '还没有会话，点上方「新会话」开始' : '—'}
           </div>
         ) : (
-          ids.map((id) => {
-            const s = byId[id];
-            if (!s || s.blank) return null;
-            const presetLabel = s.agentPreset === 'aemeath' ? '小爱同学' : s.agentPreset === 'physicist' ? '爱弥斯-拉贝尔学部学霸' : s.agentPreset ?? '';
-            return (
-              <SessionRow
-                key={id}
-                title={s.displayTitle ?? id.slice(0, 8)}
-                subtitle={presetLabel}
-                active={s.id === current}
-                onClick={() => open(id)}
-                onDelete={() => remove(id)}
-              />
-            );
-          })
+          ids.map((id) => (
+            <SessionRowMemo key={id} id={id} s={byId?.[id]} current={current} open={open} archive={remove} />
+          ))
         )}
       </div>
     </div>
   );
 }
+
+interface SessionInfo {
+  id: string;
+  displayTitle?: string;
+  agentPreset?: string;
+  running?: boolean;
+  blank?: boolean;
+}
+
+/** 行级 memo：props 稳定时跳过重渲染（第三关：全量 selector 的次级缓解）。 */
+const SessionRowMemo = memo(function SessionRowMemo({
+  id,
+  s,
+  current,
+  open,
+  archive,
+}: {
+  id: string;
+  s: SessionInfo | undefined;
+  current?: string;
+  open: (id: string) => void;
+  archive: (id: string) => void;
+}): JSX.Element | null {
+  if (!s || s.blank) return null;
+  const presetLabel = s.agentPreset === 'aemeath' ? '小爱同学' : s.agentPreset === 'physicist' ? '爱弥斯-拉贝尔学部学霸' : s.agentPreset ?? '';
+  const onClick = useCallback(() => open(id), [open, id]);
+  const onDelete = useCallback(() => archive(id), [archive, id]);
+  return (
+    <SessionRow
+      title={s.displayTitle ?? id.slice(0, 8)}
+      subtitle={presetLabel}
+      active={s.id === current}
+      onClick={onClick}
+      onDelete={onDelete}
+    />
+  );
+});
 
 /** 外层（零 hooks）：标准 kit props 由框架注入。 */
 function AemeathSessionList(props: {

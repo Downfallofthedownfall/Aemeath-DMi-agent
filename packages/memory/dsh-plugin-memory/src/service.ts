@@ -67,22 +67,22 @@ export class MemoryService extends Service {
     return out;
   }
 
-  /** 检索记忆（BM25 优先，退回 importance 排序）。 */
+  /** 检索记忆（BM25 优先，退回 importance 排序）。第三关：带 query 时也应用 preset 过滤（原实现只在不带 query 分支过滤）。 */
   search(query: string, opts: { preset?: string; topK?: number } = {}): MemorySearchResult[] {
     const all = this.allActive();
+    const candidates = opts.preset ? all.filter(({ rec }) => rec.preset === opts.preset) : all;
     if (query) {
-      const hits = bm25Search(query, all.map(({ key, rec }) => ({ id: key, content: rec.content })), opts.topK ?? 5);
+      const hits = bm25Search(query, candidates.map(({ key, rec }) => ({ id: key, content: rec.content })), opts.topK ?? 5);
       const hitIds = new Map(hits.map((h) => [h.id, h]));
       return hits
         .map((h) => {
           const hit = hitIds.get(h.id);
-          const found = hit ? all.find((a) => a.key === h.id) : undefined;
+          const found = hit ? candidates.find((a) => a.key === h.id) : undefined;
           return found ? toResult(found.key, found.rec) : undefined;
         })
         .filter((x): x is MemorySearchResult => !!x);
     }
-    return all
-      .filter(({ rec }) => (opts.preset ? rec.preset === opts.preset : true))
+    return candidates
       .sort((a, b) => b.rec.importance - a.rec.importance)
       .slice(0, opts.topK ?? 5)
       .map(({ key, rec }) => toResult(key, rec));

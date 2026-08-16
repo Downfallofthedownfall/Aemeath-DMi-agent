@@ -10,9 +10,9 @@
 //   ④ consolidateTarget —— 卸载落库前查重（merge / supersede / save）
 // ============================================================
 
-import { search as bm25Search } from './bm25.js';
+import { search as bm25Search, overlapScore } from './bm25.js';
 import type { Category } from './gatekeeper.js';
-import { decide, extractMemory, hasTimeEvidence } from './gatekeeper.js';
+import { decide, extractMemory, hasTimeEvidence, classifyKnowledgeTopic } from './gatekeeper.js';
 import type { L1Turn } from './types.js';
 
 /** 总结层产出的"用户记忆"候选（落 L2 mode / L3 global）。 */
@@ -90,7 +90,8 @@ export function fallbackUnload(turns: L1Turn[]): { result: L1SummarizeResult; dr
   let dropped = 0;
   for (const t of turns) {
     if (t.kind === 'knowledge') {
-      knowledge.push({ content: extractMemory(t.query), topic: '用户提问' });
+      // 第三关：topic 不再固定"用户提问"，按内容提取（公式/拉丁符号优先）
+      knowledge.push({ content: extractMemory(t.query), topic: classifyKnowledgeTopic(t.query) });
       continue;
     }
     const d = decide(t.query, t.reply);
@@ -111,15 +112,20 @@ export interface ExistingMemoryRef {
 
 /**
  * 落库前查重（规则级 consolidate）：
- *  - BM25 top-1 相似度 > 0.8 且内容含时间证据（考完/学会/结束…）→ supersede（替换旧记忆）
- *  - 相似度 > 0.8 → merge（合并进旧记忆）
+ *  - BM25 top-1 命中，且 bigram 重叠相似度（|∩|/min，有界 [0,1]）≥ 0.5：
+ *    - 内容含时间证据（考完/学会/结束…）→ supersede（替换旧记忆）
+ *    - 否则 → merge（合并进旧记忆）
  *  - 否则 → save（新记忆）
+ * 第三关：相似度改用有界 overlapScore（原裸 BM25 分数无量纲、随语料漂移，0.8 阈值脆弱）。
  */
 export function consolidateTarget(content: string, existing: ExistingMemoryRef[]): { action: 'save' | 'merge' | 'supersede'; targetId?: string } {
   const hits = bm25Search(content, existing, 1);
-  if (hits.length > 0 && hits[0].score > 0.8) {
-    if (hasTimeEvidence(content)) return { action: 'supersede', targetId: hits[0].id };
-    return { action: 'merge', targetId: hits[0].id };
+  if (hits.length > 0) {
+    const hit = existing.find((e) => e.id === hits[0].id);
+    if (hit && overlapScore(content, hit.content) >= 0.5) {
+      if (hasTimeEvidence(content)) return { action: 'supersede', targetId: hit.id };
+      return { action: 'merge', targetId: hit.id };
+    }
   }
   return { action: 'save' };
 }
