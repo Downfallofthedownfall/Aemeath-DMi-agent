@@ -16,11 +16,8 @@
 # ============================================================
 import os
 import sys
-import io
 import json
 import time
-import uuid
-import tempfile
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -54,10 +51,20 @@ try:
 except ImportError:
     HAS_WIN32GUI = False
 
-SCREEN_WIDTH, SCREEN_HEIGHT = pyautogui.size() if HAS_PYAUTOGUI else (1920, 1080)
-
 # C21：窗口枚举重入锁（防超时后 worker 线程堆积）
 _window_collect_lock = threading.Lock()
+# C21 加强：枚举完成事件（初始已 set=空闲）。3s 超时后旧 worker 仍在收尾时
+# 未 set → 拒绝新调用，直到旧 worker 真正结束才恢复，杜绝线程随调用堆积。
+_window_collect_done = threading.Event()
+_window_collect_done.set()
+
+# 输入钳制常量（防模型传超大参数长时间阻塞 MCP 主循环）
+MAX_CLICKS = 100
+MAX_PRESSES = 100
+MAX_DURATION_S = 10.0
+MAX_SCROLL_AMOUNT = 100
+MAX_KEYBOARD_TEXT_LEN = 2000
+MAX_ENTER_SEGMENTS = 50
 
 ALLOWED_PROGRAMS = {
     'notepad': 'notepad.exe', 'calc': 'calc.exe', 'explorer': 'explorer.exe',
@@ -97,8 +104,9 @@ def _require_deps():
 )
 def control_mouse_move(x: float, y: float, duration=0.3):
     _require_deps()
+    duration = max(0.0, min(float(duration), MAX_DURATION_S))  # 钳制移动时长
     pyautogui.moveTo(int(x), int(y), duration=duration)
-    return {"success": True, "x": int(x), "y": int(y)}
+    return {"success": True, "x": int(x), "y": int(y), "duration": duration}
 
 
 @server.tool(
@@ -117,10 +125,15 @@ def control_mouse_move(x: float, y: float, duration=0.3):
 )
 def control_mouse_click(x=None, y=None, button="left", clicks=1):
     _require_deps()
+    clicks = max(1, min(int(clicks), MAX_CLICKS))  # 钳制点击次数
+    if button not in ("left", "middle", "right"):
+        return {"success": False, "error": f"button 必须为 left/middle/right，收到: {button!r}"}
+    if (x is None) != (y is None):
+        return {"success": False, "error": "x/y 必须成对提供或都不提供"}
     if x is not None and y is not None:
-        pyautogui.click(int(x), int(y), clicks=int(clicks), button=button)
+        pyautogui.click(int(x), int(y), clicks=clicks, button=button)
     else:
-        pyautogui.click(clicks=int(clicks), button=button)
+        pyautogui.click(clicks=clicks, button=button)
     return {"success": True, "x": x, "y": y, "button": button, "clicks": clicks}
 
 
@@ -135,7 +148,8 @@ def control_mouse_click(x=None, y=None, button="left", clicks=1):
 )
 def control_mouse_scroll(amount=-3):
     _require_deps()
-    pyautogui.scroll(int(amount))
+    amount = max(-MAX_SCROLL_AMOUNT, min(int(amount), MAX_SCROLL_AMOUNT))  # 钳制滚动量
+    pyautogui.scroll(amount)
     return {"success": True, "amount": amount}
 
 
@@ -160,6 +174,12 @@ def control_keyboard_type(text: str, title=""):
     _require_deps()
     if not text:
         return {"success": True, "action": "type", "length": 0}
+    if len(text) > MAX_KEYBOARD_TEXT_LEN:
+        return {"success": False, "action": "type",
+                "error": f"text 过长（{len(text)} 字符，上限 {MAX_KEYBOARD_TEXT_LEN}）"}
+    if text.upper().count('{ENTER}') > MAX_ENTER_SEGMENTS:
+        return {"success": False, "action": "type",
+                "error": f"分段过多（{{ENTER}} 超过 {MAX_ENTER_SEGMENTS} 个）"}
 
     if title:
         try:
@@ -269,7 +289,8 @@ def control_keyboard_hotkey(keys):
 )
 def control_keyboard_press(key: str, presses=1):
     _require_deps()
-    pyautogui.press(str(key), presses=int(presses))
+    presses = max(1, min(int(presses), MAX_PRESSES))  # 钳制按压次数
+    pyautogui.press(str(key), presses=presses)
     return {"success": True, "key": key, "presses": presses}
 
 
@@ -343,10 +364,12 @@ def control_window_close(title: str):
 )
 def control_window_list():
     _require_deps()
-    # C21：重入守卫——上一次枚举超时后 worker 线程仍在跑时，跳过本次调用，
-    # 防止窗口枚举线程随超时调用无限堆积（worker 为 daemon，不阻塞退出）。
-    if _window_collect_lock.locked():
+    # C21：重入守卫——上一次枚举超时后 worker 线程仍在跑时（完成事件未 set），
+    # 跳过本次调用，防止窗口枚举线程随超时调用无限堆积（worker 为 daemon，
+    # 不阻塞退出）；旧 worker 真正结束后完成事件 set，服务恢复可用。
+    if not _window_collect_done.is_set():
         return {"success": False, "error": "上一次窗口枚举尚未完成（3s 超时后仍在收尾），请稍后重试"}
+    _window_collect_done.clear()
     with _window_collect_lock:
         results = []
         done = threading.Event()
@@ -385,6 +408,7 @@ def control_window_list():
                 err_holder['error'] = str(e)
             finally:
                 done.set()
+                _window_collect_done.set()  # 收尾完成 → 允许下次调用
 
         threading.Thread(target=_collect, daemon=True).start()
         done.wait(timeout=3.0)
@@ -412,7 +436,9 @@ def control_position():
     "control_open",
     "打开程序/URL：仅白名单程序（notepad/calc/explorer/msedge/chrome/"
     "firefox/mspaint/taskmgr/control，不含 cmd/powershell）、存在的 .exe 路径、"
-    "或 http(s) URL。可带 text 在程序打开后自动输入。",
+    "或 http(s) URL。可带 text 在程序打开后自动输入。"
+    "⚠ 注意：任意存在的 .exe 路径会被直接启动（等同以本机用户权限运行该程序），"
+    "仅在用户明确要求打开时使用，不要自行启动未在对话中出现的程序。",
     {
         "type": "object",
         "properties": {
@@ -428,9 +454,9 @@ def control_open(program: str, text=""):
     prog = program.lower()
     if prog in ALLOWED_PROGRAMS:
         os.startfile(ALLOWED_PROGRAMS[prog])
-    elif program.endswith('.exe') and os.path.isfile(program):
+    elif prog.endswith('.exe') and os.path.isfile(program):
         os.startfile(program)
-    elif program.startswith(('https://', 'http://')):
+    elif prog.startswith(('https://', 'http://')):
         import webbrowser
         webbrowser.open(program)
     else:

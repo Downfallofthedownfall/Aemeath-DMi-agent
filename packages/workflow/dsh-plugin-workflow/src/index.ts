@@ -70,6 +70,8 @@ import sys, json
 try:
     from sympy import symbols, sympify, solve, N
     expr_s = sys.argv[1]; claimed_s = sys.argv[2]; var_s = sys.argv[3] if len(sys.argv) > 3 else 'x'
+    if len(expr_s) > 500 or len(claimed_s) > 500:
+        print(json.dumps({'verified': False, 'error': 'input too long'})); sys.exit(0)
     x = symbols(var_s)
     expr = sympify(expr_s)
     sols = solve(expr, x)
@@ -161,6 +163,8 @@ def render(vec):
 try:
     expr_s = sys.argv[1]
     expected_s = sys.argv[2] if len(sys.argv) > 2 else ''
+    if len(expr_s) > 500 or len(expected_s) > 500:
+        print(json.dumps({'ok': False, 'error': 'input too long'})); sys.exit(0)
     dims = dim_of(expr_s)
     if dims is None:
         print(json.dumps({'ok': False, 'error': '表达式中含无法判定的量（非单位符号），请只使用单位/数值组合' }))
@@ -271,6 +275,21 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
       },
       execute: async (args: { expression: string; claimed: string; variable?: string }) => {
+        // 第三关：输入钳制（防 LLM 被诱导提交超长/超大指数表达式 → sympify 大整数计算炸弹）
+        const MAX_EXPR_LEN = 300;
+        if (args.expression.length > MAX_EXPR_LEN || args.claimed.length > MAX_EXPR_LEN) {
+          return { verified: false, error: `表达式/声称解过长（≤${MAX_EXPR_LEN} 字符），已拒绝计算` };
+        }
+        // 大整数炸弹（sympify 会先把具体数值的幂算成完整大整数，可到 10 亿位级别）：
+        //   ① `2**100000`——** 后 ≥5 位数字的字面指数；
+        //   ② `10**(10**10)`——具体底数后紧跟括号指数（** 后是 `(`）；
+        //   ③ `10**10**10`——链式 **（sympy 按右结合解析 → 10**(10**10)，等价炸弹）。
+        // 符号表达式（x**(1/2)、(x+1)**(1/2)）不含这三类，不受影响；子进程 10s
+        // 超时仍是最终兜底（正则覆盖常见形式，不追求完备）。
+        const DANGEROUS_POW = /(\d+\s*\*\*\s*\d{5,})|(\d+\s*\*\*\s*\()|(\*\*\s*\d+\s*\*\*)/;
+        if (DANGEROUS_POW.test(args.expression) || DANGEROUS_POW.test(args.claimed)) {
+          return { verified: false, error: '表达式含超大指数/嵌套指数运算（如 2**100000、10**(10**10)），已拒绝计算' };
+        }
         try {
           const { stdout } = await runPython('python', ['-c', SYMPY_SCRIPT, args.expression, args.claimed, args.variable ?? 'x'], {
             encoding: 'utf-8',
@@ -309,6 +328,10 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
           render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
         },
         execute: async (args: { expression: string; expected?: string }) => {
+          const MAX_EXPR_LEN = 300;
+          if (args.expression.length > MAX_EXPR_LEN || (args.expected?.length ?? 0) > MAX_EXPR_LEN) {
+            return { ok: false, error: `表达式过长（≤${MAX_EXPR_LEN} 字符），已拒绝检查` };
+          }
           try {
             const argv = ['-c', DIMENSION_SCRIPT, args.expression];
             if (args.expected) argv.push(args.expected);

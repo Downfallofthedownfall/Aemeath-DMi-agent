@@ -137,6 +137,10 @@ export function SidebarBrandHeader({ wide }: { wide: boolean }): JSX.Element {
   );
 }
 
+/** 模块级稳定 no-op hook（M11：useWorkspaces 缺失时的兜底——保持 SessionListBody
+ *  内 hook 调用无条件，避免条件调用违反 Rules of Hooks）。 */
+const NOOP_USE_WORKSPACES = (): unknown => undefined;
+
 /** 会话列表主体：useSessions / useWorkspaces 由框架注入（标准 kit），非伪造。
  *  第三关：selector 收窄到所需切片（原全量 (s) => s 每次状态变化都重渲染），
  *  行组件 memo + useCallback，无关更新时跳过重渲染。 */
@@ -148,7 +152,7 @@ function SessionListBody({
   archive,
 }: {
   useSessions: (selector: (s: unknown) => unknown) => unknown;
-  useWorkspaces?: (selector: (s: unknown) => unknown) => unknown;
+  useWorkspaces: (selector: (s: unknown) => unknown) => unknown;
   wide: boolean;
   open: (id: string) => void;
   archive: (id: string) => void;
@@ -157,7 +161,7 @@ function SessionListBody({
   const current = useSessions((s: unknown) => (s as { current?: string })?.current) as string | undefined;
   const byId = useSessions((s: unknown) => (s as { byId?: Record<string, SessionInfo> })?.byId) as Record<string, SessionInfo> | undefined;
   // 归档集合只订阅 archivedSessionIds 切片（数组引用稳定，非每次全量状态变化都触发）
-  const archived = useWorkspaces?.((s: unknown) => (s as { archivedSessionIds?: readonly string[] })?.archivedSessionIds) as readonly string[] | undefined;
+  const archived = useWorkspaces((s: unknown) => (s as { archivedSessionIds?: readonly string[] })?.archivedSessionIds) as readonly string[] | undefined;
 
   // 去重：极端重连/事件累积下 ids 可能出现重复（测试环境 18 次重连后实测每会话 3-4 份）
   const archivedSet = new Set(archived ?? []);
@@ -232,7 +236,8 @@ function AemeathSessionList(props: {
 }): JSX.Element | null {
   const { wide, useSessions, useWorkspaces, open, archive } = props;
   if (!useSessions || !open || !archive) return null;
-  return <SessionListBody useSessions={useSessions} useWorkspaces={useWorkspaces} wide={!!wide} open={open} archive={archive} />;
+  // M11：useWorkspaces 缺失时用稳定 no-op 兜底，保证 SessionListBody 内 hook 恒调用
+  return <SessionListBody useSessions={useSessions} useWorkspaces={useWorkspaces ?? NOOP_USE_WORKSPACES} wide={!!wide} open={open} archive={archive} />;
 }
 
 /** 注册：shadow 官方 sidebar.workspaces（会话列表 + 品牌头部）。 */

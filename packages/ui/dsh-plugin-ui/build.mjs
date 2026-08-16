@@ -57,7 +57,10 @@ Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });`,
   // 其他任何 esbuild 失败（语法错误/构建错误等）一律重抛，绝不带过期 bundle 静默出货。
   const { existsSync } = await import('node:fs');
   const msg = e && e.message ? String(e.message) : String(e);
-  const isSandboxSpawnBlock = /spawn.*EPERM|EPERM|EACCES|operation not permitted/i.test(msg);
+  // M12：只匹配 esbuild 服务 spawn 阶段被拒（沙箱 EPERM）——不要匹配任何含
+  // EPERM/EACCES 的任意错误（如写 lib/client.js 权限被拒），否则真实构建失败
+  // 会被静默吞掉、保留过期 bundle。
+  const isSandboxSpawnBlock = /(esbuild.*spawn|spawn.*(esbuild|EPERM|EACCES)|could not spawn)/i.test(msg);
   if (existsSync(outPath) && isSandboxSpawnBlock) {
     console.warn(`[dsh-plugin-ui] ⚠ esbuild 在当前权限下不可用（${msg.slice(0, 80)}…），保留既有 client bundle（完整权限重跑 build.mjs 重新打包）`);
   } else {

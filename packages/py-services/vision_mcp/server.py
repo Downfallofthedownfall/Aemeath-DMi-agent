@@ -11,7 +11,6 @@
 # ============================================================
 import os
 import sys
-import io
 import json
 import threading
 
@@ -30,7 +29,6 @@ DEVICE = None
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolov8n.pt')
 _model = None
 _ocr_reader = None
-_ocr_loaded = False
 _ocr_lock = threading.Lock()      # EasyOCR reader 非线程安全（预热线程 vs 工具调用），readtext 串行化
 _ocr_load_lock = threading.Lock()  # 加载互斥（双检锁，防预热与工具调用重复/交错加载）
 _deps_lock = threading.Lock()      # 依赖导入互斥（全局赋值 np/cv2/Image/mss/YOLO 防竞争）
@@ -100,26 +98,23 @@ def _get_model():
                 print("[vision_mcp] YOLOv8 加载完成", file=sys.stderr)
     return _model
 def _get_ocr():
-    global _ocr_reader, _ocr_loaded
-    if _ocr_reader is not None:
-        return _ocr_reader if _ocr_reader is not False else None
+    global _ocr_reader
+    if _ocr_reader not in (None, False):
+        return _ocr_reader
     with _ocr_load_lock:
-        if _ocr_reader is not None:
-            return _ocr_reader if _ocr_reader is not False else None
-        if _ocr_loaded:
-            # 另一线程正持有锁加载中：这里到不了（持锁），防御性返回
-            return None
-        _ocr_loaded = True
-        _ensure_deps()
+        if _ocr_reader not in (None, False):
+            return _ocr_reader
         try:
+            _ensure_deps()
             import easyocr
             print("[vision_mcp] 加载 EasyOCR（首次，较慢）…", file=sys.stderr)
             _ocr_reader = easyocr.Reader(['ch_sim', 'en'], gpu=(DEVICE == 'cuda'))
             print("[vision_mcp] EasyOCR 加载完成", file=sys.stderr)
         except Exception as e:  # noqa: BLE001
-            print(f"[vision_mcp] EasyOCR 加载失败: {e}", file=sys.stderr)
+            # 置 False 而非保持失败态：允许下次调用重试加载（原实现失败后 OCR 永久失效）
+            print(f"[vision_mcp] EasyOCR 加载失败: {e}（下次调用将重试）", file=sys.stderr)
             _ocr_reader = False
-    return _ocr_reader if _ocr_reader is not False else None
+    return _ocr_reader if _ocr_reader not in (None, False) else None
 
 
 def _capture_screen():
@@ -149,7 +144,7 @@ def _yolo_detections(img_cv):
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             conf = float(box.conf[0])
             cls_id = int(box.cls[0])
-            cls_name = COCO_CLASSES[cls_id] if cls_id < len(COCO_CLASSES) else f'class_{cls_id}'
+            cls_name = COCO_CLASSES[cls_id] if 0 <= cls_id < len(COCO_CLASSES) else f'class_{cls_id}'
             detections.append({
                 "class": cls_name,
                 "confidence": round(conf, 2),

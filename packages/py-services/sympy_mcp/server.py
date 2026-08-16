@@ -9,20 +9,19 @@
 # 安全（v2 加固）：
 #   - 所有 parse/simplify/求值一律在子进程执行（主进程不 eval 任何模型输入）；
 #   - parse_expr 统一走 safe_parse：token 黑名单（拒绝 __ 开头的名称与 . 属性访问）
-#     + global_dict={'__builtins__': {}}（eval 时无任何内建）；
+#     + global_dict={'__builtins__': {}}（eval 时无任何内建）+ 长度上限；
 #   - compute_numeric 子进程：预载科学栈后安装严格导入白名单（仅
-#     numpy/scipy/sympy/math/uncertainties 五模块，删除 _STDLIB/sys.modules/
-#     level>0 直通分支）+ 置空危险内建 + 用户代码在隔离命名空间执行（不泄漏
-#     _sys/_orig_import/builtins）+ 内存限制（尽力而为）+ 超时钳制。
-#   真实边界 = 子进程隔离（沙箱内可被深度内省绕过，但可显著抬高利用成本）。
+#     numpy/scipy/sympy/math/uncertainties 五模块）+ 用户命名空间只暴露
+#     白名单内建（无 type/object/getattr/globals 等内省面）+ import 闸门 +
+#     子进程环境白名单（不泄漏凭据类变量）+ 内存限制（尽力而为，Windows 不生效）+
+#     超时钳制 + 输出上限。
+#   真实边界 = 子进程隔离（受限但**非安全沙箱**：属性内省可在 CPython 内部分
+#   绕过白名单，等同本用户权限的任意代码执行；请勿放入敏感信息）。
 # 运行：python packages/py-services/sympy_mcp/server.py
 # ============================================================
 import os
 import sys
-import io
 import json
-import base64
-import random
 import threading
 import subprocess
 
@@ -63,13 +62,30 @@ def _clamp_timeout(t, lo=1, hi=30):
         return hi
 
 
+# 子进程环境白名单：只透传运行 numpy/scipy/matplotlib 所需的最小环境，
+# 去掉凭据/密钥类变量（沙箱逃逸后也读不到 API key/token）。
+_ENV_KEEP = frozenset({
+    'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP',
+    'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',  # HOMEDRIVE/HOMEPATH：部分 Windows 库（如 matplotlib 字体发现）依赖
+    'APPDATA', 'LOCALAPPDATA', 'NUMBER_OF_PROCESSORS',
+    'OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS',
+})
+
+
+def _child_env():
+    env = {'PYTHONIOENCODING': 'utf-8'}
+    for k, v in os.environ.items():
+        if k in _ENV_KEEP or k.startswith('PYTHON'):
+            env[k] = v
+    return env
+
+
 def _run_captured(argv, timeout, max_stdout, max_stderr):
     """带输出上限的子进程执行（防无界捕获：超限部分截断丢弃，管道仍被排空防死锁）。
 
     返回 dict：{returncode, stdout, stderr, timed_out, stdout_truncated, stderr_truncated}
     """
-    env = dict(os.environ)
-    env['PYTHONIOENCODING'] = 'utf-8'
+    env = _child_env()
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding='utf-8', errors='replace', env=env)
     result = {'stdout': '', 'stderr': '', 'returncode': None,
@@ -93,8 +109,8 @@ def _run_captured(argv, timeout, max_stdout, max_stderr):
             result[sink] = ''.join(buf)
 
     threads = [
-        threading.Thread(target=_pump, args=(proc.stdout, 'stdout', max_stdout, 'stdout_truncated')),
-        threading.Thread(target=_pump, args=(proc.stderr, 'stderr', max_stderr, 'stderr_truncated')),
+        threading.Thread(target=_pump, args=(proc.stdout, 'stdout', max_stdout, 'stdout_truncated'), daemon=True),
+        threading.Thread(target=_pump, args=(proc.stderr, 'stderr', max_stderr, 'stderr_truncated'), daemon=True),
     ]
     for t in threads:
         t.start()
@@ -163,6 +179,8 @@ def _safe_global():
 def safe_parse(text, local=None):
     if not text or not text.strip():
         raise ValueError("空表达式")
+    if len(text) > 500:
+        raise ValueError("表达式过长（≤500 字符）")
     return parse_expr(text, local_dict=local or {},
                       global_dict=_safe_global(),
                       transformations=_SAFE_TRANSFORMS)
@@ -176,6 +194,10 @@ def do_symbolic(expression, vars_dict=None, timeout=15):
     """符号计算：子进程受限名字空间解析（带超时，防复杂表达式卡死）。"""
     if not expression or not expression.strip():
         return {"success": False, "error": "缺少表达式"}
+    for k in (vars_dict or {}):
+        # vars 键白名单：拒绝 __ 前缀与 builtins 键（防覆盖 local 内部名）
+        if not isinstance(k, str) or k.startswith('__') or k == '__builtins__':
+            return {"success": False, "error": f"非法变量名: {k}"}
     script = SAFE_PARSE_SNIPPET + f'''# -*- coding: utf-8 -*-
 import json, sys, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -262,11 +284,40 @@ builtins.__import__ = _safe_import
 for _bad in ('eval', 'exec', 'open', 'compile', 'input', 'breakpoint'):
     setattr(builtins, _bad, None)
 
+# 4.5) 用户可见内建白名单：不提供 type/object/getattr/setattr/globals/locals/
+#      vars/dir/hasattr/__import__ 等内省逃逸面（注意：属性访问本身无法在
+#      CPython 内彻底禁止，白名单是提高利用成本，不是安全边界）
+_SAFE_BUILTINS = {
+    'abs': abs, 'min': min, 'max': max, 'round': round, 'sum': sum, 'pow': pow,
+    'len': len, 'range': range, 'enumerate': enumerate, 'zip': zip,
+    'map': map, 'filter': filter, 'sorted': sorted, 'reversed': reversed,
+    'any': any, 'all': all, 'iter': iter, 'next': next,
+    'list': list, 'dict': dict, 'set': set, 'tuple': tuple, 'frozenset': frozenset,
+    'str': str, 'int': int, 'float': float, 'bool': bool, 'complex': complex,
+    'bytes': bytes, 'memoryview': memoryview, 'slice': slice,
+    'repr': repr, 'format': format, 'chr': chr, 'ord': ord,
+    'hex': hex, 'oct': oct, 'bin': bin, 'hash': hash, 'id': id,
+    'divmod': divmod, 'isinstance': isinstance, 'issubclass': issubclass,
+    'callable': callable,
+    # import 语句在 exec 命名空间中解析 __import__；这里放的是已被替换为
+    # _safe_import 的闸门函数（builtins.__import__ = _safe_import 在前面执行），
+    # 既让 import 语句工作，又保持白名单导入限制
+    '__import__': builtins.__import__,
+    'print': print,
+    'True': True, 'False': False, 'None': None,
+    'Exception': Exception, 'ValueError': ValueError, 'TypeError': TypeError,
+    'RuntimeError': RuntimeError, 'ArithmeticError': ArithmeticError,
+    'OverflowError': OverflowError, 'ZeroDivisionError': ZeroDivisionError,
+    'IndexError': IndexError, 'KeyError': KeyError, 'AttributeError': AttributeError,
+    'ImportError': ImportError, 'StopIteration': StopIteration,
+}
+
 # 5) 用户命名空间：只暴露公共名（math/np/integrate/optimize/signal），
 #    不泄漏 _sys/_orig_import/_safe_import/builtins/_ALLOWED 等内部名；
-#    __builtins__ 用已 sanitize 的 builtins 字典（__import__ 已是白名单闸门）
+#    __builtins__ 用白名单字典（不含 type/object/getattr/globals 等内省面；
+#    import 语句仍由 builtins.__import__ 的 _safe_import 闸门把关）
 _ns = {k: globals()[k] for k in ('math', 'np', 'integrate', 'optimize', 'signal') if k in globals()}
-_ns['__builtins__'] = builtins.__dict__
+_ns['__builtins__'] = _SAFE_BUILTINS
 '''
 
 
@@ -279,6 +330,8 @@ def do_numeric(code, timeout=10, max_output=10240):
     """
     if not code or not code.strip():
         return {"success": False, "error": "缺少代码"}
+    if len(code) > 2000:
+        return {"success": False, "error": "代码过长（≤2000 字符）"}
     full_code = SANDBOX_PRELUDE + "\n" + f"_exec(_compile({code!r}, '<user>', 'exec'), _ns)\n"
     r = _run_captured([sys.executable, '-u', '-c', full_code], timeout, max_output, max_output)
     if r['timed_out']:
@@ -298,6 +351,8 @@ def do_plot(expression, x_min=-5, x_max=5, y_label='', caption='', timeout=30):
     """绘图：子进程内 safe_parse + matplotlib 生成 PNG，base64 输出。"""
     if not expression or not expression.strip():
         return {"success": False, "error": "缺少表达式"}
+    if len(y_label) > 100 or len(caption) > 100:
+        return {"success": False, "error": "y_label/caption 过长（≤100 字符）"}
     script = SAFE_PARSE_SNIPPET + f'''# -*- coding: utf-8 -*-
 import json, sys, io, base64
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -441,12 +496,13 @@ def compute_symbolic(expression: str, vars=None, timeout=15):  # noqa: A002
 
 @server.tool(
     "compute_numeric",
-    "数值计算：在受限 numpy/scipy 沙箱子进程中执行 Python 代码。"
+    "数值计算：在子进程受限命名空间中执行 Python 代码。"
     "返回 {stdout, stderr, returncode}——stdout 为代码真实输出（stdout/stderr 各截断"
     " 10KB，超限带 stdout_truncated 标记）；失败/超时返回 error 字段。"
     "预置 import math / numpy as np / scipy 的 integrate、optimize、signal。"
-    "用于需要数值解的场合（求根、积分、拟合）。禁止 import 白名单外模块（含 os/subprocess），"
-    "危险内建（eval/exec/open/compile）已禁用，文件 I/O 不可用。",
+    "导入仅限 numpy/scipy/sympy/math/uncertainties（含 os/subprocess 在内的其余模块被拒），"
+    "内建为白名单子集。⚠ 注意：这是受限环境而非安全沙箱，属性内省可能绕过限制，"
+    "等价于以你的用户权限执行代码——请勿在代码中放入密钥/敏感信息，仅用于纯计算。",
     {
         "type": "object",
         "properties": {

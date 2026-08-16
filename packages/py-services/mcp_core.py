@@ -21,6 +21,9 @@ import traceback
 # _send 永远走这个通道，保证响应不被吞。
 _PROTO_STDOUT = sys.stdout
 
+# 单条 JSON-RPC 消息最大长度（防失控客户端超大行耗尽内存）
+MAX_LINE_LEN = 1024 * 1024
+
 
 class McpServer:
     def __init__(self, name: str, version: str = "0.1.0"):
@@ -151,14 +154,22 @@ class McpServer:
         sys.stdout = sys.stderr
         self._log(f"[{self.name}] MCP server 启动（{self.name} v{self.version}，"
                   f"{len(self._tools)} 个工具）")
-        for line in sys.stdin:
-            line = line.strip()
+        for raw in sys.stdin:
+            if len(raw) > MAX_LINE_LEN:
+                # 防失控客户端超大行：整体丢弃并回 -32700，不整段解析
+                self._log(f"[mcp_core] 忽略超长行（{len(raw)} 字节 > {MAX_LINE_LEN}）")
+                self._send({"jsonrpc": "2.0", "id": None,
+                            "error": {"code": -32700, "message": "Parse error: line too long"}})
+                continue
+            line = raw.strip()
             if not line:
                 continue
             try:
                 msg = json.loads(line)
-            except json.JSONDecodeError:
-                # 第三关：JSON-RPC 解析失败应回 -32700（id=null），而非只记日志静默丢弃
+            except (json.JSONDecodeError, RecursionError, MemoryError):
+                # 第三关：JSON-RPC 解析失败应回 -32700（id=null），而非只记日志静默丢弃；
+                # 深嵌套 JSON 会抛 RecursionError（不是 JSONDecodeError），一并拦截
+                # 防整个 server 崩溃
                 self._log(f"[mcp_core] 忽略无法解析的行: {line[:200]}")
                 self._send({"jsonrpc": "2.0", "id": None,
                             "error": {"code": -32700, "message": "Parse error"}})
@@ -168,3 +179,7 @@ class McpServer:
                     self._handle(msg)
                 except Exception:  # noqa: BLE001
                     self._log(f"[mcp_core] 致命异常:\n{traceback.format_exc()}")
+            elif not isinstance(msg, dict):
+                # 非对象请求（批处理数组/标量/空）：JSON-RPC 规范要求回 -32600
+                self._send({"jsonrpc": "2.0", "id": None,
+                            "error": {"code": -32600, "message": "Invalid Request"}})

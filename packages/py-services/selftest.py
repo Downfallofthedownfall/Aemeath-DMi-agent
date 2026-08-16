@@ -6,6 +6,7 @@
 # ============================================================
 import json
 import os
+import queue
 import subprocess
 import sys
 import time
@@ -35,6 +36,11 @@ class MCPClient:
         # C21：后台线程持续排空 stderr（stderr=PIPE 不读会写满 64KB 缓冲伪死锁）
         self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
         self._stderr_thread.start()
+        # stdout 也由后台线程排空到队列——recv 用 queue.get(timeout) 实现真正
+        # 的超时（readline 阻塞读会让服务器挂起时自测无限卡住）
+        self._out_q = queue.Queue()
+        self._stdout_thread = threading.Thread(target=self._drain_stdout, daemon=True)
+        self._stdout_thread.start()
         time.sleep(startup_wait)  # 给模型导入/启动留时间
 
     def _drain_stderr(self):
@@ -43,6 +49,13 @@ class MCPClient:
                 self._stderr_buf.append(line)
                 if len(self._stderr_buf) > 500:
                     self._stderr_buf.pop(0)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _drain_stdout(self):
+        try:
+            for line in self.proc.stdout:
+                self._out_q.put(line)
         except Exception:  # noqa: BLE001
             pass
 
@@ -60,20 +73,25 @@ class MCPClient:
         return self.recv()
 
     def recv(self, timeout=300):
-        # 阻塞读一行；EOF 且进程已退出 = 服务器崩溃（立即报错，不再空转）
+        # 从 stdout 队列阻塞读（queue.get 带真实超时）；EOF 且进程已退出 = 崩溃
         deadline = time.time() + timeout
-        while time.time() < deadline:
+        while True:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"server 已退出 rc={self.proc.returncode}，"
                                    f"stderr={self.stderr_tail()}")
-            line = self.proc.stdout.readline()
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise TimeoutError(f"等待响应超时（{timeout}s）")
+            try:
+                line = self._out_q.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            line = line.strip()
             if not line:
-                time.sleep(0.1)
                 continue
             msg = json.loads(line)
             if msg.get("id") == self.id:
                 return msg
-        raise TimeoutError(f"等待响应超时（{timeout}s）")
 
     def close(self):
         try:
@@ -132,7 +150,8 @@ def main():
             client = MCPClient(spec["argv"], ROOT, spec.get("startup_wait", 3.0))
             init = client.send("initialize", {"protocolVersion": "2025-06-18",
                                               "capabilities": {}, "clientInfo": {"name": "selftest"}})
-            assert init.get("result", {}).get("protocolVersion") == "2025-06-18", "initialize 版本回显失败"
+            if init.get("result", {}).get("protocolVersion") != "2025-06-18":
+                raise RuntimeError(f"initialize 版本回显失败: {init}")
             client.send("notifications/initialized", notify=True)
             lst = client.send("tools/list")
             tools = {t["name"] for t in lst["result"]["tools"]}

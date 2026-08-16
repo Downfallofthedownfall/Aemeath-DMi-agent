@@ -42,11 +42,16 @@ export interface CredentialsFace {
   getSnapshot(): Record<string, CredentialView | undefined>;
 }
 
+/** SettingsScope 扩展：额外暴露 reload（供 settings/document-updated 事件刷新开关）。 */
+export interface FetchScope extends SettingsScope<Record<string, unknown>> {
+  load(): Promise<void>;
+}
+
 export interface Faces {
   settingsApi: SettingsBridge;
   role: RoleFace;
   credentials: CredentialsFace;
-  scopes: Map<string, SettingsScope<Record<string, unknown>>>;
+  scopes: Map<string, FetchScope>;
 }
 
 /** 构建全部数据 face（在 client apply 中调用一次，随后分发给各注册点）。 */
@@ -147,7 +152,7 @@ export function createFaces(ctx: ClientContext): Faces {
   void credentialsFace.refresh();
 
   // —— settings scopes（引擎插件 namespaces 的浏览器端视图）——
-  const scopes = new Map<string, SettingsScope<Record<string, unknown>>>();
+  const scopes = new Map<string, FetchScope>();
   for (const ns of FEATURE_NAMESPACES) {
     scopes.set(ns, makeFetchScope(ns, settingsApi));
   }
@@ -163,7 +168,7 @@ export function createFaces(ctx: ClientContext): Faces {
 function makeFetchScope(
   ns: string,
   api: SettingsBridge,
-): SettingsScope<Record<string, unknown>> {
+): FetchScope {
   type Snapshot = SettingsScopeSnapshot<Record<string, unknown>>;
   let snap: Snapshot = {
     status: 'loading',
@@ -210,6 +215,9 @@ function makeFetchScope(
       listeners.add(l);
       return () => listeners.delete(l);
     },
+    // M9：显式暴露 load（原实现未返回、调用方 as never 空转 → document-updated
+    // 事件实际不刷新开关）。闭包箭头保证 this 绑定正确。
+    load: (): Promise<void> => load(),
     set: async (field: string, value: unknown): Promise<void> => {
       await enqueueWrite(() => api.write(ns, { patch: { [field]: value } }));
       await load();
@@ -220,5 +228,5 @@ function makeFetchScope(
       await enqueueWrite(() => api.write(ns, { unset: [field] }));
       await load();
     },
-  } as unknown as SettingsScope<Record<string, unknown>>;
+  };
 }

@@ -13,6 +13,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
+import { lookup } from 'node:dns/promises';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -107,6 +108,53 @@ export function extractText(blocks: readonly { type?: string; text?: string }[] 
     .join('')
     .trim();
 }
+
+// ============================================================
+// web_scraper SSRF 防护（S6）：拒绝私网/回环/保留地址，防止模型被诱导
+// 抓取本地服务（含 dsh 自身的管理端点、其他 localhost 应用）。
+// 先对 URL hostname 做字面量校验（直接 IP），再 DNS 解析校验（防域名指向内网）。
+// ============================================================
+const IPV4_PART = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+export function isPrivateHostname(hostname: string): boolean {
+  const h = (hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h.startsWith('::ffff:')) return isPrivateHostname(h.slice(7)); // IPv4-mapped IPv6
+  if (h.includes(':')) {
+    // IPv6：回环 ::1、链路本地 fe80::/10、ULA fc00::/7、IPv4 兼容
+    if (h === '::1' || h === '::') return true;
+    if (/^fe[89ab]/.test(h) || /^f[cd]/.test(h)) return true;
+    return false;
+  }
+  const m = h.match(IPV4_PART);
+  if (!m) return false; // 域名：交给 DNS 解析后校验
+  const [a, b, c] = m.slice(1).map(Number);
+  if (a === 10 || a === 127 || a === 0 || a >= 224) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 169 && b === 254) return true; // link-local
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  return false;
+}
+
+async function resolveBlocksPrivate(url: string): Promise<boolean> {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+    if (isPrivateHostname(u.hostname)) return true;
+    const addrs = await lookup(u.hostname, { all: true });
+    return addrs.length === 0 || addrs.some(({ address }) => isPrivateHostname(address));
+  } catch {
+    return true; // URL 非法 / DNS 解析失败：一律拒绝
+  }
+}
+
+// ⚠ 已知残留：DNS rebinding（TOCTOU）。此处先 lookup 校验、随后 fetch 由 Node
+// 在连接时重新解析——恶意域名可在两次解析之间从公网 IP 切到内网，绕过本检查。
+// 对本地桌宠威胁模型影响小（需攻击者控制被抓取域名的 DNS 且内网可达），故未做
+// 钉 IP + Host 头的严格化；如需加固，改为自行解析后经自定义 Agent/net.connect
+// 连接已校验的公网 IP 并携带 Host 头。
 
 // ============================================================
 // 插件主体
@@ -206,6 +254,10 @@ export function apply(ctx: Context, config: CommonConfig): void {
       execute: async (args: { url: string }) => {
         const url = args.url;
         try {
+          // S6：SSRF 防护——私网/回环/保留地址或非 http(s) 一律拒绝
+          if (await resolveBlocksPrivate(url)) {
+            return `Web scraper error: URL 不可访问（拒绝私网/回环/保留地址或非 http(s)）: ${url.slice(0, 120)}`;
+          }
           const resp = await fetch(url, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
             signal: AbortSignal.timeout(10_000),

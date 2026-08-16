@@ -364,7 +364,7 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
             border: '1px solid var(--dsw-alias-border-l1)',
             borderRadius: 12,
             overflow: 'hidden',
-            background: 'var(--dsw-alias-bg-subtle)',
+            background: 'var(--dsw-alias-bg-layer-1)',
           }}
         >
           {FEATURES.map((f) => (
@@ -386,7 +386,7 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
             border: '1px solid var(--dsw-alias-border-l1)',
             borderRadius: 12,
             padding: '12px 14px',
-            background: 'var(--dsw-alias-bg-subtle)',
+            background: 'var(--dsw-alias-bg-layer-1)',
           }}
         >
           <MemoryPanel />
@@ -403,7 +403,7 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
             border: '1px solid var(--dsw-alias-border-l1)',
             borderRadius: 12,
             overflow: 'hidden',
-            background: 'var(--dsw-alias-bg-subtle)',
+            background: 'var(--dsw-alias-bg-layer-1)',
           }}
         >
           {CREDENTIALS.map((c) => (

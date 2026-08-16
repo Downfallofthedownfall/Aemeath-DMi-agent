@@ -500,6 +500,32 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     }
   };
 
+  /**
+   * 陈旧 L1 兜底卸载：攒批（未达 minBatch）且长期未更新的会话，规则兜底卸载并清空
+   * ——防 LLM 攒批模式下 l1 域表行随废弃会话无限累积（session/flush 在批次不足时
+   * 会 early return 保留缓冲）。
+   */
+  const flushStaleL1 = async (sid: string, reason: string): Promise<void> => {
+    if (summarizing.has(sid)) return;
+    const turns = memoryService.l1Turns(sid);
+    if (!turns.length) return;
+    summarizing.add(sid);
+    try {
+      const preset = turns[0].preset;
+      const fb = fallbackUnload(turns);
+      for (const m of fb.result.memories) await applyMemoryCandidate(m, preset, sid);
+      if (knowledgeEnabled) for (const k of fb.result.knowledge) await applyKnowledgeCandidate(k, preset, sid, 'user_query');
+      await auditWrite('l1_stale_flush', undefined, `${turns.length} 轮陈旧缓冲规则兜底卸载（${reason}）`);
+      log(`L1 陈旧兜底卸载（${sid.slice(0, 8)}，${reason}）：${turns.length} 轮 → ${fb.result.memories.length} 记忆 + ${fb.result.knowledge.length} 知识`);
+      await memoryService.l1Remove(sid, turns);
+    } catch (e) {
+      await auditWrite('l1_error', undefined, `L1 陈旧卸载失败: ${(e as Error).message}`);
+      warn(`L1 陈旧卸载失败（${sid.slice(0, 8)}）: ${(e as Error).message}`);
+    } finally {
+      summarizing.delete(sid);
+    }
+  };
+
   const resolveLlmKey = async (): Promise<string> => {
     if (llm.apiKey) return llm.apiKey;
     try {
@@ -546,6 +572,12 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     if (!preset) return decision;
 
+    // 第三关：召回注入只在每轮第一步（step===1）执行。dsh-agent-loop 会把每次
+    // pre-step 注入的消息 append 进会话历史，并被后续每个 step 的 LLM 请求整体
+    // 包含——若每个 step 都注入同一份召回块，多 step 解题流程（compute_verify
+    // 等工具循环）上下文会随 step 数线性膨胀。
+    if (payload.step !== 1) return decision;
+
     const now = Date.now();
     const top = memoryService.recallForPreset(preset, topK);
     if (!top.length) return decision;
@@ -577,7 +609,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   });
   log('session/flush 已接入（L1 缓冲总结卸载 + 会话残留清理）');
 
-  // ---- 衰减（宿主级定时）+ 沉淀 ----
+  // ---- 衰减（宿主级定时）+ 沉淀 + L1 陈旧清理 ----
   const decayTimer = setInterval(() => {
     const now = Date.now();
     for (const { key, rec } of memoryService.list()) {
@@ -587,6 +619,18 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           .update(key, (cur) => ({ ...cur, importance: next, status: next < 30 ? 'dormant' : cur.status }))
           .then(() => auditWrite('decay', key, `importance ${rec.importance}→${next}`))
           .catch(() => undefined);
+      }
+    }
+    // L1 陈旧缓冲清理：最后轮次超过 14 天未更新的会话 → 规则兜底卸载并清空
+    const STALE_L1_DAYS = 14;
+    const staleCutoff = now - STALE_L1_DAYS * 24 * 3600 * 1000;
+    for (const sid of memoryService.l1Sessions()) {
+      const turns = memoryService.l1Turns(sid);
+      // 用 reduce 而非 Math.max(...spread)：极端情况（攒批模式下超长缓冲）下
+      // spread 超过 ~10 万元素会抛 RangeError，reduce 无此上限
+      const lastTs = turns.length ? turns.reduce((m, t) => (t.ts > m ? t.ts : m), 0) : 0;
+      if (lastTs > 0 && lastTs < staleCutoff) {
+        void flushStaleL1(sid, `最后更新 ${Math.round((now - lastTs) / 86400000)} 天前`);
       }
     }
     void promoteProfileFacts();

@@ -7,7 +7,7 @@
 //   非标准 session 渲染路径，useSession 可能不注入）。
 // 引擎：浏览器 Web Speech API（speechSynthesis），Windows 自带中文语音。
 // ============================================================
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 
@@ -34,6 +34,22 @@ function readMessageText(el: HTMLElement): string {
 export function TtsAction(): JSX.Element | null {
   const [speaking, setSpeaking] = useState(false);
   const [error, setError] = useState(false);
+  // 当前朗读 utterance 引用（卸载时 cancel + 置空回调，防卸载后 setState）
+  const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // 卸载清理：取消进行中的朗读并摘除回调（防卸载后 setState / 跨导航继续播放）
+  useEffect(() => {
+    return () => {
+      const u = utterRef.current;
+      if (u) {
+        u.onend = null;
+        u.onerror = null;
+      }
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   if (error) return null;
   if (typeof window === 'undefined' || !window.speechSynthesis) return null;
@@ -62,6 +78,7 @@ export function TtsAction(): JSX.Element | null {
       setError(true);
     };
     window.speechSynthesis.cancel();
+    utterRef.current = utter;
     window.speechSynthesis.speak(utter);
     setSpeaking(true);
   };

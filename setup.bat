@@ -8,7 +8,7 @@ echo.
 echo [1/4] Checking Node.js...
 where node >nul 2>nul
 if %errorlevel% neq 0 (
-    echo Please install Node.js 20+ first: https://nodejs.org
+    echo Please install Node.js 22.13+ first: https://nodejs.org
     pause
     exit /b 1
 )

@@ -58,33 +58,35 @@ export const FluentCss = `
   --fluent-motion-slow: 200ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-/* C15：深色系统偏好下覆盖 --fluent-* 表面/文字/材质（与 theme.ts DARK 调色板一致） */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --fluent-bg-base: #1f1f1f;
-    --fluent-surface: #282828;
-    --fluent-surface-subtle: #2d2d2d;
-    --fluent-surface-hover: #2f2f2f;
-    --fluent-surface-pressed: #3a3a3a;
-    --fluent-surface-disabled: #383838;
-    --fluent-text-primary: #e8ecf4;
-    --fluent-text-secondary: #aab4c8;
-    --fluent-text-tertiary: #7a859c;
-    --fluent-text-disabled: #555555;
-    --fluent-border-l1: #3a3a3a;
-    --fluent-border-l2: #464646;
-    --fluent-border-l3: #555555;
-    --fluent-accent: #5b8def;
-    --fluent-accent-hover: #4a7cdd;
-    --fluent-accent-active: #3d6ccb;
-    --fluent-accent-subtle: #24304a;
-    --fluent-accent-disabled: #2a3a5e;
-    --fluent-mica: rgba(31, 31, 31, 0.8);
-    --fluent-acrylic: rgba(40, 40, 40, 0.86);
-    --fluent-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.25);
-    --fluent-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
-    --fluent-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.35), 0 16px 40px rgba(0, 0, 0, 0.4);
-  }
+/* C15：深色主题下覆盖 --fluent-* 表面/文字/材质（按活跃主题 colorScheme 切换，
+   而非 OS 偏好媒体查询——host 侧已把 dark/system 偏好迁移为默认亮色，OS 深色 ≠
+   应用深色，跟随 prefers-color-scheme 会重现"半深半浅"）。
+   dsh 主题呈现器以 body[data-ds-dark-theme] 暴露深色态（dsh-client-ui-layout 的
+   DARK_ATTRIBUTE）；CSS 变量在 body 上定义、后代继承，portal 弹层同样生效。 */
+body[data-ds-dark-theme] {
+  --fluent-bg-base: #1f1f1f;
+  --fluent-surface: #282828;
+  --fluent-surface-subtle: #2d2d2d;
+  --fluent-surface-hover: #2f2f2f;
+  --fluent-surface-pressed: #3a3a3a;
+  --fluent-surface-disabled: #383838;
+  --fluent-text-primary: #e8ecf4;
+  --fluent-text-secondary: #aab4c8;
+  --fluent-text-tertiary: #7a859c;
+  --fluent-text-disabled: #555555;
+  --fluent-border-l1: #3a3a3a;
+  --fluent-border-l2: #464646;
+  --fluent-border-l3: #555555;
+  --fluent-accent: #5b8def;
+  --fluent-accent-hover: #4a7cdd;
+  --fluent-accent-active: #3d6ccb;
+  --fluent-accent-subtle: #24304a;
+  --fluent-accent-disabled: #2a3a5e;
+  --fluent-mica: rgba(31, 31, 31, 0.8);
+  --fluent-acrylic: rgba(40, 40, 40, 0.86);
+  --fluent-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.25);
+  --fluent-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --fluent-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.35), 0 16px 40px rgba(0, 0, 0, 0.4);
 }
 
 html, body {

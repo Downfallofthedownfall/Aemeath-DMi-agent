@@ -92,7 +92,7 @@ export function apply(ctx: ClientContext): void {
     remote.$on('settings/document-updated', () => {
       for (const scope of faces.scopes.values()) {
         try {
-          void (scope as unknown as { load?: () => Promise<void> }).load?.();
+          void scope.load(); // M9：makeFetchScope 已暴露 load（此前 as never 空转，开关不刷新）
         } catch {
           /* ignore */
         }

@@ -239,9 +239,15 @@ function createWindow(loadUrl) {
     `).catch(() => {});
   });
 
-  // C24：导航守卫——只允许本地 3081 源（防被重定向到任意页面）
+  // C24：导航守卫——只允许本地 3081 源（防被重定向到任意页面）。
+  // 用 origin 精确比较而非 startsWith 前缀匹配：前缀匹配会被
+  // "http://127.0.0.1:30810.evil.com" 这类端口粘连 URL 绕过。
   mainWindow.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith(APP_ORIGIN)) e.preventDefault();
+    try {
+      if (new URL(url).origin !== APP_ORIGIN) e.preventDefault();
+    } catch {
+      e.preventDefault(); // 非法 URL：一律拦截
+    }
   });
 
   // C24：外链只放 https（拒绝 http/自定义 scheme/file），交系统默认浏览器

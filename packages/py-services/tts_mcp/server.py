@@ -46,6 +46,26 @@ TTS_OUT_DIR = VOICES_DIR / 'tts'
 # 超长文本/超大 base64 撑爆响应）。
 MAX_TEXT_LEN = 500
 MAX_BASE64_BYTES = 3 * 1024 * 1024  # 3MB：超出则返回错误（不内联）
+# 输出目录 LRU 上限：voices/tts/ 最多保留的文件数（超出删除最旧，防磁盘无限增长）
+MAX_TTS_FILES = 50
+
+
+def _trim_tts_outputs():
+    """voices/tts/ 输出目录 LRU 清理：超出 MAX_TTS_FILES 时删除最旧 wav。"""
+    try:
+        if not TTS_OUT_DIR.exists():
+            return
+        files = sorted(
+            (f for f in TTS_OUT_DIR.iterdir() if f.is_file() and f.suffix.lower() == '.wav'),
+            key=lambda f: f.stat().st_mtime,
+        )
+        for old in files[:-MAX_TTS_FILES]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass  # 清理失败不阻塞合成
 
 
 def _is_voice_allowed(voice_path):
@@ -177,11 +197,13 @@ def tts_generate(text: str, voice="", include_base64=False):
 
         try:
             TTS_OUT_DIR.mkdir(parents=True, exist_ok=True)
-            output_path = TTS_OUT_DIR / f"aemeath_tts_{uuid.uuid4().hex[:8]}.wav"
+            # 完整 32 位 uuid（此前 hex[:8] 仅 32 位，约 6.5 万文件后可能碰撞覆盖）
+            output_path = TTS_OUT_DIR / f"aemeath_tts_{uuid.uuid4().hex}.wav"
             _engine.infer(spk_audio_prompt=voice_path, text=text,
                           output_path=str(output_path), verbose=False)
             if not output_path.exists():
                 return {"success": False, "error": "语音生成失败（无输出文件）"}
+            _trim_tts_outputs()  # LRU 清理（防目录无限增长）
             size = output_path.stat().st_size
             result = {
                 "success": True,

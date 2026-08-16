@@ -59,12 +59,37 @@ function checkWriteOrigin(req: IncomingMessage): boolean {
   }
 }
 
+const MAX_BODY_BYTES = 1024 * 1024; // 1MB：settings/记忆写入均为小 body，超限直接拒绝（防 DoS）
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', () => resolve(body));
-    req.on('error', reject);
+    let size = 0;
+    let done = false;
+    const fail = (code: number, msg: string): void => {
+      if (done) return;
+      done = true;
+      const err = new Error(msg) as Error & { status?: number };
+      err.status = code;
+      reject(err);
+    };
+    req.on('data', (c: Buffer | string) => {
+      if (done) return;
+      const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        fail(413, 'body too large (max 1MB)');
+        req.destroy();
+        return;
+      }
+      body += c;
+    });
+    req.on('end', () => {
+      if (done) return;
+      done = true;
+      resolve(body);
+    });
+    req.on('error', (e) => fail(400, (e as Error).message));
   });
 }
 
@@ -160,7 +185,8 @@ export function apply(ctx: Context): void {
         }
         json(res, 200, { ok: true });
       } catch (e) {
-        json(res, 400, { ok: false, error: (e as Error).message });
+        const err = e as Error & { status?: number };
+        json(res, err.status ?? 400, { ok: false, error: err.message });
       }
       return;
     }
@@ -240,7 +266,8 @@ export function apply(ctx: Context): void {
       }
       json(res, 405, { ok: false, error: 'method not allowed' });
     } catch (e) {
-      json(res, 400, { ok: false, error: (e as Error).message });
+      const err = e as Error & { status?: number };
+      json(res, err.status ?? 400, { ok: false, error: err.message });
     }
   }
 }
