@@ -198,3 +198,5 @@ profiles/**/node_modules/
 *.tsbuildinfo
 # 讲义档案
 packages/library/physicist/
+# Altklausuren
+packages/benchmark/altklausur/
