@@ -37,8 +37,9 @@ function Test-DshCliVersion {
   param([string]$bin)
   if (-not (Test-Path $bin)) { return $false }
   try {
-    $ver = & $bin --version 2>$null | Select-Object -First 1
-    if ($LASTEXITCODE -ne 0) { return $false }
+    # 注意：.cmd shim 经 PowerShell 调用时 $LASTEXITCODE 可能是 -1（cmd 语义），
+    # 不能据此判失败；以版本字符串精确匹配为准。
+    $ver = (& $bin --version 2>$null | Select-Object -First 1)
     return ([string]$ver).Trim() -eq $expectedDshVersion
   } catch {
     return $false
@@ -48,14 +49,14 @@ function Test-DshCliVersion {
 function Find-DshCli {
   # a) 项目内 node_modules（npm install 后固定可用；仍校验版本，防装错版本）
   $local = Join-Path $root 'node_modules\.bin\dsh.cmd'
-  if (Test-Path $local -and (Test-DshCliVersion $local)) { return $local }
+  if ((Test-Path $local) -and (Test-DshCliVersion $local)) { return $local }
   # b) npx 缓存（_npx/<hash>/node_modules/.bin/dsh.cmd）——校验版本，避免选到
   #    其他项目的旧版 dsh
   $npxBase = Join-Path $env:LOCALAPPDATA 'npm-cache\_npx'
   if (Test-Path $npxBase) {
     foreach ($dir in Get-ChildItem $npxBase -Directory -ErrorAction SilentlyContinue) {
       $candidate = Join-Path $dir.FullName 'node_modules\.bin\dsh.cmd'
-      if (Test-Path $candidate -and (Test-DshCliVersion $candidate)) { return $candidate }
+      if ((Test-Path $candidate) -and (Test-DshCliVersion $candidate)) { return $candidate }
     }
   }
   # c) PATH
@@ -70,6 +71,29 @@ if (-not $dshBin) {
   exit 1
 }
 Write-Host "[dsh.ps1] 使用 dsh: $dshBin"
+
+# —— 3.5) 修复 profile 的 @deepseek-ai 双份依赖（关键坑）——
+# profile 目录 npm install 会把 @deepseek-ai/* 装成独立副本，与项目根 node_modules
+# 形成两套模块实例：cordis/dsh-scope/dsh-tools 的私有 Symbol（kScope、
+# TOOL_RUNTIME_SCHEDULER）对不上 → agent scope 判定失效（全落全局层，人格冲突/
+# 课程上下文全局化）+ 工具调度器缺失（Cannot read properties of undefined
+# (reading 'prepare')）。把 profile 的 @deepseek-ai 替换为 junction → 项目根，
+# 与 .dsh-home/profiles/node_modules 同款做法，保证单实例。
+$profilesDir = Join-Path $env:DSH_HOME 'profiles'
+if (Test-Path $profilesDir) {
+  foreach ($profileDir in Get-ChildItem $profilesDir -Directory) {
+    $profDeepseek = Join-Path $profileDir.FullName 'node_modules\@deepseek-ai'
+    if (Test-Path $profDeepseek) {
+      $item = Get-Item $profDeepseek
+      $isJunction = $item.LinkType -eq 'Junction' -and $item.Target -eq (Join-Path $root 'node_modules\@deepseek-ai')
+      if (-not $isJunction) {
+        Remove-Item $profDeepseek -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Junction -Path $profDeepseek -Target (Join-Path $root 'node_modules\@deepseek-ai') -ErrorAction Stop | Out-Null
+        Write-Host "[dsh.ps1] 已修复 $($profileDir.Name) 的 @deepseek-ai → junction（消除双份依赖）"
+      }
+    }
+  }
+}
 
 Push-Location $root
 & $dshBin @args

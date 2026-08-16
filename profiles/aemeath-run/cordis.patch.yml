@@ -75,6 +75,14 @@
         verifyBudget: 3
         dimensionCheck: true
         codeMode: false
+    - id: aemeath-curriculum
+      name: '@aemeath/dsh-plugin-curriculum'
+      config:
+        enabled: true
+        defaultPreset: 'physicist'
+        modulhandbuchFile: 'packages/library/physicist/modulhandbuch.json'
+        currentSemester: ''
+        injectTokens: 800
     - id: aemeath-memory
       name: '@aemeath/dsh-plugin-memory'
       config:

@@ -200,3 +200,4 @@ profiles/**/node_modules/
 packages/library/physicist/
 # Altklausuren
 packages/benchmark/altklausur/
+temp/

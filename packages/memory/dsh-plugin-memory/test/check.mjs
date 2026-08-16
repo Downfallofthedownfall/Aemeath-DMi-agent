@@ -91,4 +91,10 @@ t('学习类显式 → study_log 分类', () => {
   if (d.kind === 'save') assert.equal(d.category, 'study_log');
 });
 
+t('模块代码（Modulhandbuch）→ study_log 分类', () => {
+  const d = decide('记住，我这学期在上 PHY-E1 和 MATH1', '好的，已记录你的课程。');
+  assert.equal(d.kind, 'save');
+  if (d.kind === 'save') assert.equal(d.category, 'study_log');
+});
+
 console.log(`\n[memory-gatekeeper] ${passed} 项断言全部通过`);

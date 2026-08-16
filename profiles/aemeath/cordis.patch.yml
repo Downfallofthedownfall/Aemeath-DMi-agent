@@ -88,6 +88,14 @@
         verifyBudget: 3
         dimensionCheck: true
         codeMode: false
+    - id: aemeath-curriculum
+      name: '@aemeath/dsh-plugin-curriculum'
+      config:
+        enabled: true
+        defaultPreset: 'physicist'
+        modulhandbuchFile: 'packages/library/physicist/modulhandbuch.json'
+        currentSemester: ''
+        injectTokens: 800
     # —— M5 前端 UI 插件（browser 半区经 dsh.client 声明进入 __DSH_BOOT__）——
     - id: aemeath-ui
       name: '@aemeath/dsh-plugin-ui'

@@ -84,6 +84,9 @@ export function hasTimeEvidence(text: string): boolean {
   return TIME_EVIDENCE_PATTERNS.some((re) => re.test(text));
 }
 
+/** 模块代码模式（汉堡物理系 Modulhandbuch）：PHY-XX / MATH\d → 学习语境。 */
+export const MODULE_CODE_PATTERN = /PHY-[A-Z0-9]+|MATH\d|MATH\s?\d/i;
+
 /** 实体类别关键词（save 时分类；身份事实优先）。 */
 export function classifyCategory(query: string, reply: string): Category {
   const t = `${query} ${reply}`;
@@ -91,7 +94,8 @@ export function classifyCategory(query: string, reply: string): Category {
   if (/我叫|我是|我的名字|名字叫|生日|年龄|来自|家乡|住在|专业是|学的是/.test(t)) return 'user_fact';
   if (/喜欢|讨厌|最爱|爱吃|想(要|去)|希望|担心|害怕/.test(t)) return 'preference';
   if (/朋友|家人|同学|室友|导师|他|她|我们|对象|男朋友|女朋友/.test(t)) return 'relationship';
-  if (/学|课|考试|作业|习题|复习|预习|教授|讲义|大学/.test(t)) return 'study_log';
+  // 学习语境：通用学习词 + Modulhandbuch 模块代码（"PHY-E1 考什么 / 我在上 MATH1"）
+  if (/学|课|考试|作业|习题|复习|预习|教授|讲义|大学/.test(t) || MODULE_CODE_PATTERN.test(t)) return 'study_log';
   return 'session_summary';
 }
 
