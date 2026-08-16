@@ -37,6 +37,28 @@ function json(res: ServerResponse, code: number, obj: unknown): void {
   res.end(JSON.stringify(obj));
 }
 
+/**
+ * 写请求来源校验（S3 修复）：本插件的端点只服务同源前端（dsh web server 页面
+ * fetch 相对路径），不再发任何 CORS 头。为防恶意网页经 no-cors/DNS rebinding
+ * 发起的跨源 POST（浏览器仍会发出简单请求，只是读不到响应），对带 Origin 的
+ * 写请求要求其 host 必须是回环地址。无 Origin（curl/非浏览器/同源 GET）放行。
+ */
+function isLoopbackHostname(host: string): boolean {
+  const h = (host || '').toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]' || h === '0.0.0.0';
+}
+
+function checkWriteOrigin(req: IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true; // 无 Origin（非浏览器客户端）放行
+  if (origin === 'null') return false; // file:// / sandbox iframe：拒绝
+  try {
+    return isLoopbackHostname(new URL(origin).hostname);
+  } catch {
+    return false; // 非法 Origin 拒绝
+  }
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -77,17 +99,7 @@ export function apply(ctx: Context): void {
   } | undefined;
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    // CORS（同源 3081 下一般不需要，但为 Electron/开发端口留口）
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
+    // 无 CORS 头：端点仅服务同源前端（S3 修复；跨源读取/写入由浏览器同源策略拦截）
     if (req.method === 'GET') {
       // 读：返回每个 namespace 的 resolved 值（引擎插件注册后可用）+ agent-presets 默认
       const out: Record<string, unknown> = {};
@@ -111,6 +123,7 @@ export function apply(ctx: Context): void {
 
     if (req.method === 'POST') {
       try {
+        if (!checkWriteOrigin(req)) return json(res, 403, { ok: false, error: 'cross-origin write denied' });
         const raw = await readBody(req);
         const parsed = JSON.parse(raw || '{}') as { ns?: unknown; patch?: unknown };
         if (typeof parsed.ns !== 'string' || typeof parsed.patch !== 'object' || parsed.patch === null || Array.isArray(parsed.patch)) {
@@ -152,14 +165,6 @@ export function apply(ctx: Context): void {
   // —— 启动信息端点（M5 P3.5）：暴露默认兜底工作区路径（项目内空文件夹 .chat）——
   // 前端在「零工作区」时据此自动挂载，实现"打开即聊、无需选择工作区"。
   async function handleBootInfo(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
     if (req.method !== 'GET') {
       json(res, 405, { ok: false, error: 'method not allowed' });
       return;
@@ -173,16 +178,8 @@ export function apply(ctx: Context): void {
     }
   }
 
-  // —— 记忆管理端点（M5 F2）：GET list/stats + POST delete ——
+  // —— 记忆管理端点（M5 F2）：GET list/stats + POST delete（无 CORS；POST 校验 Origin）——
   async function handleMemory(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
     if (!memory) {
       json(res, 503, { ok: false, error: 'memory service unavailable' });
       return;
@@ -212,6 +209,7 @@ export function apply(ctx: Context): void {
         return;
       }
       if (req.method === 'POST') {
+        if (!checkWriteOrigin(req)) return json(res, 403, { ok: false, error: 'cross-origin write denied' });
         const raw = await readBody(req);
         const parsed = JSON.parse(raw || '{}') as { idPrefix?: string };
         if (!parsed.idPrefix) {

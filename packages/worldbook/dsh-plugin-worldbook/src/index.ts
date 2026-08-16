@@ -77,13 +77,19 @@ function loadLibrary(dir: string): LibState {
   return { entries, mtimes };
 }
 
-/** 从进入 step 的 messages 中提取最后一条 user 文本（注入匹配源）。 */
+/**
+ * 从进入 step 的 messages 中提取最后一条真实用户文本（注入匹配源）。
+ * B2 修复：只取 source.kind === 'user' 的消息——memory 的 recall 块、workflow 的
+ * SOLVER_PROMPT、worldbook 自己的 catalog 块都是 role='user' 但 source.kind='plugin'，
+ * 若不过滤会形成自触发注入循环（上一步注入的块成为下一步的"用户输入"再次命中，
+ * 每步重复注入、上下文无界增长）。与 retriever/memory/workflow 的取法一致。
+ */
 function extractUserText(
-  messages: readonly { role?: string; content?: readonly { type?: string; text?: string }[] }[],
+  messages: readonly { role?: string; source?: { kind?: string }; content?: readonly { type?: string; text?: string }[] }[],
 ): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role === 'user') {
+    if (m.role === 'user' && m.source?.kind === 'user') {
       return (m.content || [])
         .map((b) => (b.type === 'text' ? b.text ?? '' : ''))
         .join('')

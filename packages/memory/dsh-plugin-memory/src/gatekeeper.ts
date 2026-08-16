@@ -105,6 +105,21 @@ export function extractMemory(query: string): string {
 }
 
 /**
+ * 知识直达内容提取（B1 修复）：知识命中可能来自用户提问，也可能来自模型回复
+ * （例如用户问"这是什么？"，回复含 "F=ma"）。知识命中自回复时，必须把回复文本
+ * 写入知识层/worldbook，而不是把用户提问（"这是什么？"）当知识内容。
+ * @returns 拟写入知识层的内容文本（回复优先，超长截断）。
+ */
+export function extractKnowledge(query: string, reply: string): string {
+  const r = (reply || '').trim();
+  if (isStrongKnowledge(r)) {
+    const clean = r.replace(/\s+/g, ' ').trim();
+    return clean.length > 120 ? clean.slice(0, 120) + '…' : clean;
+  }
+  return extractMemory(query);
+}
+
+/**
  * 规则层主入口：返回动作决策。
  * @param query 用户输入
  * @param reply physicist/爱弥斯回复
@@ -129,13 +144,20 @@ export function decide(query: string, reply: string): MemoryAction {
   }
 
   // 3) 强知识模式（公式/定律/数学术语）→ knowledge_direct（规则初筛直达，不经 LLM）
-  if (isStrongKnowledge(q) || isStrongKnowledge(r)) {
-    return {
-      kind: 'knowledge_direct',
-      content: extractMemory(q),
-      topic: classifyKnowledgeTopic(q),
-      reason: '规则初筛：强知识模式（公式/定律/术语），直达知识层',
-    };
+  //    B1 修复：知识命中来源决定内容/主题取哪个——提问本身含知识（如"F=ma 是什么？"）
+  //    取提问；仅回复含知识（如问"这是什么？"答"F=ma"）则取回复文本，避免把
+  //    "这是什么？"这类提问本身当成知识写入知识层/worldbook。
+  {
+    const hitQuery = isStrongKnowledge(q);
+    const hitReply = !hitQuery && isStrongKnowledge(r);
+    if (hitQuery || hitReply) {
+      return {
+        kind: 'knowledge_direct',
+        content: hitReply ? extractKnowledge(q, r) : extractMemory(q),
+        topic: classifyKnowledgeTopic(hitReply ? r : q),
+        reason: '规则初筛：强知识模式（公式/定律/术语），直达知识层',
+      };
+    }
   }
 
   // 4) 闲聊/纯情绪 → skip

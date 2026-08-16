@@ -158,6 +158,21 @@ export function apply(ctx: Context, config: CommonConfig): void {
   );
   log('冒烟工具 aemeath/version 已注册');
 
+  // ---- S4 修复：键鼠/程序控制工具强制审批（全 preset 生效） ----
+  // control_mcp 的工具（mcp__control__*）会在用户机器上真实操作键鼠/窗口、启动程序，
+  // 且 control_open 白名单含任意存在的 .exe 路径。模型被注入后可直接调用，因此这里
+  // 对所有 mcp__control__* 调用强制返回 kind:'ask'——dsh 原生 approval 缝决定放行：
+  // 缺省策略 ask 交给 answerer（无人应答 fail-closed deny），never 策略直接拒绝。
+  // 放在公共插件（而非 workflow）是为了与 workflow.enabled 开关无关、始终挂载。
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const decision = await next();
+    if (decision.kind !== 'allow') return decision;
+    if (!exec.name.startsWith('mcp__control__')) return decision;
+    log(`[gate] ${exec.name} 需要用户审批（键鼠/程序控制）`);
+    return { kind: 'ask', reason: `${exec.name} 会在用户机器上真实操作键鼠/窗口或启动程序，需要您确认后才会执行。` };
+  });
+  log('键鼠/程序控制工具审批已挂载（tools/pre-execute ask，mcp__control__* 全 preset）');
+
   // ---- 1.5) v1 轻量工具迁移：get_current_time / web_scraper / arxiv_search ----
   ctx.tools.register(
     defineTool({
@@ -357,10 +372,14 @@ export function apply(ctx: Context, config: CommonConfig): void {
             apiKey = '';
           }
         }
-        if (!apiKey) return;
+        if (!apiKey) return; // 无可用凭据：判定层静默跳过
+        // 每回合最多判定一次（与规则层同款去重，防反复 steer / 重复扣费）
+        const llmTurnKey = `${session.id}:${(event.data as { turn?: number }).turn ?? 0}`;
+        if (steeredTurns.get(llmTurnKey)) return;
+        steeredTurns.set(llmTurnKey, 1);
         const resp = await fetch(`${oocLlm.baseUrl}/chat/completions`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${oocLlm.apiKey}` },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
           body: JSON.stringify({
             model: oocLlm.model,
             messages: [

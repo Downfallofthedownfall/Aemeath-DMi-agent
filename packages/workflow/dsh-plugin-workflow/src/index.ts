@@ -9,13 +9,16 @@
 //      （模型显式调用；post-execute 对无计划即验证给缺失提示）
 //   6. 工具流 = dsh 原版逻辑：tools/pre-execute 只做 allow/deny
 //      （compute_verify 会话级预算超限 → deny 并引导诚实降级；settings 开关关 → deny）。
-//      不做自研用户询问（askTools/ctx.userQuestions 已移除，2026-08-16）。
+//      不做自研用户询问（askTools/ctx.userQuestions 已移除，2026-08-16）；
+//      S4 修复：对 mcp__control__*（键鼠/程序控制）的强制审批在 dsh-plugin-common
+//      （tools/pre-execute 返回 kind:'ask'，approval 服务缺省 fail-closed）。
 //   7. presentAs('code')（v2，config 门控默认关）：计算密集流代码呈现模式
 //   8. 爱弥斯零回归：aemeath preset 注入/工具全隔离（ctx.tools.restrict deny）
 // ============================================================
 
 import type { Context } from '@deepseek-ai/cordis';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -215,6 +218,13 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
   // ---- 会话级 compute_verify 调用计数（预算 → 超限 deny 引导诚实降级） ----
   const verifyCounts = new Map<string, number>();
 
+  /**
+   * B3 修复：SymPy/量纲脚本异步执行（promisified execFile）——原 execFileSync
+   * 会同步阻塞 Web 主进程事件循环最多 10 秒，多会话并发时全部会话一起卡。
+   */
+  const runPython = promisify(execFile);
+  const PY_MAX_BUFFER = 4 * 1024 * 1024; // 4MB stdout 上限（防脚本洪水输出）
+
   /** ctx.memory 最小面（仅 scratch 读写）。 */
   interface MemoryScratch {
     getScratch(sessionId: string, key: string): string | undefined;
@@ -259,10 +269,10 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
       },
       execute: async (args: { expression: string; claimed: string; variable?: string }) => {
         try {
-          const stdout = execFileSync('python', ['-c', SYMPY_SCRIPT, args.expression, args.claimed, args.variable ?? 'x'], {
+          const { stdout } = await runPython('python', ['-c', SYMPY_SCRIPT, args.expression, args.claimed, args.variable ?? 'x'], {
             encoding: 'utf-8',
             timeout: 10_000,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            maxBuffer: PY_MAX_BUFFER,
           });
           const parsed = JSON.parse(stdout) as { verified?: boolean; solutions?: string[]; checked?: Array<{ claimed: string; ok: boolean; residual: number | null }>; error?: string };
           return {
@@ -299,7 +309,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
           try {
             const argv = ['-c', DIMENSION_SCRIPT, args.expression];
             if (args.expected) argv.push(args.expected);
-            const stdout = execFileSync('python', argv, { encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] });
+            const { stdout } = await runPython('python', argv, { encoding: 'utf-8', timeout: 10_000, maxBuffer: PY_MAX_BUFFER });
             return JSON.parse(stdout); // any → JsonValue
           } catch (e) {
             const msg = (e as Error & { stdout?: string | Buffer }).stdout?.toString() ?? (e as Error).message;
@@ -414,6 +424,9 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     return decision;
   });
   log(`工具流已挂载（tools/pre-execute，dsh 原版 allow/deny，verifyBudget=${verifyBudget}）`);
+
+  // 注：mcp__control__*（键鼠/程序控制）的强制审批在 dsh-plugin-common（S4 修复），
+  // 放公共插件可保证与 workflow.enabled 开关无关、始终挂载（全 preset）。
 
   // ---- post-execute：compute_verify 后核对 plan 落 scratch（缺失提示） ----
   if (planScratch) {

@@ -13,11 +13,12 @@
 //   9. 召回注入：pre-step 按 preset 召回 L2+L3（form='recall'）
 //   10. session/flush 接入：会话结束时把 L1 缓冲卸载落盘
 //   11. ctx.memory Service：search/list/save/softDelete/stats/scratch/l1/knowledge
-//   12. HTTP 管理端点（可选，仅回环）：/memory/list|stats|delete|knowledge|l1
+//   12. HTTP 管理端点（可选，仅回环 + token 认证）：/memory/list|stats|delete|knowledge|l1
+//        （S5 加固：精确路径、方法校验、body 1MB 上限、Bearer/x-aemeath-token 认证）
 //   13. 审计 + 衰减 + /memory 命令
 // ============================================================
 
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import { randomUUID, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
@@ -75,6 +76,8 @@ export const Config = z.object({
   adminHttp: z.object({
     enabled: z.boolean(),
     port: z.number(),
+    /** 访问 token（S5 加固）：留空则启动时自动生成并打印一次（schemastery 属性默认可选）。 */
+    token: z.string(),
   }),
 });
 
@@ -88,7 +91,7 @@ export interface MemoryConfig {
   knowledge?: { enabled?: boolean };
   worldbook?: { enabled?: boolean; libraries?: Record<string, string> };
   decayDays?: number;
-  adminHttp?: { enabled?: boolean; port?: number };
+  adminHttp?: { enabled?: boolean; port?: number; token?: string };
 }
 
 // ===== 存储域（zod 记录 schema，见 types.ts） =====
@@ -618,49 +621,107 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   });
   log('/memory 命令已注册（list/stats/delete/profile/scratch/l1/knowledge）');
 
-  // ---- HTTP 管理端点（可选，仅回环；D8：本地信任模型） ----
+  // ---- HTTP 管理端点（可选，仅回环 + token 认证；S5 加固）----
   if (adminHttp.enabled) {
     try {
+      // 访问 token：配置未给则自动生成（uuid 随机），启动时打印一次供本地脚本使用
+      const adminToken = adminHttp.token ?? randomUUID();
+      const MAX_ADMIN_BODY = 1024 * 1024; // 1MB body 上限（防内存耗尽）
+
+      /** 读 JSON body，超过 1MB 直接拒绝（S5：原实现 body += c 无上限）。 */
+      const readJsonLimited = (req: IncomingMessage): Promise<Record<string, unknown>> =>
+        new Promise((resolve, reject) => {
+          let body = '';
+          let done = false;
+          const fail = (code: number, msg: string): void => {
+            if (done) return;
+            done = true;
+            const err = new Error(msg) as Error & { status?: number };
+            err.status = code;
+            reject(err);
+          };
+          req.on('data', (c) => {
+            if (done) return;
+            body += c;
+            if (body.length > MAX_ADMIN_BODY) {
+              fail(413, 'body too large (max 1MB)');
+              req.destroy();
+            }
+          });
+          req.on('end', () => {
+            if (done) return;
+            done = true;
+            try {
+              resolve(JSON.parse(body || '{}') as Record<string, unknown>);
+            } catch (e) {
+              reject(e);
+            }
+          });
+          req.on('error', (e) => fail(400, (e as Error).message));
+        });
+
       const server = createServer((req, res) => {
         const send = (code: number, obj: unknown): void => {
           res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify(obj));
         };
-        const url = req.url ?? '';
-        if (url === '/memory/list') {
-          send(200, { ok: true, items: memoryService.list().map(({ rec }) => ({ ...rec })) });
-        } else if (url === '/memory/stats') {
-          send(200, { ok: true, stats: memoryService.stats(), profile: profile.get() });
-        } else if (url === '/memory/knowledge') {
-          send(200, { ok: true, items: memoryService.knowledgeList().map(({ rec }) => ({ ...rec })) });
-        } else if (url === '/memory/l1') {
-          send(200, { ok: true, stats: memoryService.stats(), capacity: memoryService.l1CapacityOf(), sessions: Object.fromEntries(memoryService.l1Sessions().map((sid) => [sid, memoryService.l1Turns(sid).map((t) => ({ ...t }))])) });
-        } else if (url.startsWith('/memory/delete') || url.startsWith('/memory/knowledge/status')) {
-          let body = '';
-          req.on('data', (c) => (body += c));
-          req.on('end', async () => {
-            try {
-              const payload = JSON.parse(body || '{}') as { idPrefix?: string; status?: 'accepted' | 'rejected' };
-              if (url.startsWith('/memory/knowledge/status')) {
-                if (!payload.idPrefix || !payload.status) return send(400, { ok: false, error: 'idPrefix + status required' });
-                send(200, { ok: await memoryService.knowledgeSetStatus(payload.idPrefix, payload.status) });
-              } else {
-                if (!payload.idPrefix) return send(400, { ok: false, error: 'idPrefix required' });
-                send(200, { ok: await memoryService.softDelete(payload.idPrefix) });
-              }
-            } catch (e) {
-              send(500, { ok: false, error: (e as Error).message });
-            }
-          });
-        } else {
-          send(404, { ok: false, error: 'not found: use /memory/list | /memory/stats | /memory/delete | /memory/knowledge | /memory/knowledge/status | /memory/l1' });
+        // 认证：所有端点均需 Bearer token 或 x-aemeath-token 头（S5）
+        const authHeader = req.headers.authorization ?? '';
+        const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : '';
+        const altToken = String(req.headers['x-aemeath-token'] ?? '');
+        if (bearer !== adminToken && altToken !== adminToken) {
+          send(401, { ok: false, error: 'unauthorized: missing or invalid token' });
+          return;
         }
+        void (async () => {
+          try {
+            // 精确路径匹配（S5：原实现用 url.startsWith 前缀匹配 + GET 也能触发删除语义）
+            const url = (req.url ?? '').split('?')[0];
+            if (url === '/memory/list') {
+              if (req.method !== 'GET') return send(405, { ok: false, error: 'method not allowed: GET' });
+              return send(200, { ok: true, items: memoryService.list().map(({ rec }) => ({ ...rec })) });
+            }
+            if (url === '/memory/stats') {
+              if (req.method !== 'GET') return send(405, { ok: false, error: 'method not allowed: GET' });
+              return send(200, { ok: true, stats: memoryService.stats(), profile: profile.get() });
+            }
+            if (url === '/memory/knowledge') {
+              if (req.method !== 'GET') return send(405, { ok: false, error: 'method not allowed: GET' });
+              return send(200, { ok: true, items: memoryService.knowledgeList().map(({ rec }) => ({ ...rec })) });
+            }
+            if (url === '/memory/l1') {
+              if (req.method !== 'GET') return send(405, { ok: false, error: 'method not allowed: GET' });
+              return send(200, { ok: true, stats: memoryService.stats(), capacity: memoryService.l1CapacityOf(), sessions: Object.fromEntries(memoryService.l1Sessions().map((sid) => [sid, memoryService.l1Turns(sid).map((t) => ({ ...t }))])) });
+            }
+            if (url === '/memory/delete') {
+              if (req.method !== 'POST') return send(405, { ok: false, error: 'method not allowed: POST' });
+              const payload = await readJsonLimited(req);
+              const prefix = payload.idPrefix;
+              if (typeof prefix !== 'string' || !prefix) return send(400, { ok: false, error: 'idPrefix required' });
+              return send(200, { ok: await memoryService.softDelete(prefix) });
+            }
+            if (url === '/memory/knowledge/status') {
+              if (req.method !== 'POST') return send(405, { ok: false, error: 'method not allowed: POST' });
+              const payload = await readJsonLimited(req);
+              const prefix = payload.idPrefix;
+              const status = payload.status;
+              if (typeof prefix !== 'string' || !prefix) return send(400, { ok: false, error: 'idPrefix required' });
+              if (status !== 'accepted' && status !== 'rejected') return send(400, { ok: false, error: 'status must be accepted|rejected' });
+              return send(200, { ok: await memoryService.knowledgeSetStatus(prefix, status) });
+            }
+            return send(404, { ok: false, error: 'not found: use /memory/list | /memory/stats | /memory/delete | /memory/knowledge | /memory/knowledge/status | /memory/l1' });
+          } catch (e) {
+            const err = e as Error & { status?: number };
+            send(err.status ?? 400, { ok: false, error: err.message });
+          }
+        })();
       });
       server.listen(adminHttp.port, '127.0.0.1');
       ctx.effect(() => () => {
         server.close();
       });
-      log(`HTTP 管理端点已启动（http://127.0.0.1:${adminHttp.port}/memory/*，仅回环）`);
+      if (!adminHttp.token) log(`HTTP 管理端点已启动（http://127.0.0.1:${adminHttp.port}/memory/*，仅回环 + token 认证，自动生成 token=${adminToken}）`);
+      else log(`HTTP 管理端点已启动（http://127.0.0.1:${adminHttp.port}/memory/*，仅回环 + token 认证，token 来自配置）`);
     } catch (e) {
       warn(`HTTP 管理端点启动失败: ${(e as Error).message}`);
     }

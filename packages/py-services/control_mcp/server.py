@@ -8,9 +8,10 @@
 #   窗口：control_window_focus / control_window_minimize / control_window_close
 #         / control_window_list（3 秒硬超时，返回部分列表）
 #   其他：control_position / control_open（白名单程序 + start <exe> + url）
-# 安全：FAILSAFE=True（鼠标甩到角落急停）；open 仅白名单/存在的 exe/URL。
-# ⚠️ 这些工具会在用户机器上真实操作键鼠/窗口——建议在 dsh 侧挂审批
-#    （tools/pre-execute ask），本服务自身只做本地执行。
+# 安全：FAILSAFE=True（鼠标甩到角落急停）；open 仅白名单/存在的 exe/URL
+#      （白名单已移除 cmd/powershell；任意 .exe 路径放行仍需 dsh 侧审批兜底）。
+# ⚠️ 这些工具会在用户机器上真实操作键鼠/窗口——dsh 侧已对 mcp__control__* 挂
+#    tools/pre-execute 强制审批（见 dsh-plugin-workflow），本服务自身只做本地执行。
 # 运行：python packages/py-services/control_mcp/server.py
 # ============================================================
 import os
@@ -57,9 +58,8 @@ SCREEN_WIDTH, SCREEN_HEIGHT = pyautogui.size() if HAS_PYAUTOGUI else (1920, 1080
 
 ALLOWED_PROGRAMS = {
     'notepad': 'notepad.exe', 'calc': 'calc.exe', 'explorer': 'explorer.exe',
-    'cmd': 'cmd.exe', 'powershell': 'powershell.exe', 'msedge': 'msedge.exe',
-    'chrome': 'chrome.exe', 'firefox': 'firefox.exe', 'mspaint': 'mspaint.exe',
-    'taskmgr': 'taskmgr.exe', 'control': 'control.exe',
+    'msedge': 'msedge.exe', 'chrome': 'chrome.exe', 'firefox': 'firefox.exe',
+    'mspaint': 'mspaint.exe', 'taskmgr': 'taskmgr.exe', 'control': 'control.exe',
 }
 
 
@@ -402,9 +402,9 @@ def control_position():
 
 @server.tool(
     "control_open",
-    "打开程序/URL：仅白名单程序（notepad/calc/explorer/cmd/powershell/msedge/chrome/"
-    "firefox/mspaint/taskmgr/control）、存在的 .exe 路径、或 http(s) URL。"
-    "可带 text 在程序打开后自动输入。",
+    "打开程序/URL：仅白名单程序（notepad/calc/explorer/msedge/chrome/"
+    "firefox/mspaint/taskmgr/control，不含 cmd/powershell）、存在的 .exe 路径、"
+    "或 http(s) URL。可带 text 在程序打开后自动输入。",
     {
         "type": "object",
         "properties": {
