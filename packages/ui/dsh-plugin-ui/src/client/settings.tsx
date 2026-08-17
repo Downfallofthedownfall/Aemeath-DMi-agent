@@ -15,13 +15,14 @@ import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-clie
 import type { CredentialView } from '@deepseek-ai/dsh-client-connection/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import { MemoryPanel } from './memory.tsx';
+import { t, useLocale } from './i18n.ts';
 
-// ===== 功能开关清单 =====
+// ===== 功能开关清单（label/hint 存 key，渲染时 t() 解析） =====
 export interface FeatureSwitch {
   ns: string;
   field: string;
-  label: string;
-  hint: string;
+  labelKey: string;
+  hintKey: string;
   fallback: boolean;
 }
 
@@ -29,50 +30,50 @@ export const FEATURES: FeatureSwitch[] = [
   {
     ns: 'aemeath-common',
     field: 'oocRulesEnabled',
-    label: 'OOC 规则层',
-    hint: '角色越界回复自动纠偏（禁止词扫描）',
+    labelKey: 'settings.features.oocRules.label',
+    hintKey: 'settings.features.oocRules.hint',
     fallback: true,
   },
   {
     ns: 'aemeath-common',
     field: 'oocLlmEnabled',
-    label: 'OOC LLM 判定层',
-    hint: '用大模型判定角色一致性（需 API key）',
+    labelKey: 'settings.features.oocLlm.label',
+    hintKey: 'settings.features.oocLlm.hint',
     fallback: false,
   },
   {
     ns: 'aemeath-worldbook',
     field: 'enabled',
-    label: '世界书注入',
-    hint: '物理知识库条目注入上下文（双馆）',
+    labelKey: 'settings.features.worldbook.label',
+    hintKey: 'settings.features.worldbook.hint',
     fallback: true,
   },
   {
     ns: 'aemeath-retriever',
     field: 'enabled',
-    label: '讲义检索',
-    hint: 'FTS5 BM25 检索本地讲义并注入',
+    labelKey: 'settings.features.retriever.label',
+    hintKey: 'settings.features.retriever.hint',
     fallback: true,
   },
   {
     ns: 'aemeath-memory',
     field: 'enabled',
-    label: '分层记忆',
-    hint: 'L2/L3 记忆召回与沉淀（门卫判定）',
+    labelKey: 'settings.features.memory.label',
+    hintKey: 'settings.features.memory.hint',
     fallback: true,
   },
   {
     ns: 'aemeath-workflow',
     field: 'enabled',
-    label: '解题工作流',
-    hint: '学霸解题分流 + SymPy 验证',
+    labelKey: 'settings.features.workflow.label',
+    hintKey: 'settings.features.workflow.hint',
     fallback: true,
   },
 ];
 
 // ===== API key 条目 =====
-export const CREDENTIALS: Array<{ ref: string; label: string; hint: string }> = [
-  { ref: 'DEEPSEEK_API_KEY', label: 'DeepSeek API Key', hint: '对话模型与记忆判定（可选，缺省走环境变量）' },
+export const CREDENTIALS: Array<{ ref: string; label: string; hintKey: string }> = [
+  { ref: 'DEEPSEEK_API_KEY', label: 'DeepSeek API Key', hintKey: 'settings.credential.hint' },
 ];
 
 // ============================================================
@@ -219,10 +220,10 @@ function ApiKeyRow({
             color: configured ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-label-tertiary)',
           }}
         >
-          {configured ? '已配置' : '未配置'}
+          {configured ? t('settings.api.configured') : t('settings.api.unconfigured')}
         </span>
         {!writable ? (
-          <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }}>（只读：环境变量覆盖）</span>
+          <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }}>{t('settings.api.readonly')}</span>
         ) : null}
       </div>
       <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '4px 0 8px' }}>{hint}</div>
@@ -230,7 +231,7 @@ function ApiKeyRow({
         <input
           type="password"
           value={draft}
-          placeholder={configured ? '已保存，输入新值可覆盖' : 'sk-…'}
+          placeholder={configured ? t('settings.api.placeholder.saved') : 'sk-…'}
           onChange={(e) => setDraft(e.target.value)}
           disabled={busy || !writable}
           style={{
@@ -262,7 +263,7 @@ function ApiKeyRow({
             fontWeight: 600,
           }}
         >
-          保存
+          {t('settings.api.save')}
         </button>
         {configured ? (
           <button
@@ -280,7 +281,7 @@ function ApiKeyRow({
               cursor: 'pointer',
             }}
           >
-            清除
+            {t('settings.api.clear')}
           </button>
         ) : null}
       </div>
@@ -318,8 +319,8 @@ export function FeatureSwitchCell({
   const value = fieldVal ?? feature.fallback;
   return (
     <SwitchRow
-      label={feature.label}
-      hint={`${feature.hint}（${feature.ns}）`}
+      label={t(feature.labelKey)}
+      hint={`${t(feature.hintKey)}（${feature.ns}）`}
       value={scope ? value : undefined}
       busy={false}
       onChange={(v) => onChange(feature, v)}
@@ -329,6 +330,7 @@ export function FeatureSwitchCell({
 
 /** 内层：设置页完整内容（hooks 全在此）。 */
 function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
+  useLocale(); // locale 切换时刷新设置页文案
   const setFeature = async (f: FeatureSwitch, v: boolean): Promise<void> => {
     const scope = scopes[f.ns];
     if (!scope) return;
@@ -357,7 +359,7 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
       {/* —— 功能开关 —— */}
       <section>
         <h3 style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }}>
-          功能开关
+          {t('settings.group.features')}
         </h3>
         <div
           style={{
@@ -372,14 +374,14 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
           ))}
         </div>
         <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginTop: 6 }}>
-          开关经 settings 实时生效，无需重启。注意：关闭「世界书注入/讲义检索」只停止知识库注入，模型仍会用自身知识回答。
+          {t('settings.note.features')}
         </div>
       </section>
 
       {/* —— 记忆管理 —— */}
       <section>
         <h3 style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }}>
-          记忆管理
+          {t('settings.group.memory')}
         </h3>
         <div
           style={{
@@ -396,7 +398,7 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
       {/* —— API key —— */}
       <section>
         <h3 style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }}>
-          API 密钥
+          {t('settings.group.api')}
         </h3>
         <div
           style={{
@@ -410,7 +412,7 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
             <ApiKeyRow
               key={c.ref}
               label={c.label}
-              hint={c.hint}
+              hint={t(c.hintKey)}
               view={credViews[c.ref]}
               onSave={async (v) => {
                 await credentials.set(c.ref, v); // set 内部已 refresh + notify（C11）
@@ -422,7 +424,7 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
           ))}
         </div>
         <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginTop: 6 }}>
-          密钥仅单向写入本机凭据库（.dsh-home/.credentials.yaml），界面永不回读明文。
+          {t('settings.note.api')}
         </div>
       </section>
     </div>
@@ -468,7 +470,7 @@ export function registerSettingsSection(
         name: 'settings.section',
         id: 'aemeath',
         order: 5,
-        label: () => '小爱同学',
+        label: () => t('settings.section.label'),
         inject: () => ({
           scopes: deps.scopes(),
           credentials: deps.credentials(),

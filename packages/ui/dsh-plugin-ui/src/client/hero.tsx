@@ -11,14 +11,12 @@ import { useSyncExternalStore } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { RoleFace } from './faces.ts';
+import { t, useLocale } from './i18n.ts';
 
-/** 爱弥斯开场白（新会话欢迎文案）。 */
-export const HERO_GREETING = '你好呀，我是爱弥斯 ✦';
-export const HERO_SUBTITLE = '想聊聊天，还是让学霸陪你学物理？我都在这里。';
-
+/** 角色卡片选项（id/glyph 静态；label/hint 随 locale 渲染时解析）。 */
 const ROLE_OPTIONS = [
-  { id: 'aemeath', label: '小爱同学', hint: '陪伴 · 日常聊天', glyph: '✦' },
-  { id: 'physicist', label: '爱弥斯-拉贝尔学部学霸', hint: '物理学习 · 解题', glyph: '⚛' },
+  { id: 'aemeath', hintKey: 'hero.role.aemeath.hint', glyph: '✦' },
+  { id: 'physicist', hintKey: 'hero.role.physicist.hint', glyph: '⚛' },
 ] as const;
 
 /** 角色卡片（Win11 卡片样式，选中 = 强调边框 + 淡底）。 */
@@ -71,9 +69,12 @@ function RoleCard({
   );
 }
 
-/** 欢迎屏主体（hooks 全在此：角色订阅）。 */
+/** 欢迎屏主体（hooks 全在此：角色订阅 + locale 订阅）。 */
 function HeroLoaded({ role }: { role: RoleFace }): JSX.Element {
   const current = useSyncExternalStore(role.subscribe, role.getSnapshot);
+  useLocale(); // 订阅 locale 切换 → 重渲染以刷新文案
+  const roleLabel = (id: 'aemeath' | 'physicist'): string =>
+    id === 'aemeath' ? t('hero.role.aemeath') : t('hero.role.physicist');
   return (
     <div
       style={{
@@ -97,10 +98,10 @@ function HeroLoaded({ role }: { role: RoleFace }): JSX.Element {
           letterSpacing: 0.3,
         }}
       >
-        {HERO_GREETING}
+        {t('hero.greeting')}
       </div>
       <div style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)', maxWidth: 460, lineHeight: 1.6 }}>
-        {HERO_SUBTITLE}
+        {t('hero.subtitle')}
       </div>
       <div
         style={{
@@ -116,8 +117,8 @@ function HeroLoaded({ role }: { role: RoleFace }): JSX.Element {
           <RoleCard
             key={opt.id}
             id={opt.id}
-            label={opt.label}
-            hint={opt.hint}
+            label={roleLabel(opt.id)}
+            hint={t(opt.hintKey)}
             glyph={opt.glyph}
             active={current === opt.id}
             onPick={(id) => void role.set(id)}
@@ -125,7 +126,7 @@ function HeroLoaded({ role }: { role: RoleFace }): JSX.Element {
         ))}
       </div>
       <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginTop: 6 }}>
-        选择后对之后新建的会话生效；当前会话保持创建时的角色。
+        {t('hero.note')}
       </div>
     </div>
   );

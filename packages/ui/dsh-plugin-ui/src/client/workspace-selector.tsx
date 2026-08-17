@@ -20,6 +20,7 @@ import { createPortal } from 'react-dom';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import { ensureFallbackChat, fetchFallbackWorkspacePath } from './bootstrap.ts';
+import { t, useLocale } from './i18n.ts';
 
 /** 注入面：workspaces 服务 + 会话打开（无工作区切换用）。 */
 export interface WorkspaceSelectorDeps {
@@ -103,7 +104,7 @@ function WorkspaceMenu({
       }}
     >
       <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--dsw-alias-label-tertiary)', padding: '6px 10px 4px' }}>
-        工作区（可选）
+        {t('workspace.menu.title')}
       </div>
 
       {/* 无工作区（未分组）—— 首项，选中态表示当前会话不归属任何工作区 */}
@@ -132,9 +133,9 @@ function WorkspaceMenu({
           ◇
         </span>
         <span style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>无工作区</span>
+          <span style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t('workspace.none')}</span>
           <span style={{ display: 'block', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {ungrouped ? '当前会话不归属任何工作区' : '开始对话（无需选择工作区）'}
+            {ungrouped ? t('workspace.none.desc.ungrouped') : t('workspace.none.desc')}
           </span>
         </span>
         {ungrouped ? <span style={{ color: 'var(--dsw-alias-state-business-primary)', fontSize: 12 }}>✓</span> : null}
@@ -177,7 +178,7 @@ function WorkspaceMenu({
         })
       ) : (
         <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '4px 10px 2px' }}>
-          还没有工作区——需要时选择一个文件夹即可
+          {t('workspace.empty')}
         </div>
       )}
       <div style={{ borderTop: '1px solid var(--dsw-alias-border-l1)', margin: '4px 0' }} />
@@ -201,10 +202,10 @@ function WorkspaceMenu({
           fontWeight: 600,
         }}
       >
-        <span style={{ display: 'inline-flex' }}>＋</span> 选择文件夹作为工作区…
+        <span style={{ display: 'inline-flex' }}>＋</span> {t('workspace.pickDirectory')}
       </button>
       <button type="button" role="menuitem" onClick={onClose} style={{ marginTop: 2, padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', fontSize: 12, textAlign: 'left' }}>
-        ✕ 关闭
+        {t('workspace.close')}
       </button>
     </div>
   );
@@ -228,6 +229,7 @@ function SelectorLoaded({
   const [anchorRect, setAnchorRect] = useState<{ left: number; top: number; bottom: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useLocale(); // locale 切换时刷新菜单/按钮文案
 
   // 视口钳制定位（无测量、无估算）：
   //   **优先向下**（下方空间 ≥200px 就向下，菜单贴住输入框左下角——hero 态输入框
@@ -318,7 +320,7 @@ function SelectorLoaded({
       const fallbackPath = await fetchFallbackWorkspacePath();
       if (fallbackPath && current?.path === fallbackPath) return; // 已在兜底工作区
       const ok = await ensureFallbackChat(workspaces);
-      if (!ok) setError('无法启动新对话（兜底工作区不可用）；请选择一个工作区或文件夹。');
+      if (!ok) setError(t('workspace.error.fallback'));
     } catch (err) {
       setError((err as Error).message ?? String(err));
     } finally {
@@ -343,15 +345,15 @@ function SelectorLoaded({
     }
   };
 
-  const label = currentTitle ?? '无工作区';
+  const label = currentTitle ?? t('workspace.none');
 
   return (
     <div style={{ position: 'relative', display: 'inline-flex' }}>
       <button
         type="button"
         data-aemeath-ws="chip"
-        aria-label="切换工作区"
-        title={ungrouped ? '当前无工作区 · 点击选择工作区' : `工作区：${label}`}
+        aria-label={t('workspace.aria')}
+        title={ungrouped ? t('workspace.title.none') : t('workspace.title', { label })}
         disabled={busy}
         onClick={toggle}
         style={{

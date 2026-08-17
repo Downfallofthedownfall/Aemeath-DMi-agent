@@ -23,7 +23,6 @@ import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-sett
 import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-credentials';
 import type {} from '@deepseek-ai/dsh-agent';
-
 export const name = 'aemeath-common';
 export const inject = ['tools', 'systemPrompt', 'agents', 'credentials', 'settings'];
 
@@ -75,6 +74,35 @@ export function log(msg: string): void {
 
 export function warn(msg: string): void {
   console.warn(`[aemeath-common] ⚠ ${msg}`);
+}
+
+/**
+ * 读取当前 UI locale 偏好（settings.locale.preference，由 dsh 平台 locale 插件
+ * 注册；缺省 zh）。host 侧无法感知浏览器语言，只能读用户显式选择的偏好。
+ */
+function currentLocale(ctx: Context): string {
+  try {
+    const v = ctx.settings?.get(settingsNamespace('locale')) as { preference?: string } | undefined;
+    const pref = v?.preference;
+    return pref === 'en' || pref === 'de' ? pref : 'zh';
+  } catch {
+    return 'zh';
+  }
+}
+
+/**
+ * 按 locale 解析人格文件路径：<base>.<locale>.md 存在时优先（如 aemeath.en.md），
+ * 否则回退配置的 file。中文（zh）直接使用默认 file。
+ */
+function personaFileForLocale(file: string, locale: string): string {
+  if (locale === 'zh') return file;
+  const localized = file.replace(/\.md$/, '') + `.${locale}.md`;
+  try {
+    readFileSync(localized, 'utf-8');
+    return localized;
+  } catch {
+    return file;
+  }
 }
 
 // ============================================================
@@ -318,15 +346,19 @@ export function apply(ctx: Context, config: CommonConfig): void {
     const preset = resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
     const persona = config.personas?.[preset ?? ''];
     if (!persona) return;
+    // i18n：按 settings.locale.preference 选择人格文件（zh 用默认，en/de 用 <base>.<locale>.md）
+    const locale = currentLocale(ctx);
     let text = persona.text ?? '';
     if (!text && persona.file) {
-      const p = isAbsolute(persona.file) ? persona.file : join(process.cwd(), persona.file);
+      const localized = personaFileForLocale(persona.file, locale);
+      const p = isAbsolute(localized) ? localized : join(process.cwd(), localized);
       try {
         text = readFileSync(p, 'utf-8').trim();
       } catch (e) {
         warn(`读取人格文件失败 ${p}: ${(e as Error).message}`);
         return;
       }
+      if (localized !== persona.file) log(`人格按 locale 选择: ${persona.file} → ${localized}（locale=${locale}）`);
     }
     if (!text) return;
     if (mountedAgentPersonas.has(agent.id)) {

@@ -40,6 +40,14 @@ function json(res: ServerResponse, code: number, obj: unknown): void {
 }
 
 /**
+ * 用户可见错误响应：返回稳定机器码 `code`（前端按 locale 映射文案）+ 中文 `error` 兜底。
+ * 约定：code 是 i18n key `errors.<code>` 的后缀；前端无映射时回退 error 原文。
+ */
+function jsonError(res: ServerResponse, httpCode: number, code: string, fallback: string, extra?: Record<string, unknown>): void {
+  json(res, httpCode, { ok: false, code, error: fallback, ...extra });
+}
+
+/**
  * 写请求来源校验（S3 修复）：本插件的端点只服务同源前端（dsh web server 页面
  * fetch 相对路径），不再发任何 CORS 头。为防恶意网页经 no-cors/DNS rebinding
  * 发起的跨源 POST（浏览器仍会发出简单请求，只是读不到响应），对带 Origin 的
@@ -327,22 +335,19 @@ export function apply(ctx: Context): void {
   // POST /aemeath/api/tts —— 合成并返回 base64 wav（前端直接播放）
   async function handleTts(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
-      if (!checkWriteOrigin(req)) return json(res, 403, { ok: false, error: 'cross-origin write denied' });
-      if (!ttsSettingsEnabled()) return json(res, 400, { ok: false, error: '语音朗读已关闭（设置 → 语音朗读）' });
+      if (!checkWriteOrigin(req)) return jsonError(res, 403, 'tts.crossOrigin', 'cross-origin write denied');
+      if (!ttsSettingsEnabled()) return jsonError(res, 400, 'tts.disabled', '语音朗读已关闭（设置 → 语音朗读）');
       const raw = await readBody(req);
       const parsed = JSON.parse(raw || '{}') as { text?: unknown };
       const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
       console.log(`[aemeath-ui] TTS 合成请求收到 text="${text.slice(0, 60)}" enabled=${ttsSettingsEnabled()}`);
-      if (!text) return json(res, 400, { ok: false, error: 'text required' });
-      if (text.length > 500) return json(res, 400, { ok: false, error: `text 过长（${text.length} 字，上限 500）` });
+      if (!text) return jsonError(res, 400, 'tts.textRequired', 'text required');
+      if (text.length > 500) return jsonError(res, 400, 'tts.textTooLong', `text 过长（${text.length} 字，上限 500）`, { n: text.length });
       const cfg = ttsConfigStatus();
       if (!cfg.configured) {
-        return json(res, 500, {
-          ok: false,
-          error: `未配置 TTS 引擎（python=${cfg.pythonExists} model=${cfg.modelConfigExists} voice=${cfg.voiceCount}）。请安装 IndexTTS2 到 D:\\index-tts 或设置 AEMEATH_TTS_PYTHON / AEMEATH_TTS_MODEL_DIR`,
-        });
+        return jsonError(res, 500, 'tts.notConfigured', `未配置 TTS 引擎（python=${cfg.pythonExists} model=${cfg.modelConfigExists} voice=${cfg.voiceCount}）。请安装 IndexTTS2 到 D:\\index-tts 或设置 AEMEATH_TTS_PYTHON / AEMEATH_TTS_MODEL_DIR`);
       }
-      if (!(await ensureTtsServer())) return json(res, 500, { ok: false, error: 'TTS 服务启动失败' });
+      if (!(await ensureTtsServer())) return jsonError(res, 500, 'tts.startFailed', 'TTS 服务启动失败');
       const r = await fetch(`${TTS_HTTP_BASE}/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -352,10 +357,10 @@ export function apply(ctx: Context): void {
       });
       const d = (await r.json()) as { success?: boolean; audio_base64?: string; size_bytes?: number; error?: string };
       console.log(`[aemeath-ui] TTS 合成结果: HTTP ${r.status} success=${d.success} size=${d.size_bytes ?? 0} error=${d.error ?? ''}`);
-      if (!r.ok || !d.success || !d.audio_base64) return json(res, 500, { ok: false, error: d.error ?? `合成失败（${r.status}）` });
+      if (!r.ok || !d.success || !d.audio_base64) return jsonError(res, 500, 'tts.synthFailed', d.error ?? `合成失败（${r.status}）`, { status: r.status });
       json(res, 200, { ok: true, audio_base64: d.audio_base64, size_bytes: d.size_bytes ?? 0 });
     } catch (e) {
-      json(res, 500, { ok: false, error: (e as Error).message });
+      jsonError(res, 500, 'tts.unknown', (e as Error).message);
     }
   }
 
@@ -364,18 +369,18 @@ export function apply(ctx: Context): void {
   // 若此处检查 enabled 会把预热拒掉（开关还关着）→ 前端误报加载失败（2026-08-17 修复）。
   async function handleTtsWarmup(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
-      if (!checkWriteOrigin(req)) return json(res, 403, { ok: false, error: 'cross-origin write denied' });
-      if (!(await ensureTtsServer())) return json(res, 500, { ok: false, error: 'TTS 服务启动失败' });
+      if (!checkWriteOrigin(req)) return jsonError(res, 403, 'tts.crossOrigin', 'cross-origin write denied');
+      if (!(await ensureTtsServer())) return jsonError(res, 500, 'tts.startFailed', 'TTS 服务启动失败');
       const r = await fetch(`${TTS_HTTP_BASE}/warmup`, {
         method: 'POST',
         // 模型加载 1-3 分钟
         signal: AbortSignal.timeout(240000),
       });
       const d = (await r.json()) as { ok?: boolean; model_loaded?: boolean; error?: string };
-      if (!r.ok || !d.ok) return json(res, 500, { ok: false, error: d.error ?? `模型加载失败（${r.status}）` });
+      if (!r.ok || !d.ok) return jsonError(res, 500, 'tts.warmupFailed', d.error ?? `模型加载失败（${r.status}）`, { status: r.status });
       json(res, 200, { ok: true, model_loaded: !!d.model_loaded });
     } catch (e) {
-      json(res, 500, { ok: false, error: (e as Error).message });
+      jsonError(res, 500, 'tts.unknown', (e as Error).message);
     }
   }
 
@@ -425,7 +430,7 @@ export function apply(ctx: Context): void {
   // —— 记忆管理端点（M5 F2）：GET list/stats + POST delete（无 CORS；POST 校验 Origin）——
   async function handleMemory(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!memory) {
-      json(res, 503, { ok: false, error: 'memory service unavailable' });
+      jsonError(res, 503, 'memory.unavailable', 'memory service unavailable');
       return;
     }
     try {
@@ -463,21 +468,21 @@ export function apply(ctx: Context): void {
         return;
       }
       if (req.method === 'POST') {
-        if (!checkWriteOrigin(req)) return json(res, 403, { ok: false, error: 'cross-origin write denied' });
+        if (!checkWriteOrigin(req)) return jsonError(res, 403, 'memory.crossOrigin', 'cross-origin write denied');
         const raw = await readBody(req);
         const parsed = JSON.parse(raw || '{}') as { idPrefix?: string };
         if (!parsed.idPrefix) {
-          json(res, 400, { ok: false, error: 'idPrefix required' });
+          jsonError(res, 400, 'memory.idPrefixRequired', 'idPrefix required');
           return;
         }
         const removed = await memory.softDelete(parsed.idPrefix);
         json(res, 200, { ok: true, removed });
         return;
       }
-      json(res, 405, { ok: false, error: 'method not allowed' });
+      jsonError(res, 405, 'memory.methodNotAllowed', 'method not allowed');
     } catch (e) {
       const err = e as Error & { status?: number };
-      json(res, err.status ?? 400, { ok: false, error: err.message });
+      jsonError(res, err.status ?? 400, 'memory.deleteFailed', err.message);
     }
   }
 }

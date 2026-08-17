@@ -13,6 +13,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
+import { t, useLocale } from './i18n.ts';
 
 /** 注入 face：settings scopes（读/写 aemeath-tts.enabled）+ messageId → 消息文本解析器。 */
 export interface TtsDeps {
@@ -41,9 +42,22 @@ async function synthesize(text: string): Promise<string> {
     body: JSON.stringify({ text }),
     signal: AbortSignal.timeout(200000),
   });
-  const d = (await res.json()) as { ok?: boolean; audio_base64?: string; error?: string };
-  if (!res.ok || !d.ok || !d.audio_base64) throw new Error(d.error ?? `TTS 失败（${res.status}）`);
+  const d = (await res.json()) as { ok?: boolean; audio_base64?: string; code?: string; error?: string };
+  if (!res.ok || !d.ok || !d.audio_base64) {
+    // host 返回稳定错误码 → 按 active locale 本地化；无映射回退 error 原文
+    throw new Error(localizeError(d.code, d.error, { status: res.status }));
+  }
   return d.audio_base64;
+}
+
+/** 按错误码本地化 host 错误文案（映射表见 locales.ts errors.*）。 */
+function localizeError(code: string | undefined, fallback: string | undefined, params?: Record<string, unknown>): string {
+  if (code) {
+    const key = `errors.${code}`;
+    const resolved = t(key, params);
+    if (resolved !== key) return resolved;
+  }
+  return fallback ?? t('tts.error.failed', { status: params?.status ?? '-' });
 }
 
 /** 配置状态（未配置 → 前端弹提示）。 */
@@ -84,13 +98,13 @@ function showLoadingPopup(startedAt: number): void {
   ].join(';');
   loadEl.innerHTML = `
     <div style="width:360px;max-width:calc(100vw - 40px);padding:18px 20px;border-radius:14px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;box-shadow:0 12px 40px rgba(0,0,0,0.18)">
-      <div style="font-weight:700;font-size:14px;margin-bottom:6px">正在加载语音模型…</div>
-      <div style="color:var(--dsw-alias-label-secondary);line-height:1.6;margin-bottom:12px">首次使用需加载约 3.4GB 模型（1-3 分钟），完成后即可正常朗读。加载期间请勿关闭窗口。</div>
+      <div style="font-weight:700;font-size:14px;margin-bottom:6px">${t('tts.loading.title')}</div>
+      <div style="color:var(--dsw-alias-label-secondary);line-height:1.6;margin-bottom:12px">${t('tts.loading.desc')}</div>
       <div style="height:6px;border-radius:3px;background:var(--dsw-alias-border-l2);overflow:hidden;margin-bottom:8px">
         <div id="aemeath-tts-load-bar" style="height:100%;width:0;border-radius:3px;background:var(--dsw-alias-state-business-primary);transition:width 2.5s ease-out"></div>
       </div>
       <div style="display:flex;justify-content:space-between;color:var(--dsw-alias-label-tertiary);font-size:12px">
-        <span id="aemeath-tts-load-timer">已等待 00:00</span>
+        <span id="aemeath-tts-load-timer">${t('tts.loading.waiting', { time: '00:00' })}</span>
       </div>
     </div>`;
   document.body.appendChild(loadEl);
@@ -104,8 +118,8 @@ function showLoadingPopup(startedAt: number): void {
     const s = Math.floor((Date.now() - loadStart) / 1000);
     const mm = String(Math.floor(s / 60)).padStart(2, '0');
     const ss = String(s % 60).padStart(2, '0');
-    const t = loadEl.querySelector('#aemeath-tts-load-timer');
-    if (t) t.textContent = `已等待 ${mm}:${ss}`;
+    const timerEl = loadEl.querySelector('#aemeath-tts-load-timer');
+    if (timerEl) timerEl.textContent = t('tts.loading.waiting', { time: `${mm}:${ss}` });
   }, 1000);
 }
 
@@ -131,7 +145,7 @@ async function ensureWarm(): Promise<void> {
     try {
       const res = await fetch('/aemeath/api/tts/warmup', { method: 'POST', signal: AbortSignal.timeout(240000) });
       const d = (await res.json()) as { ok?: boolean; model_loaded?: boolean; error?: string };
-      if (!res.ok || !d.ok || !d.model_loaded) throw new Error(d.error ?? '语音模型加载失败');
+      if (!res.ok || !d.ok || !d.model_loaded) throw new Error(d.error ?? t('tts.error.modelLoadFailed'));
       warmState = 'ready';
     } finally {
       clearTimeout(popupTimer);
@@ -209,7 +223,7 @@ function playAudio(b64: string): void {
       speakingFlag = false;
       notifySpeaking();
     }
-    showToast('音频播放失败');
+    showToast(t('tts.error.playFailed'));
   };
 }
 
@@ -222,7 +236,7 @@ async function speakText(text: string): Promise<void> {
     playAudio(b64);
   } catch (err) {
     console.error('[aemeath-tts] 朗读失败:', err);
-    showToast((err as Error).message || 'TTS 合成失败');
+    showToast((err as Error).message || t('tts.error.failed', { status: '-' }));
   }
 }
 
@@ -418,6 +432,7 @@ export function TtsAction({ scopes, messageId }: TtsDeps & { messageId?: string 
   const [synthesizing, setSynthesizing] = useState(false);
   const busyRef = useRef(false);
   const speaking = useSyncExternalStore(subscribeSpeaking, getSpeaking);
+  useLocale(); // locale 切换时刷新按钮文案
   console.log('[aemeath-tts] 朗读按钮渲染, enabled=', enabled, 'messageId=', messageId ? messageId.slice(0, 8) : '(无)');
 
   // 卸载清理：本组件不持有音频（共享控制器），仅重置本地忙标志
@@ -443,7 +458,7 @@ export function TtsAction({ scopes, messageId }: TtsDeps & { messageId?: string 
     const text = (messageId && resolveMessageTextFn?.(messageId)) || readMessageText(e.currentTarget);
     console.log('[aemeath-tts] 提取文本 len=', text.length, 'text="', text.slice(0, 60), '"');
     if (!text) {
-      showToast('未找到可朗读的消息文本');
+      showToast(t('tts.error.noMessage'));
       return;
     }
     busyRef.current = true;
@@ -462,8 +477,8 @@ export function TtsAction({ scopes, messageId }: TtsDeps & { messageId?: string 
       data-aemeath-tts
       data-message-id={messageId ?? ''}
       onClick={(e) => void toggle(e)}
-      aria-label={speaking ? '停止朗读' : '朗读'}
-      title={speaking ? '停止朗读' : synthesizing ? '合成中…' : '朗读（IndexTTS2）'}
+      aria-label={speaking ? t('tts.stop') : t('tts.speak')}
+      title={speaking ? t('tts.stop') : synthesizing ? t('tts.synthesizing') : t('tts.speak.title')}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -505,6 +520,7 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
   const volume = useTtsVolume(props.scopes);
   const [busy, setBusy] = useState(false);
   const scope = props.scopes?.[TTS_NS];
+  useLocale(); // locale 切换时刷新开关文案
   console.log('[aemeath-tts] 开关渲染, enabled=', enabled, 'volume=', volume, 'scope?=', !!scope);
 
   // 同步自动朗读开关状态（关闭时停止播放）
@@ -528,7 +544,7 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
       const st = await ttsStatus();
       console.log('[aemeath-tts] 配置检查:', JSON.stringify(st));
       if (!st.configured) {
-        showToast('未配置 TTS 引擎：请将 IndexTTS2 安装到 D:\\index-tts（venv + checkpoints/config.yaml + voices 参考音色），\n或设置环境变量 AEMEATH_TTS_PYTHON / AEMEATH_TTS_MODEL_DIR');
+        showToast(t('tts.error.notConfigured'));
         return;
       }
     }
@@ -543,7 +559,7 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
       console.log('[aemeath-tts] 开关写入完成 enabled=', next);
     } catch (e) {
       console.error('[aemeath-tts] 开关流程失败:', e);
-      showToast('语音模型加载失败，请检查 IndexTTS2 配置后重试');
+      showToast(t('tts.error.modelLoadFailed'));
     } finally {
       setBusy(false);
     }
@@ -555,8 +571,8 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
         type="button"
         role="switch"
         aria-checked={enabled}
-        aria-label="语音朗读"
-        title={enabled ? '语音朗读：开（点击关闭）' : '语音朗读：关（点击开启）'}
+        aria-label={t('tts.toggle.aria')}
+        title={enabled ? t('tts.toggle.title.on') : t('tts.toggle.title.off')}
         onClick={() => void toggle()}
         style={{
           display: 'inline-flex',
@@ -580,7 +596,7 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
           <path d="M10 5c.6.6 1 1.3 1 2s-.4 1.4-1 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
           {enabled ? <path d="M11.5 3.5c1 1.1 1.5 2.2 1.5 3.5s-.5 2.4-1.5 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /> : <line x1="2.5" y1="2.5" x2="11.5" y2="11.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />}
         </svg>
-        朗读
+        {t('tts.speak')}
       </button>
       {/* 音量滑块（0~100） */}
       <input
@@ -588,8 +604,8 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
         min={0}
         max={100}
         value={Math.round((volume ?? 1) * 100)}
-        aria-label="朗读音量"
-        title={`音量 ${Math.round((volume ?? 1) * 100)}%`}
+        aria-label={t('tts.volume.aria')}
+        title={t('tts.volume.title', { pct: Math.round((volume ?? 1) * 100) })}
         onChange={(e) => void scope.set('volume', Number(e.target.value) / 100).catch(() => undefined)}
         style={{
           width: 64,

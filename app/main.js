@@ -171,15 +171,29 @@ function stopDsh() {
 }
 
 // ===== 本地错误页（C24：服务不可用时加载，不白屏、不加载外来内容）=====
+// i18n：Electron 主进程无浏览器 locale 服务，按系统语言（app.getLocale）选择文案。
 function errorPageHtml(title, detail) {
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const retryLabel = uiText('重试', 'Retry', 'Erneut versuchen');
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title></head>
   <body style="background:#141821;color:#e8ecf4;font-family:Segoe UI,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
   <div style="text-align:center;max-width:520px">
     <h2 style="margin:0 0 12px">${esc(title)}</h2>
     <p style="color:#aab4c8;font-size:13px;line-height:1.6">${esc(detail)}</p>
-    <button onclick="location.reload()" style="margin-top:16px;padding:8px 20px;border:none;border-radius:8px;background:#5b8def;color:#fff;cursor:pointer;font-size:13px">重试</button>
+    <button onclick="location.reload()" style="margin-top:16px;padding:8px 20px;border:none;border-radius:8px;background:#5b8def;color:#fff;cursor:pointer;font-size:13px">${esc(retryLabel)}</button>
   </div></body></html>`;
+}
+
+/** 按系统语言返回文案（zh/en/de）。 */
+function uiText(zh, en, de) {
+  try {
+    const lang = String(app.getLocale() ?? '').toLowerCase();
+    if (lang.startsWith('de')) return de;
+    if (lang.startsWith('en')) return en;
+  } catch {
+    /* fallthrough */
+  }
+  return zh;
 }
 
 // ===== 窗口 =====
@@ -293,16 +307,36 @@ app.whenReady().then(async () => {
   } else if (serviceState === 'foreign') {
     // C24：端口被非 dsh 进程占用——不加载外来内容，显示错误页
     createWindow('data:text/html;charset=utf-8,' + encodeURIComponent(
-      errorPageHtml('端口 3081 被其他程序占用',
-        '检测到 3081 端口上运行的不是 Aemeath 服务（可能是其他程序）。\n请先关闭占用该端口的程序，或修改 app/main.js 的 PORT 后重试。'),
+      errorPageHtml(
+        uiText('端口 3081 被其他程序占用', 'Port 3081 is occupied by another program', 'Port 3081 wird von einem anderen Programm belegt'),
+        uiText(
+          '检测到 3081 端口上运行的不是 Aemeath 服务（可能是其他程序）。\n请先关闭占用该端口的程序，或修改 app/main.js 的 PORT 后重试。',
+          'Port 3081 is not running the Aemeath service (another program may be using it).\nClose the program occupying the port, or change PORT in app/main.js and retry.',
+          'Auf Port 3081 läuft nicht der Aemeath-Dienst (möglicherweise ein anderes Programm).\nBeende das Programm, das den Port belegt, oder ändere PORT in app/main.js und versuche es erneut.',
+        ),
+      ),
     ));
   } else {
     // C24：等待超时/依赖缺失——错误页而非白屏
     createWindow('data:text/html;charset=utf-8,' + encodeURIComponent(
-      errorPageHtml(depsOk ? 'Aemeath 服务启动超时' : '依赖安装失败',
-        depsOk
-          ? 'dsh 服务未在 60 秒内就绪。请查看控制台日志；确认已执行 npm install 与 pip install -r requirements.txt。'
-          : 'npm ci 未能补齐运行依赖，请手动在项目目录执行 npm install 后重试。'),
+      errorPageHtml(
+        uiText(
+          depsOk ? 'Aemeath 服务启动超时' : '依赖安装失败',
+          depsOk ? 'Aemeath service startup timed out' : 'Dependency installation failed',
+          depsOk ? 'Zeitüberschreitung beim Start des Aemeath-Dienstes' : 'Abhängigkeiten konnten nicht installiert werden',
+        ),
+        uiText(
+          depsOk
+            ? 'dsh 服务未在 60 秒内就绪。请查看控制台日志；确认已执行 npm install 与 pip install -r requirements.txt。'
+            : 'npm ci 未能补齐运行依赖，请手动在项目目录执行 npm install 后重试。',
+          depsOk
+            ? 'The dsh service was not ready within 60 seconds. Check the console logs; make sure you ran npm install and pip install -r requirements.txt.'
+            : 'npm ci could not install the runtime dependencies. Run npm install in the project directory and retry.',
+          depsOk
+            ? 'Der dsh-Dienst war nicht innerhalb von 60 Sekunden bereit. Prüfe die Konsolenprotokolle; stelle sicher, dass npm install und pip install -r requirements.txt ausgeführt wurden.'
+            : 'npm ci konnte die Laufzeit-Abhängigkeiten nicht installieren. Führe npm install im Projektverzeichnis aus und versuche es erneut.',
+        ),
+      ),
     ));
   }
 

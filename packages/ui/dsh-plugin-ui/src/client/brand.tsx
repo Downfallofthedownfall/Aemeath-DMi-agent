@@ -8,9 +8,7 @@
 // ============================================================
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
-
-export const BRAND_TITLE = '小爱同学 & 爱弥斯-拉贝尔学部学霸 · Aemeath-DMi';
-export const BRAND_SUBTITLE = 'Aemeath-DMi · 小爱同学 & 爱弥斯-拉贝尔学部学霸';
+import { t } from './i18n.ts';
 
 /** 品牌徽记：⚛ 爱弥斯。纯 inline SVG 避免外部资源。 */
 export function BrandMark(): JSX.Element {
@@ -31,7 +29,7 @@ export function BrandTitle(): JSX.Element {
       <span style={{ color: 'var(--dsw-alias-state-business-primary)' }}>
         <BrandMark />
       </span>
-      <span>小爱同学 & 爱弥斯-拉贝尔学部学霸</span>
+      <span>{t('brand.name')}</span>
     </span>
   );
 }
@@ -59,7 +57,7 @@ export function SidebarBrand({ wide }: { wide: boolean }): JSX.Element {
       <span style={{ color: 'var(--dsw-alias-state-business-primary)', display: 'inline-flex' }}>
         <BrandMark />
       </span>
-      {wide ? '小爱同学 & 爱弥斯-拉贝尔学部学霸' : null}
+      {wide ? t('brand.name') : null}
     </span>
   );
 }
@@ -87,15 +85,24 @@ export function applyBrand(ctx: ClientContext): void {
     document.head.appendChild(style);
   }
 
-  // 1) 页面标题（立即生效 + 持续保持；C12：此前整段复制两份导致两个 5s interval 并行）
+  // 1) 页面标题（立即生效 + 持续保持；C12：此前整段复制两份导致两个 5s interval 并行）。
+  //    locale 化：标题文案随 active locale 变化，locale/change 时刷新。
   if (typeof document !== 'undefined') {
-    document.title = BRAND_TITLE;
+    const applyTitle = (): void => {
+      document.title = t('brand.title');
+    };
+    applyTitle();
     const keep = (): void => {
-      if (document.title !== BRAND_TITLE) document.title = BRAND_TITLE;
+      if (document.title !== t('brand.title')) document.title = t('brand.title');
     };
     // 某些 UI 可能改写 title，周期性兜底（低频，无感）
     const timer = window.setInterval(keep, 5000);
-    ctx.effect(() => () => window.clearInterval(timer));
+    // locale 切换 → 立即重设标题（ctx.on 返回 disposer）
+    const offLocale = ctx.on('locale/change', applyTitle);
+    ctx.effect(() => () => {
+      window.clearInterval(timer);
+      offLocale();
+    });
   }
   // 注：侧边栏品牌位（SidebarBrandHeader）注册见 sessions.tsx（P2 迁移）；
   // footer 品牌位已移除，footer.action 槽位留给 P3 快速设置入口。

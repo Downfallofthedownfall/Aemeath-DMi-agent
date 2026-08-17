@@ -103,6 +103,14 @@ cd app && npm install
 | Python microservices (MCP) | SymPy compute / YOLO-OCR vision / IndexTTS2 TTS / keyboard-mouse control, wired via dsh `mcp-client` (`packages/py-services/`) |
 | SQLite FTS5 | Lecture retrieval (BM25) |
 | Electron (41) | Desktop pet shell (managed dsh + branded window, packaging via electron-builder) |
+| **i18n (zh/en/de)** | UI strings via dsh locale service (`packages/ui/dsh-plugin-ui/src/client/i18n.ts` + `locales.ts`); personas per locale (`profiles/aemeath/personas/*.en/de.md`) |
+
+### Localization (i18n)
+
+- **UI**: all user-visible strings live in `packages/ui/dsh-plugin-ui/src/client/locales.ts` (zh = key source, en/de checked complete by TS). Components call `t(key)` / `useLocale()` from `i18n.ts`; language is switchable in **Settings → Language** (browser default applies otherwise).
+- **Personas**: `common` plugin picks `personas/<name>.<locale>.md` (en/de) when `settings.locale.preference` is set, falling back to the default Chinese file.
+- **German platform caveat**: dsh `client-locale` rc.6 only ships zh/en. Run `scripts\patch-de-locale.ps1` (idempotent, wired into `setup.bat`) to enable Deutsch in the language picker. Re-run after every `npm install`.
+- **Out of scope** (by design): benchmark sets, backend/LLM-facing tool descriptions & prompts, debug logs, docs.
 
 ### Project structure
 
@@ -230,6 +238,14 @@ cd app && npm install
 | Python 微服务（MCP） | SymPy 计算 / YOLO-OCR 视觉 / IndexTTS2 语音 / 键鼠控制，经 dsh `mcp-client` 接入（`packages/py-services/`） |
 | SQLite FTS5 | 讲义检索（BM25） |
 | Electron（41） | 桌宠壳（托管 dsh + 品牌窗口，electron-builder 打包） |
+| **i18n（中/英/德）** | UI 文案走 dsh locale 服务（`packages/ui/dsh-plugin-ui/src/client/i18n.ts` + `locales.ts`）；人格按 locale 选文件（`profiles/aemeath/personas/*.en/de.md`） |
+
+### 本地化（i18n）
+
+- **UI**：所有用户可见文案集中在 `packages/ui/dsh-plugin-ui/src/client/locales.ts`（zh 为 key 源，en/de 由 TS 类型强制 key 集一致）。组件用 `i18n.ts` 的 `t(key)` / `useLocale()`；语言在「设置 → 语言」切换（缺省跟随浏览器）。
+- **人格**：`common` 插件在 `settings.locale.preference` 为 en/de 时加载 `personas/<名字>.<locale>.md`，缺省回退中文文件。
+- **德文平台注意**：dsh `client-locale` rc.6 只内置 zh/en。运行 `scripts\patch-de-locale.ps1`（幂等，已接入 `setup.bat`）即可在语言选择器启用 Deutsch；每次 `npm install` 后需重跑。
+- **明确不翻**（按产品决策）：基准题集、后端/LLM 侧工具描述与 prompt、debug 日志、文档。
 
 ### 项目结构
 

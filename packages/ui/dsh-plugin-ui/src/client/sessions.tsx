@@ -11,6 +11,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import { BrandMark } from './brand.tsx';
+import { t, useLocale } from './i18n.ts';
 
 /** 会话列表行（含删除按钮，hover 显示——纯 CSS）。 */
 function SessionRow({
@@ -70,8 +71,8 @@ function SessionRow({
         type="button"
         data-session-delete
         onClick={onDelete}
-        title="删除此对话"
-        aria-label={`删除 ${title}`}
+        title={t('sessions.delete.title')}
+        aria-label={t('sessions.delete.aria', { title })}
         style={{
           flex: 'none',
           width: 24,
@@ -126,10 +127,10 @@ export function SidebarBrandHeader({ wide }: { wide: boolean }): JSX.Element {
       {wide ? (
         <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.35 }}>
           <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' }}>
-            小爱同学
+            {t('brand.sidebar.name')}
           </span>
           <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            物理学习 Copilot
+            {t('brand.sidebar.subtitle')}
           </span>
         </span>
       ) : null}
@@ -162,6 +163,7 @@ function SessionListBody({
   const byId = useSessions((s: unknown) => (s as { byId?: Record<string, SessionInfo> })?.byId) as Record<string, SessionInfo> | undefined;
   // 归档集合只订阅 archivedSessionIds 切片（数组引用稳定，非每次全量状态变化都触发）
   const archived = useWorkspaces((s: unknown) => (s as { archivedSessionIds?: readonly string[] })?.archivedSessionIds) as readonly string[] | undefined;
+  useLocale(); // locale 切换时刷新空态/删除 tooltip 等文案
 
   // 去重：极端重连/事件累积下 ids 可能出现重复（测试环境 18 次重连后实测每会话 3-4 份）
   const archivedSet = new Set(archived ?? []);
@@ -177,7 +179,7 @@ function SessionListBody({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 1, padding: '0 8px 8px', minHeight: 0, flex: 1, overflowY: 'auto' }}>
         {ids.length === 0 ? (
           <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '12px 10px', textAlign: 'center' }}>
-            {wide ? '还没有会话，点上方「新会话」开始' : '—'}
+            {wide ? t('sessions.empty') : '—'}
           </div>
         ) : (
           ids.map((id) => (
@@ -211,8 +213,9 @@ const SessionRowMemo = memo(function SessionRowMemo({
   open: (id: string) => void;
   archive: (id: string) => void;
 }): JSX.Element | null {
+  useLocale(); // locale 切换时强制刷新预设徽章文案
   if (!s || s.blank) return null;
-  const presetLabel = s.agentPreset === 'aemeath' ? '小爱同学' : s.agentPreset === 'physicist' ? '爱弥斯-拉贝尔学部学霸' : s.agentPreset ?? '';
+  const presetLabel = s.agentPreset === 'aemeath' ? t('sessions.preset.aemeath') : s.agentPreset === 'physicist' ? t('sessions.preset.physicist') : s.agentPreset ?? '';
   const onClick = useCallback(() => open(id), [open, id]);
   const onDelete = useCallback(() => archive(id), [archive, id]);
   return (

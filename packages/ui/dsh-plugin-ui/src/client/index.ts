@@ -6,6 +6,7 @@
 // ============================================================
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
+import { installI18n } from './i18n.ts';
 import { registerThemes } from './theme.ts';
 import { applyBrand } from './brand.tsx';
 import { registerSettingsSection, FEATURES } from './settings.tsx';
@@ -21,10 +22,13 @@ import { createFaces } from './faces.ts';
 export { FEATURE_NAMESPACES } from './constants.ts';
 
 export const name = 'aemeath-ui';
-export const inject = ['slots', 'theme', 'connection', 'remote', 'sessions', 'workspaces'];
+export const inject = ['slots', 'theme', 'connection', 'remote', 'sessions', 'workspaces', 'locale'];
 
 export function apply(ctx: ClientContext): void {
-  // 0) 设计系统基础层（Win11 fluent token + dsh 覆盖注册表）——最先注入，避免闪烁
+  // 0) i18n：注册 aemeath 三语字典（zh/en/de）并绑定 t()（最先执行，供各组件使用）
+  installI18n(ctx);
+
+  // 0.5) 设计系统基础层（Win11 fluent token + dsh 覆盖注册表）——最先注入，避免闪烁
   injectFluentStyles();
   injectDeDshStyles();
 

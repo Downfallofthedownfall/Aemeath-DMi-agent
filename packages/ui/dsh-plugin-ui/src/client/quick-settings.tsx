@@ -16,6 +16,7 @@ import type { CredentialView } from '@deepseek-ai/dsh-client-connection/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type { RoleFace } from './faces.ts';
 import { FEATURES, FeatureSwitchCell, type FeatureSwitch } from './settings.tsx';
+import { t, useLocale } from './i18n.ts';
 
 export interface QuickSettingsDeps {
   role?: RoleFace;
@@ -29,8 +30,8 @@ export interface QuickSettingsDeps {
 }
 
 const ROLE_OPTIONS = [
-  { id: 'aemeath', label: '小爱同学' },
-  { id: 'physicist', label: '学霸' },
+  { id: 'aemeath', labelKey: 'quick.role.aemeath' },
+  { id: 'physicist', labelKey: 'quick.role.physicist' },
 ] as const;
 
 /** 记忆状态摘要（/aemeath/api/memory 统计）。 */
@@ -50,13 +51,14 @@ function MemoryStatsLine(): JSX.Element {
       alive = false;
     };
   }, []);
+  useLocale(); // locale 切换时刷新摘要文案
   if (!stats) {
-    return <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>记忆 · …</span>;
+    return <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>{t('quick.memory.loading')}</span>;
   }
   return (
     <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-secondary)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
       <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--dsw-alias-state-success-primary)', display: 'inline-block' }} />
-      记忆 {stats.active ?? 0} 活跃 · {stats.dormant ?? 0} 休眠
+      {t('quick.memory.summary', { active: stats.active ?? 0, dormant: stats.dormant ?? 0 })}
     </span>
   );
 }
@@ -76,6 +78,7 @@ function QuickSettingsLoaded({
   onClose: () => void;
 }): JSX.Element {
   const currentRole = useSyncExternalStore(role.subscribe, role.getSnapshot);
+  useLocale(); // locale 切换时刷新面板文案
   // C11：凭据徽章可订阅——设置页保存/清除 key 后，面板开启期间也实时刷新
   const noopSub = (): (() => void) => () => void 0;
   const credSnap = (): Record<string, CredentialView | undefined> => credentials.views ?? {};
@@ -101,7 +104,7 @@ function QuickSettingsLoaded({
   return (
     <div
       role="dialog"
-      aria-label="快速设置"
+      aria-label={t('quick.aria')}
       onClick={(e) => e.stopPropagation()}
       style={{
         position: 'fixed',
@@ -124,8 +127,8 @@ function QuickSettingsLoaded({
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 6px 8px' }}>
-        <span style={{ fontSize: 14, fontWeight: 700 }}>快速设置</span>
-        <button type="button" onClick={onClose} aria-label="关闭快速设置" style={{ width: 26, height: 26, borderRadius: 8, border: 'none', cursor: 'pointer', background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', fontSize: 13 }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>{t('quick.title')}</span>
+        <button type="button" onClick={onClose} aria-label={t('quick.close.aria')} style={{ width: 26, height: 26, borderRadius: 8, border: 'none', cursor: 'pointer', background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', fontSize: 13 }}>
           ✕
         </button>
       </div>
@@ -152,7 +155,7 @@ function QuickSettingsLoaded({
                 boxShadow: active ? 'var(--fluent-shadow-sm)' : 'none',
               }}
             >
-              {opt.label}
+              {t(opt.labelKey)}
             </button>
           );
         })}
@@ -177,12 +180,12 @@ function QuickSettingsLoaded({
             color: apiConfigured ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-label-tertiary)',
           }}
         >
-          API {apiConfigured ? '已配置' : '未配置'}
+          API {apiConfigured ? t('quick.api.configured') : t('quick.api.unconfigured')}
         </span>
       </div>
 
       <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', padding: '6px 6px 0' }}>
-        完整设置与 API 密钥见下方「⚙ 设置」。
+        {t('quick.note')}
       </div>
     </div>
   );
@@ -242,8 +245,8 @@ function QuickSettingsInner({
       <button
         type="button"
         data-aemeath-quick-settings-trigger
-        aria-label="快速设置"
-        title="快速设置"
+        aria-label={t('quick.aria')}
+        title={t('quick.title')}
         onClick={toggle}
         style={{
           display: 'inline-flex',
