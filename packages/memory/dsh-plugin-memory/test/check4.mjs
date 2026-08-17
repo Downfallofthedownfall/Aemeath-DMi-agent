@@ -3,7 +3,7 @@
 // 运行：npm test -w @aemeath/dsh-plugin-memory
 // ============================================================
 import assert from 'node:assert/strict';
-import { shouldTriggerL1, appendL1, removeL1Turns, fallbackUnload, consolidateTarget, buildSummarizePrompt } from '../lib/layers.js';
+import { shouldTriggerL1, appendL1, removeL1Turns, fallbackUnload, consolidateTarget, buildSummarizePrompt, estimateTokens, sessionTokens, shouldTriggerL1ByTokens } from '../lib/layers.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -89,6 +89,34 @@ t('buildSummarizePrompt：含缓冲轮次与相似记忆上下文', () => {
   assert.ok(prompt.includes('knowledge'));
   assert.ok(prompt.includes('我下周三有物理考试'));
   assert.ok(prompt.includes('abc'));
+});
+
+// —— 2026-08-17 修复：token 预算化 ——
+t('estimateTokens：中文按 1.5 token/字，ASCII 按 4 字符/token', () => {
+  assert.ok(estimateTokens('我是准大一') > 0);
+  assert.ok(estimateTokens('abcdefgh') >= 2);
+  assert.equal(estimateTokens(''), 0);
+});
+
+t('sessionTokens：多轮累计（query + reply）', () => {
+  const buf = [mkTurn({ query: '我是准大一', reply: '欢迎' }), mkTurn({ query: '我今年读大二', reply: '好的' })];
+  const t1 = estimateTokens('我是准大一') + estimateTokens('欢迎');
+  const t2 = estimateTokens('我今年读大二') + estimateTokens('好的');
+  assert.equal(sessionTokens(buf), t1 + t2);
+});
+
+t('shouldTriggerL1ByTokens：达预算触发，预算 ≤0 不启用', () => {
+  assert.ok(shouldTriggerL1ByTokens(3000, 3000));
+  assert.ok(shouldTriggerL1ByTokens(3200, 3000));
+  assert.ok(!shouldTriggerL1ByTokens(2999, 3000));
+  assert.ok(!shouldTriggerL1ByTokens(9999, 0), '预算 0 → 不启用');
+});
+
+t('buildSummarizePrompt：超长 query/reply 被截断（防提示词撑爆）', () => {
+  const longReply = 'x'.repeat(2000);
+  const prompt = buildSummarizePrompt([mkTurn({ query: 'q', reply: longReply })], []);
+  assert.ok(prompt.length < 1500, '超长回复被截断，提示词有界');
+  assert.ok(prompt.includes('…'));
 });
 
 console.log(`\n[memory-layers] ${passed} 项断言全部通过`);

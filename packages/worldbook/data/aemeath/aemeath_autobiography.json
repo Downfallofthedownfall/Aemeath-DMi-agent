@@ -3,7 +3,6 @@
   "title": "爱弥斯自传",
   "kind": "identity",
   "triggers": ["你是谁", "自我介绍", "介绍下你自己", "爱弥斯", "电子幽灵"],
-  "constant": true,
   "intrinsic_value": 100,
   "priority": 200,
   "chain": [],

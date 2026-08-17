@@ -42,6 +42,32 @@ export function shouldTriggerL1(count: number, capacity: number, threshold = 0.8
   return count >= Math.ceil(capacity * threshold);
 }
 
+/**
+ * 粗略 token 估算（供 L1 预算化触发与提示词容量预估，不追求精确）：
+ * CJK/日文假名按 1 字 ≈ 1.5 token，ASCII 按 4 字符 ≈ 1 token，其余按 1 字符 ≈ 1 token。
+ */
+export function estimateTokens(text: string): number {
+  const s = text ?? '';
+  let cjk = 0;
+  let ascii = 0;
+  for (const ch of s) {
+    if (/[\u4e00-\u9fff\u3040-\u30ff]/.test(ch)) cjk++;
+    else if (ch.charCodeAt(0) < 128) ascii++;
+  }
+  const other = s.length - cjk - ascii;
+  return Math.ceil(cjk * 1.5 + ascii / 4 + other);
+}
+
+/** 会话 L1 缓冲的累计 token 估算（query + reply）。 */
+export function sessionTokens(turns: L1Turn[]): number {
+  return turns.reduce((sum, t) => sum + estimateTokens(t.query) + estimateTokens(t.reply ?? ''), 0);
+}
+
+/** token 预算触发：累计估算 token ≥ 预算（maxTokens ≤ 0 视为不启用）。 */
+export function shouldTriggerL1ByTokens(tokens: number, maxTokens: number): boolean {
+  return maxTokens > 0 && tokens >= maxTokens;
+}
+
 /** 追加一轮并封顶：超出容量丢弃最旧（防止缓冲无界增长，L1 是工作区不是仓库）。 */
 export function appendL1(turns: L1Turn[], turn: L1Turn, capacity: number): L1Turn[] {
   const next = [...turns, turn];
@@ -54,6 +80,15 @@ export function removeL1Turns(turns: L1Turn[], toRemove: readonly L1Turn[]): L1T
   return turns.filter((t) => !ids.has(t));
 }
 
+/** 每轮写入提示词的文本上限（token 预算化：防长回复把提示词撑爆）。 */
+const TRUNC_QUERY_CHARS = 300;
+const TRUNC_REPLY_CHARS = 600;
+
+function truncate(text: string, max: number): string {
+  const s = text ?? '';
+  return s.length > max ? s.slice(0, max) + '…' : s;
+}
+
 /**
  * 总结层 LLM 提示词：把 L1 缓冲轮次 + 现有记忆相似候选，总结为
  * JSON { memories: [{content, category, importance, scope}], knowledge: [{content, topic}] }。
@@ -61,7 +96,7 @@ export function removeL1Turns(turns: L1Turn[], toRemove: readonly L1Turn[]): L1T
  * @param similar 每条缓冲轮的相似记忆（BM25 top-k，喂给 LLM 做合并/冲突参考）
  */
 export function buildSummarizePrompt(turns: L1Turn[], similar: Array<{ id: string; content: string }>): string {
-  const lines = turns.map((t) => `- [${t.kind}] ${t.preset}｜用户：${t.query}｜physicist：${t.reply || '（无）'}`);
+  const lines = turns.map((t) => `- [${t.kind}] ${t.preset}｜用户：${truncate(t.query, TRUNC_QUERY_CHARS)}｜physicist：${truncate(t.reply || '', TRUNC_REPLY_CHARS)}`);
   const similarBlock = similar.length ? similar.map((s) => `  - ${s.id}：${s.content}`).join('\n') : '  （无相似记忆）';
   return [
     '你是分层记忆的总结层。下面是一段 L1 工作区缓冲的对话轮次（每轮含用户提问与回复；kind=fact 是用户事实，kind=knowledge 是物理/数学知识）。',

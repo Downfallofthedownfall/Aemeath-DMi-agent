@@ -97,4 +97,39 @@ t('模块代码（Modulhandbuch）→ study_log 分类', () => {
   if (d.kind === 'save') assert.equal(d.category, 'study_log');
 });
 
+// —— 2026-08-17 修复：身份句式直存 + 短陈述进 L1 滚动捕获 ——
+t('身份句式（我是准大一）→ save user_fact（无需"记住"关键词）', () => {
+  const d = decide('我是准大一', '欢迎来到大学！');
+  assert.equal(d.kind, 'save');
+  if (d.kind === 'save') {
+    assert.equal(d.category, 'user_fact');
+    assert.equal(d.importance, 85);
+    assert.ok(d.content.includes('准大一'));
+  }
+});
+
+t('身份句式（刚高考完/大一新生/我今年读）→ save user_fact', () => {
+  const qs = ['我刚高考完', '我是大一新生', '我今年读大二', '我马上要上大学了', '准大一，请多指教'];
+  for (const q of qs) {
+    const d = decide(q, '');
+    assert.equal(d.kind, 'save', `应直存: ${q}`);
+    if (d.kind === 'save') assert.equal(d.category, 'user_fact');
+  }
+});
+
+t('疑问句不被误判为身份（我是想问…）→ 不进 save', () => {
+  assert.notEqual(decide('我是想问一下这道题怎么做', '').kind, 'save');
+  assert.notEqual(decide('我是想问F=ma怎么推导', '').kind, 'save');
+});
+
+t('短陈述（≥2 字、非闲聊）→ pending 进 L1 滚动捕获（不再静默丢弃）', () => {
+  const d = decide('在学热力学', '加油');
+  assert.equal(d.kind, 'pending');
+});
+
+t('纯占位单字仍 → skip', () => {
+  assert.equal(decide('嗯', '').kind, 'skip');
+  assert.equal(decide('哦', '').kind, 'skip');
+});
+
 console.log(`\n[memory-gatekeeper] ${passed} 项断言全部通过`);

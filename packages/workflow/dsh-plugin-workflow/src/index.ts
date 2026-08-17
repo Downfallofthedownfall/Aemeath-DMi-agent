@@ -399,6 +399,9 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
 
     if (!runtime.enabled) return decision;
 
+    // 只在本轮第一步注入（与 memory/worldbook/retriever 对齐，防多 step 上下文线性膨胀）
+    if (payload.step !== 1) return decision;
+
     const preset = resolveSessionPreset(payload.agent.session as never) ?? defaultPreset;
     if (preset !== 'physicist') return decision;
 

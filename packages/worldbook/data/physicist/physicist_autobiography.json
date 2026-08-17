@@ -3,7 +3,6 @@
   "title": "physicist 学霸自传",
   "kind": "identity",
   "triggers": ["你是谁", "自我介绍", "介绍下你自己", "物理学霸", "学霸助手"],
-  "constant": true,
   "intrinsic_value": 100,
   "priority": 200,
   "chain": [],

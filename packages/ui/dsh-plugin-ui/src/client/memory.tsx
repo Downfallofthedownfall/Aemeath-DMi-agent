@@ -35,6 +35,20 @@ export interface MemoryData {
   l2: MemoryItem[];
   l3: MemoryItem[];
   stats: MemoryStats;
+  l1Buffer?: BufferSession[];
+  l1Capacity?: { capacity: number; threshold: number } | null;
+}
+
+export interface BufferTurn {
+  query: string;
+  reply: string;
+  kind: string;
+  ts: number;
+}
+
+export interface BufferSession {
+  sessionId: string;
+  turns: BufferTurn[];
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -125,9 +139,9 @@ function MemoryPanelBody(): JSX.Element {
     setError(null);
     try {
       const res = await fetch('/aemeath/api/memory', { signal: AbortSignal.timeout(8000) });
-      const d = (await res.json()) as { ok?: boolean; l1?: ScratchEntry[]; l2?: MemoryItem[]; l3?: MemoryItem[]; stats?: MemoryStats; error?: string };
+      const d = (await res.json()) as { ok?: boolean; l1?: ScratchEntry[]; l2?: MemoryItem[]; l3?: MemoryItem[]; stats?: MemoryStats; l1Buffer?: BufferSession[]; l1Capacity?: { capacity: number; threshold: number } | null; error?: string };
       if (!res.ok || !d.ok) throw new Error(d.error ?? `load failed (${res.status})`);
-      setData({ l1: d.l1 ?? [], l2: d.l2 ?? [], l3: d.l3 ?? [], stats: d.stats ?? { active: 0, dormant: 0, byPreset: {}, byScope: {} } });
+      setData({ l1: d.l1 ?? [], l2: d.l2 ?? [], l3: d.l3 ?? [], stats: d.stats ?? { active: 0, dormant: 0, byPreset: {}, byScope: {} }, l1Buffer: d.l1Buffer ?? [], l1Capacity: d.l1Capacity ?? null });
     } catch (e) {
       setError((e as Error).message ?? String(e));
     } finally {
@@ -165,11 +179,17 @@ function MemoryPanelBody(): JSX.Element {
   const l2 = data ? sortByImp(data.l2) : [];
   const l3 = data ? sortByImp(data.l3) : [];
   const l1 = data?.l1 ?? [];
+  const l1Buffer = data?.l1Buffer ?? [];
+  const l1BufferTurns = l1Buffer.reduce((n, s) => n + s.turns.length, 0);
+  const bufCap = data?.l1Capacity?.capacity ?? 40;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* 统计行 */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-secondary)', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 999, padding: '2px 10px' }}>
+          L1 待总结 {l1BufferTurns} 轮
+        </span>
         <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-secondary)', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 999, padding: '2px 10px' }}>
           L1 暂存 {l1.length} 会话
         </span>
@@ -189,6 +209,35 @@ function MemoryPanelBody(): JSX.Element {
       </div>
 
       {error ? <div style={{ fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' }}>{error}</div> : null}
+
+      {/* —— L1 采集缓冲（滚动对话，待总结） —— */}
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+          L1 · 采集缓冲
+          <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' }}>
+            滚动对话，攒批后由总结层压缩落 L2/L3（容量 {bufCap} 轮 / 80% 或 token 预算触发）
+          </span>
+        </div>
+        {l1Buffer.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '8px 0' }}>暂无待总结内容。</div>
+        ) : (
+          l1Buffer.map((s) => (
+            <div key={s.sessionId} style={{ marginBottom: 6, padding: '8px 10px', borderRadius: 10, background: 'var(--dsw-alias-bg-base)', border: '1px dashed var(--dsw-alias-border-l2)' }}>
+              <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 4 }}>会话 {s.sessionId.slice(0, 8)} · {s.turns.length} 轮</div>
+              {s.turns.map((t, i) => (
+                <div key={i} style={{ fontSize: 12, color: 'var(--dsw-alias-label-primary)', lineHeight: 1.5, padding: '2px 0' }}>
+                  <span style={{ color: 'var(--dsw-alias-state-business-primary)', fontWeight: 600 }}>问</span>：{t.query}
+                  {t.reply ? (
+                    <div style={{ paddingLeft: 22, color: 'var(--dsw-alias-label-secondary)' }}>
+                      <span style={{ color: 'var(--dsw-alias-state-error-primary)', fontWeight: 600 }}>答</span>：{t.reply}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ))
+        )}
+      </div>
 
       {/* —— L1 暂存区 —— */}
       <div>
@@ -254,7 +303,7 @@ export function MemoryPanel(): JSX.Element {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }}>
-        分层：L1 会话暂存 · L2 角色记忆 · L3 共享记忆。删除为软删（审计留痕）。
+        分层：L1 采集缓冲（滚动对话待总结）→ L2 角色记忆 → L3 共享记忆；L1 暂存为会话内工作态。删除为软删（审计留痕）。
       </div>
       <MemoryPanelBody />
     </div>

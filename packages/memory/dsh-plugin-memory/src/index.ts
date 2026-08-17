@@ -37,7 +37,7 @@ import type {} from '@deepseek-ai/dsh-credentials';
 import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, type Category } from './gatekeeper.js';
 import { search as bm25Search, overlapScore } from './bm25.js';
 import { selectEviction, suggestProfileFacts } from './engine.js';
-import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
+import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
 import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn } from './types.js';
 import { MemoryService } from './service.js';
 
@@ -53,6 +53,8 @@ export const Config = z.object({
   l1Capacity: z.number(),
   /** L1 触发阈值（0~1，默认 0.8）。 */
   l1Threshold: z.number(),
+  /** L1 触发 token 预算（估算，默认 3000）：累计对话 token ≥ 预算即触发总结，与 80% 容量互为补充。 */
+  l1MaxTokens: z.number(),
   llm: z.object({
     enabled: z.boolean(),
     apiKey: z.string(),
@@ -87,6 +89,7 @@ export interface MemoryConfig {
   l3Capacity?: number;
   l1Capacity?: number;
   l1Threshold?: number;
+  l1MaxTokens?: number;
   llm?: { enabled?: boolean; apiKey?: string; baseUrl?: string; model?: string; batchSize?: number; minBatch?: number };
   knowledge?: { enabled?: boolean };
   worldbook?: { enabled?: boolean; libraries?: Record<string, string> };
@@ -144,6 +147,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const l3Capacity = config.l3Capacity ?? 500;
   const l1Capacity = Math.max(8, config.l1Capacity ?? 40);
   const l1Threshold = Math.min(1, Math.max(0.1, config.l1Threshold ?? 0.8));
+  const l1MaxTokens = Math.max(512, config.l1MaxTokens ?? 3000);
   const knowledgeEnabled = config.knowledge?.enabled ?? true;
   // C8：worldbook 桥接的 preset→馆目录映射优先取 worldbook 插件（service）的配置，
   // 避免 cordis.patch.yml 里 libraries 在两个插件各抄一份造成漂移；service 未加载
@@ -176,7 +180,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const knowledge = domain.table('knowledge') as unknown as KvTable<string, KnowledgeRecord>;
   const l1 = domain.table('l1') as unknown as KvTable<string, L1Turn[]>;
   const profile = domain.global as unknown as { get(): UserProfile; set(v: UserProfile): Promise<void> };
-  log(`存储域 aemeath_memory 已打开（memories=${memories.size} 条历史记录, knowledge=${knowledge.size} 条知识, L1 缓冲=${l1.size} 会话, L1 容量=${l1Capacity} 阈值=${l1Threshold} minBatch=${llmMinBatch}）`);
+  log(`存储域 aemeath_memory 已打开（memories=${memories.size} 条历史记录, knowledge=${knowledge.size} 条知识, L1 缓冲=${l1.size} 会话, L1 容量=${l1Capacity} 阈值=${l1Threshold} token预算=${l1MaxTokens} minBatch=${llmMinBatch}）`);
 
   const auditWrite = async (action: string, memoryId: string | undefined, detail: string): Promise<void> => {
     try {
@@ -227,6 +231,13 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           .join('')
           .trim();
         buf.reply = text;
+        turnBuffer.delete(sid);
+        void processTurn(sid, buf);
+      } else if (event.type === 'turn/end') {
+        // 兜底配对（2026-08-17 修复）：assistant/message 缺失/异常时（如 LLM 失败、
+        // 流中断），turn/end 时仍处理已缓冲的用户轮次，避免事实丢失。
+        const buf = turnBuffer.get(sid);
+        if (!buf) return;
         turnBuffer.delete(sid);
         void processTurn(sid, buf);
       }
@@ -397,13 +408,16 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     return [...out].slice(0, 6);
   };
 
-  /** 进 L1 缓冲（域表持久化）；达到 80% 阈值触发总结卸载。 */
+  /** 进 L1 缓冲（域表持久化）；达到 80% 容量或 token 预算触发总结卸载。 */
   const bufferL1 = async (sid: string, turn: L1Turn): Promise<void> => {
     const count = await memoryService.l1Append(turn);
-    log(`L1 缓冲 +1（${sid.slice(0, 8)}，${count}/${l1Capacity}，kind=${turn.kind}）：${turn.query.slice(0, 30)}…`);
-    if (memoryService.l1ShouldTrigger(sid)) {
-      log(`L1 已达 ${Math.round(l1Threshold * 100)}% 容量（${count}/${l1Capacity}），触发总结卸载`);
-      await summarizeL1(sid);
+    const tokens = sessionTokens(memoryService.l1Turns(sid));
+    const byCount = memoryService.l1ShouldTrigger(sid);
+    const byTokens = shouldTriggerL1ByTokens(tokens, l1MaxTokens);
+    log(`L1 缓冲 +1（${sid.slice(0, 8)}，${count}/${l1Capacity} 轮，~${tokens}/${l1MaxTokens} token，kind=${turn.kind}）：${turn.query.slice(0, 30)}…`);
+    if (byCount || byTokens) {
+      log(`L1 触发总结卸载（${byTokens ? 'token 预算' : '容量 80%'}：${count}/${l1Capacity} 轮，~${tokens}/${l1MaxTokens} token）`);
+      await summarizeL1(sid, byTokens);
     }
   };
 
@@ -446,10 +460,11 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   /**
    * L1 总结卸载：把会话缓冲总结为记忆候选（落 L2/L3）+ 知识候选（落知识层 pending）。
    * LLM 启用且批次 ≥ minBatch → 总结层 LLM（攒批省 token）；批次不足 → 留在缓冲继续攒（持久化）；
+   * forceByTokens=true（token 预算触发）时跳过 minBatch 攒批——单轮超长对话不应卡在攒批里。
    * LLM 未启用/无 key → 规则兜底（fallbackUnload）。
    * 完成后精确移除已总结轮次（并发新进轮次不误清）。
    */
-  const summarizeL1 = async (sid: string): Promise<void> => {
+  const summarizeL1 = async (sid: string, forceByTokens = false): Promise<void> => {
     if (summarizing.has(sid)) return;
     const turns = memoryService.l1Turns(sid);
     if (!turns.length) return;
@@ -463,7 +478,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
       const apiKey = await resolveLlmKey();
       if (llm.enabled && apiKey) {
-        if (turns.length < llmMinBatch) {
+        if (turns.length < llmMinBatch && !forceByTokens) {
           // 攒批：批次不足不调 LLM，留在 L1 持久化缓冲，等下次会话继续攒（省 token）
           log(`L1 攒批中（${sid.slice(0, 8)}：${turns.length}/${llmMinBatch} 轮，未达最小批次，暂不总结）`);
           return;
@@ -596,18 +611,24 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   });
   log('记忆召回注入已挂载（agent/pre-step）');
 
-  // ---- session/flush 接入：会话结束时把 L1 缓冲总结卸载落盘；顺带清理会话级残留 ----
+  // ---- session/flush：L1 缓冲总结卸载 ----
+  // 2026-08-17 修复：dsh 的 session/flush 是"每请求持久化检查点"，回合进行中会触发多次；
+  // 原实现在这里 turnBuffer.delete(sid) + clearScratch(sid) 会把进行中的轮次直接清掉
+  // （user/message 已缓冲 → flush 清空 → assistant/message 找不到 → 记忆永不保存）。
+  // flush 只做 L1 总结卸载（minBatch/80% 守卫，幂等）；真正的会话级残留清理移到 session/disposed。
   ctx.on('session/flush', async (session) => {
     const sid = session.id;
     if (memoryService.l1Count(sid) > 0) {
       log(`session/flush：${sid.slice(0, 8)} 有 ${memoryService.l1Count(sid)} 轮 L1 缓冲，触发总结卸载`);
       await summarizeL1(sid);
     }
-    // 第三关：清理本会话的未配对采集缓冲与 scratch（防长跑无界增长）
-    turnBuffer.delete(sid);
-    memoryService.clearScratch(sid);
   });
-  log('session/flush 已接入（L1 缓冲总结卸载 + 会话残留清理）');
+  // ---- session/disposed：真正会话结束 → 清理未配对采集缓冲与 scratch（防长跑无界增长） ----
+  ctx.on('session/disposed', (session) => {
+    turnBuffer.delete(session.id);
+    memoryService.clearScratch(session.id);
+  });
+  log('session/flush 已接入（L1 缓冲总结卸载）；session/disposed 已接入（残留清理）');
 
   // ---- 衰减（宿主级定时）+ 沉淀 + L1 陈旧清理 ----
   const decayTimer = setInterval(() => {

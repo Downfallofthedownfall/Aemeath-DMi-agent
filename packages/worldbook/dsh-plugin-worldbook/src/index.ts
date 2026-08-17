@@ -201,6 +201,11 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
 
     if (!runtime.enabled) return decision;
 
+    // 只在本轮第一步注入（与 memory/workflow/retriever 对齐）：dsh-agent-loop 会把每次
+    // pre-step 注入的消息 append 进会话历史并被后续每个 step 的 LLM 请求整体包含，
+    // 若每个 step 都注入同一份 catalog，多 step 解题流程上下文会随 step 数线性膨胀。
+    if (payload.step !== 1) return decision;
+
     const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     const lib = preset ? libs.get(preset) : undefined;
     if (!lib || !lib.entries.length) return decision;

@@ -172,6 +172,9 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
 
     if (!runtime.enabled) return decision;
 
+    // 只在本轮第一步注入（与 memory/worldbook/workflow 对齐，防多 step 上下文线性膨胀）
+    if (payload.step !== 1) return decision;
+
     const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     if (preset !== 'physicist') return decision;
 

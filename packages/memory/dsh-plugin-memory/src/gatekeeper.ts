@@ -41,6 +41,19 @@ const EXPLICIT_SAVE_PATTERNS = [
 ];
 
 /**
+ * 身份事实句式：无需"记住"关键词也直存（2026-08-17 用户反馈：
+ * "我是准大一"被规则层静默丢弃——身份是稳定事实，等攒批反而慢）。
+ * 类别恒为 user_fact → L3 global（跨角色共享）。
+ * 注意模式要收敛，避免把"我是想问…"这类疑问句误判为身份声明。
+ */
+const IDENTITY_PATTERNS = [
+  /准大一|大一新生|应届(生|高考)?生?/,
+  /我(今年|现在|目前|马上|即将)(就?要)?(上|读|进|去|成为|是)/,
+  /我(是|叫|叫做)(一名|一位|个)?(大一|大二|大三|大四|研究生|硕士|博士|本科生|专科生|高中生|初中生|小学生|新生|学生)/,
+  /我(刚|刚刚|已经)?(高考完|中考完|毕业|考上|考进|被录取)/,
+];
+
+/**
  * 强知识模式（公式/定律/数学术语）：规则初筛命中的知识 → knowledge_direct，
  * 直接进知识层/worldbook，不经 LLM 审核。
  */
@@ -70,8 +83,8 @@ const CHAT_PATTERNS = [
   /^哈哈+$/, /^嗯+$/, /^好的?$/, /^谢谢/, /^不客气/, /^加油/,
 ];
 
-/** 信息量阈值：query 过短且无显式/事实特征 → skip。 */
-const MIN_INFORMATIVE_LENGTH = 8;
+/** 纯占位（单字/无意义）阈值：低于此长度 → skip；其余短陈述进 L1 滚动捕获。 */
+const MIN_ROLLING_CAPTURE_LENGTH = 2;
 
 /** 时间证据：事实状态已变化（"考完了/学会了/结束了"）→ 应 update + supersede 旧记忆。 */
 const TIME_EVIDENCE_PATTERNS = [
@@ -147,6 +160,16 @@ export function decide(query: string, reply: string): MemoryAction {
     };
   }
 
+  // 2.5) 身份事实句式 → save（user_fact，直存 L3 global，无需"记住"关键词）
+  if (IDENTITY_PATTERNS.some((re) => re.test(q))) {
+    return {
+      kind: 'save',
+      importance: 85,
+      category: 'user_fact',
+      content: extractMemory(q),
+    };
+  }
+
   // 3) 强知识模式（公式/定律/数学术语）→ knowledge_direct（规则初筛直达，不经 LLM）
   //    B1 修复：知识命中来源决定内容/主题取哪个——提问本身含知识（如"F=ma 是什么？"）
   //    取提问；仅回复含知识（如问"这是什么？"答"F=ma"）则取回复文本，避免把
@@ -166,8 +189,10 @@ export function decide(query: string, reply: string): MemoryAction {
 
   // 4) 闲聊/纯情绪 → skip
   if (CHAT_PATTERNS.some((re) => re.test(q))) return { kind: 'skip', reason: '闲聊/情绪' };
-  if (q.length < MIN_INFORMATIVE_LENGTH) return { kind: 'skip', reason: '过短无信息量' };
+  // 纯占位单字 → skip；其余（含短身份陈述如"我是准大一"）→ pending 进 L1 滚动捕获，
+  // 由总结层（LLM/规则兜底）决定取舍——不再静默丢弃普通陈述（2026-08-17 修复）。
+  if (q.length < MIN_ROLLING_CAPTURE_LENGTH) return { kind: 'skip', reason: '过短无信息量' };
 
-  // 5) 信息量充足但规则拿不准 → pending（进 L1 攒批，交 LLM 总结审核）
-  return { kind: 'pending', reason: '待 LLM 总结层（攒批审核）' };
+  // 5) 其余 → pending（进 L1 采集缓冲，交 LLM 总结审核）
+  return { kind: 'pending', reason: '待 L1 采集（滚动捕获）' };
 }

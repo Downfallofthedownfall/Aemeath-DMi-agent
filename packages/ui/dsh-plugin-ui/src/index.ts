@@ -121,6 +121,10 @@ export function apply(ctx: Context): void {
     list(): Array<{ key: string; rec: Record<string, unknown> }>;
     stats(): { active: number; dormant: number; byPreset: Record<string, number>; byScope: Record<string, number> };
     softDelete(idPrefix: string): Promise<boolean>;
+    /** L1 采集缓冲（滚动对话，待总结）：会话列表 + 各会话轮次（2026-08-17 面板暴露）。 */
+    l1Sessions?(): string[];
+    l1Turns?(sid: string): Array<{ query?: string; reply?: string; kind?: string; ts?: number; preset?: string }>;
+    l1CapacityOf?(): { capacity: number; threshold: number };
   } | undefined;
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -247,9 +251,19 @@ export function apply(ctx: Context): void {
           sessionId: sid,
           items: Object.entries(slot).map(([k, v]) => ({ key: k, content: String(v).slice(0, 200) })),
         })).filter((s) => s.items.length > 0);
+        // L1 采集缓冲（滚动对话，待总结）——与 scratch 工作态区分，面板可见"攒批中"的内容
+        const l1Buffer = (memory.l1Sessions?.() ?? []).map((sid) => ({
+          sessionId: sid,
+          turns: (memory.l1Turns?.(sid) ?? []).map((t) => ({
+            query: String(t.query ?? '').slice(0, 200),
+            reply: String(t.reply ?? '').slice(0, 200),
+            kind: t.kind ?? 'fact',
+            ts: t.ts ?? 0,
+          })),
+        })).filter((s) => s.turns.length > 0);
         const l2 = items.filter((m) => m.scope === 'mode');
         const l3 = items.filter((m) => m.scope === 'global');
-        json(res, 200, { ok: true, l1, l2, l3, stats });
+        json(res, 200, { ok: true, l1, l2, l3, stats, l1Buffer, l1Capacity: memory.l1CapacityOf?.() ?? null });
         return;
       }
       if (req.method === 'POST') {
