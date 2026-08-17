@@ -22,6 +22,7 @@ import uuid
 import threading
 import argparse
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # torch 在引擎加载时导入（本服务须在 IndexTTS venv 下运行；懒加载保证 MCP 启动零延迟）
 
@@ -29,6 +30,83 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mcp_core import McpServer  # noqa: E402
 
 server = McpServer("tts_mcp", "2.0.0-m0")
+
+# ============================================================
+# HTTP 模式（--http <port>，2026-08-17 新增）：
+#   前端「朗读」按钮走 <repo> 3081 host 端点 → 本 HTTP 服务（进程内共享已加载模型）。
+#   端点：
+#     GET  /health        → {"ok":true,"model_loaded":bool}
+#     POST /tts           → {"success":true,"audio_base64":"...","size_bytes":N,...}
+#   安全：仅绑定 127.0.0.1；Host 头必须为回环地址（DNS rebinding 防护，S3 同款）；
+#   除 /health 外只接受 POST；文本长度由 tts_generate 强制上限。
+# ============================================================
+TTS_HTTP_PORT = 18896
+
+def _is_loopback_host(host):
+    try:
+        h = (host or '').split(':')[0].lower()
+        return h in ('localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0')
+    except Exception:  # noqa: BLE001
+        return False
+
+class _TtsHttpHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args):  # 静默访问日志（避免刷屏）
+        pass
+
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if not _is_loopback_host(self.headers.get('Host', '')):
+            self._send(403, {'ok': False, 'error': 'non-loopback host'})
+            return
+        if self.path.rstrip('/') == '/health':
+            self._send(200, {'ok': True, 'model_loaded': _engine is not None, 'pid': os.getpid()})
+        else:
+            self._send(404, {'ok': False, 'error': 'not found'})
+
+    def do_POST(self):
+        if not _is_loopback_host(self.headers.get('Host', '')):
+            self._send(403, {'ok': False, 'error': 'non-loopback host'})
+            return
+        path = self.path.rstrip('/')
+        if path == '/warmup':
+            # 懒加载预热：仅加载模型（含内部预热推理），不合成音频。
+            # 前端「开启朗读」/首次朗读前调用，期间弹 99% 进度条 popup。
+            with _engine_lock:
+                if _engine is None:
+                    ok = _init_engine()
+                else:
+                    ok = True
+            self._send(200, {'ok': ok, 'model_loaded': _engine is not None})
+            return
+        if path != '/tts':
+            self._send(404, {'ok': False, 'error': 'not found'})
+            return
+        try:
+            length = int(self.headers.get('Content-Length') or 0)
+            if length <= 0 or length > 1024 * 1024:
+                self._send(400, {'ok': False, 'error': 'bad body size'})
+                return
+            payload = json.loads(self.rfile.read(length).decode('utf-8'))
+            text = str(payload.get('text') or '')
+            voice = str(payload.get('voice') or '')
+            result = tts_generate(text, voice=voice, include_base64=True)
+            self._send(200 if result.get('success') else 400, result)
+        except Exception as e:  # noqa: BLE001
+            self._send(400, {'ok': False, 'error': str(e)})
+
+
+def run_http_server(port=TTS_HTTP_PORT):
+    """HTTP 模式入口：以本进程（IndexTTS venv，已 _maybe_relaunch）运行。"""
+    httpd = ThreadingHTTPServer(('127.0.0.1', port), _TtsHttpHandler)
+    print(f'[tts_mcp] HTTP 模式已启动: http://127.0.0.1:{port}/ (共享 IndexTTS2 引擎，首次合成加载模型)', file=sys.stderr)
+    httpd.serve_forever()
 
 _engine = None
 _engine_lock = threading.Lock()
@@ -256,6 +334,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='IndexTTS2 MCP server')
     parser.add_argument('--model-dir', type=str, default=MODEL_DIR, help='IndexTTS2 模型目录')
     parser.add_argument('--no-fp16', action='store_true', help='跳过 FP16 直接 FP32')
+    parser.add_argument('--http', type=int, default=0, help='以 HTTP 模式运行（端口，默认 18896），不启动 MCP stdio')
     args, _ = parser.parse_known_args()
     MODEL_DIR = args.model_dir
-    server.run()
+    if args.http:
+        run_http_server(args.http)
+    else:
+        server.run()

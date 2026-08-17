@@ -162,6 +162,9 @@ Thumbs.db
 # voices
 .wav
 
+# TTS 合成输出（运行时生成，LRU 管理；参考音色 voices/*.wav 仍提交）
+voices/tts/
+
 # ===== 第三关：运行数据与本地环境 =====
 # memory 插件桥接生成的 worldbook 条目（运行数据，勿提交）
 packages/worldbook/data/**/generated_knowledge.json

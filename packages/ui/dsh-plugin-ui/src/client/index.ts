@@ -43,8 +43,33 @@ export function apply(ctx: ClientContext): void {
   // 2.6) 欢迎屏（问候语 + 角色卡片）
   registerHero(ctx, { role: () => faces.role });
 
-  // 2.7) TTS 朗读按钮（assistant 消息操作区）
-  registerTts(ctx);
+  // 2.7) TTS 朗读按钮（assistant 消息操作区）+ 输入框 TTS 开关（conversation.input.right）
+  //   resolveMessageText：通过 messageId 从会话快照取 assistant 消息文本（可靠，替代 DOM 抓取）
+  const resolveMessageText = (messageId: string): string | undefined => {
+    try {
+      const sessions = ctx.get('sessions') as unknown as
+        | {
+            manager?: { get(id: string): { getSnapshot(): { nodes?: Array<{ kind: string; messageId?: string; blocks?: Array<{ kind: string; text?: string }> }> } } };
+            list?: { getSnapshot(): { current?: string } };
+          }
+        | undefined;
+      if (!sessions?.manager) return undefined;
+      const currentId = sessions.list?.getSnapshot?.().current;
+      if (!currentId) return undefined;
+      const snap = sessions.manager.get(currentId).getSnapshot();
+      const node = (snap.nodes ?? []).find((n) => n.kind === 'assistant' && n.messageId === messageId);
+      if (!node) return undefined;
+      const text = (node.blocks ?? [])
+        .filter((b) => b.kind === 'text' && typeof b.text === 'string')
+        .map((b) => b.text as string)
+        .join('\n')
+        .trim();
+      return text || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  registerTts(ctx, () => ({ scopes: Object.fromEntries(faces.scopes), resolveMessageText }));
 
   // 2.8) 快速设置面板（侧边栏底部齿轮：角色 + 开关 + 记忆摘要 + API 徽章）
   registerQuickSettings(ctx, () => ({

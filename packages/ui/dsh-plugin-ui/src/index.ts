@@ -14,9 +14,11 @@
 // ============================================================
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { settingsNamespace } from '@deepseek-ai/dsh-settings';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { settingsNamespace, installSettingsSection } from '@deepseek-ai/dsh-settings';
+import z from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-settings';
 
@@ -27,7 +29,7 @@ export const inject = ['webServer', 'settings', 'memory'];
 export const DEFAULT_WORKSPACE_DIR = '.chat';
 
 /** 本插件管理的 settings namespaces（与引擎插件注册名一致）。 */
-export const FEATURE_NAMESPACES = ['aemeath-common', 'aemeath-worldbook', 'aemeath-retriever', 'aemeath-memory', 'aemeath-workflow'];
+export const FEATURE_NAMESPACES = ['aemeath-common', 'aemeath-worldbook', 'aemeath-retriever', 'aemeath-memory', 'aemeath-workflow', 'aemeath-tts'];
 
 /** 允许前端切换默认角色的 settings namespace（dsh 官方 agent-presets）。 */
 export const AGENT_PRESET_NAMESPACE = 'agent-presets';
@@ -198,6 +200,194 @@ export function apply(ctx: Context): void {
     json(res, 405, { ok: false, error: 'method not allowed' });
   };
 
+  // —— TTS 设置 namespace（2026-08-17：前端「朗读」开关，settings.yaml 持久化）——
+  // 引擎侧无行为（合成在 tts HTTP 服务），仅承载 enabled 开关供前端门控。
+  installSettingsSection(
+    ctx,
+    settingsNamespace('aemeath-tts'),
+    z.object({ enabled: z.boolean(), volume: z.number() }),
+    { enabled: false, volume: 1 },
+    {
+      setSource: () => undefined,
+      onChange: () => undefined,
+    },
+  );
+  // 2026-08-17：TTS 每次启动强制关闭（用户要求"启动时永远显示未开启"）——
+  // 会话内可开启，重启后回到关闭态。注意：apply 早期 settings 可能未就绪，
+  // update 会静默 reject，故延迟 500ms 启动并失败重试。
+  let ttsResetAttempts = 0;
+  const resetTtsAtBoot = (): void => {
+    if (ttsResetAttempts > 10) return;
+    ttsResetAttempts++;
+    settings
+      .update(settingsNamespace('aemeath-tts'), { enabled: false })
+      .then(() => console.log('[aemeath-ui] aemeath-tts 已重置为关闭（启动默认）'))
+      .catch(() => {
+        setTimeout(resetTtsAtBoot, 1000);
+      });
+  };
+  setTimeout(resetTtsAtBoot, 500);
+  console.log('[aemeath-ui] aemeath-tts 设置 namespace 已注册');
+
+  // —— TTS 后端（IndexTTS2）：懒启动 tts HTTP 服务 + 代理端点 ——
+  // 2026-08-17：Electron 渲染器 Web Speech API 无系统语音（getVoices()=0，speak 无声），
+  // 前端朗读改走本端点 → packages/py-services/tts_mcp/server.py --http（共享 IndexTTS2 模型）。
+  const TTS_HTTP_PORT = 18896;
+  const TTS_HTTP_BASE = `http://127.0.0.1:${TTS_HTTP_PORT}`;
+  let ttsProc: ChildProcess | null = null;
+  let ttsReadyPromise: Promise<boolean> | null = null;
+
+  const ttsPythonPath = (): string => {
+    const env = process.env.AEMEATH_TTS_PYTHON;
+    if (env && existsSync(env)) return env;
+    const def = 'D:\\index-tts\\.venv\\Scripts\\python.exe';
+    return existsSync(def) ? def : 'python';
+  };
+
+  /** 配置状态（供前端"未配置弹提示"与 /tts/status）。 */
+  const ttsConfigStatus = (): { configured: boolean; pythonExists: boolean; modelConfigExists: boolean; voiceCount: number; python: string; modelDir: string } => {
+    const py = process.env.AEMEATH_TTS_PYTHON ?? 'D:\\index-tts\\.venv\\Scripts\\python.exe';
+    const modelDir = process.env.AEMEATH_TTS_MODEL_DIR ?? 'D:\\index-tts';
+    const pythonExists = existsSync(py);
+    const modelConfigExists = existsSync(join(modelDir, 'checkpoints', 'config.yaml'));
+    let voiceCount = 0;
+    try {
+      const voicesDir = join(process.cwd(), 'voices');
+      if (existsSync(voicesDir)) voiceCount = readdirSync(voicesDir).filter((f) => f.toLowerCase().endsWith('.wav')).length;
+    } catch { /* ignore */ }
+    return { configured: pythonExists && modelConfigExists && voiceCount > 0, pythonExists, modelConfigExists, voiceCount, python: py, modelDir };
+  };
+
+  const ttsSettingsEnabled = (): boolean => {
+    try {
+      const v = settings.get(settingsNamespace('aemeath-tts')) as { enabled?: boolean } | undefined;
+      return v?.enabled ?? false; // 2026-08-17：默认关闭（开关初始为关）
+    } catch {
+      return false;
+    }
+  };
+
+  /** 懒启动 tts HTTP 服务（幂等；先探已有实例，无则 spawn）。 */
+  const ensureTtsServer = (): Promise<boolean> => {
+    if (ttsReadyPromise) return ttsReadyPromise;
+    ttsReadyPromise = (async () => {
+      // 已有实例（外部启动/上次残留）→ 直接复用
+      for (let i = 0; i < 10; i++) {
+        try {
+          const r = await fetch(`${TTS_HTTP_BASE}/health`, { signal: AbortSignal.timeout(800) });
+          if (r.ok) {
+            console.log('[aemeath-ui] 复用已有 tts HTTP 服务');
+            return true;
+          }
+        } catch { /* not up */ }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      const serverPath = join(process.cwd(), 'packages', 'py-services', 'tts_mcp', 'server.py');
+      const py = ttsPythonPath();
+      console.log(`[aemeath-ui] 启动 tts HTTP 服务（${py} --http ${TTS_HTTP_PORT}）…`);
+      const proc = spawn(py, [serverPath, '--http', String(TTS_HTTP_PORT)], {
+        cwd: process.cwd(),
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      ttsProc = proc;
+      proc.stdout.on('data', (d) => console.log('[tts-http]', String(d).trim()));
+      proc.stderr.on('data', (d) => console.log('[tts-http]', String(d).trim()));
+      proc.on('exit', (code) => {
+        ttsProc = null;
+        ttsReadyPromise = null;
+        console.log(`[aemeath-ui] tts HTTP 服务已退出（${code}）`);
+      });
+      proc.on('error', (e) => {
+        console.error('[aemeath-ui] tts HTTP 服务启动失败:', e.message);
+        ttsReadyPromise = null;
+      });
+      for (let i = 0; i < 60; i++) {
+        try {
+          const r = await fetch(`${TTS_HTTP_BASE}/health`, { signal: AbortSignal.timeout(800) });
+          if (r.ok) {
+            console.log('[aemeath-ui] tts HTTP 服务就绪');
+            return true;
+          }
+        } catch { /* wait */ }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      console.error('[aemeath-ui] tts HTTP 服务 60s 未就绪');
+      return false;
+    })();
+    return ttsReadyPromise;
+  };
+
+  // GET /aemeath/api/tts/status —— 配置状态（前端开启开关/点击朗读前检查，未配置弹提示）
+  async function handleTtsStatus(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    json(res, 200, { ok: true, ...ttsConfigStatus() });
+  }
+
+  // POST /aemeath/api/tts —— 合成并返回 base64 wav（前端直接播放）
+  async function handleTts(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      if (!checkWriteOrigin(req)) return json(res, 403, { ok: false, error: 'cross-origin write denied' });
+      if (!ttsSettingsEnabled()) return json(res, 400, { ok: false, error: '语音朗读已关闭（设置 → 语音朗读）' });
+      const raw = await readBody(req);
+      const parsed = JSON.parse(raw || '{}') as { text?: unknown };
+      const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
+      console.log(`[aemeath-ui] TTS 合成请求收到 text="${text.slice(0, 60)}" enabled=${ttsSettingsEnabled()}`);
+      if (!text) return json(res, 400, { ok: false, error: 'text required' });
+      if (text.length > 500) return json(res, 400, { ok: false, error: `text 过长（${text.length} 字，上限 500）` });
+      const cfg = ttsConfigStatus();
+      if (!cfg.configured) {
+        return json(res, 500, {
+          ok: false,
+          error: `未配置 TTS 引擎（python=${cfg.pythonExists} model=${cfg.modelConfigExists} voice=${cfg.voiceCount}）。请安装 IndexTTS2 到 D:\\index-tts 或设置 AEMEATH_TTS_PYTHON / AEMEATH_TTS_MODEL_DIR`,
+        });
+      }
+      if (!(await ensureTtsServer())) return json(res, 500, { ok: false, error: 'TTS 服务启动失败' });
+      const r = await fetch(`${TTS_HTTP_BASE}/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+        // 首次调用加载 3.4GB 模型，允许 1-3 分钟
+        signal: AbortSignal.timeout(200000),
+      });
+      const d = (await r.json()) as { success?: boolean; audio_base64?: string; size_bytes?: number; error?: string };
+      console.log(`[aemeath-ui] TTS 合成结果: HTTP ${r.status} success=${d.success} size=${d.size_bytes ?? 0} error=${d.error ?? ''}`);
+      if (!r.ok || !d.success || !d.audio_base64) return json(res, 500, { ok: false, error: d.error ?? `合成失败（${r.status}）` });
+      json(res, 200, { ok: true, audio_base64: d.audio_base64, size_bytes: d.size_bytes ?? 0 });
+    } catch (e) {
+      json(res, 500, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  // POST /aemeath/api/tts/warmup —— 懒加载预热（仅加载模型，不合成；前端弹 99% 进度条）
+  // 注意：不在 enabled 门控内——前端「开启开关」流程是"先预热、后置 enabled"，
+  // 若此处检查 enabled 会把预热拒掉（开关还关着）→ 前端误报加载失败（2026-08-17 修复）。
+  async function handleTtsWarmup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      if (!checkWriteOrigin(req)) return json(res, 403, { ok: false, error: 'cross-origin write denied' });
+      if (!(await ensureTtsServer())) return json(res, 500, { ok: false, error: 'TTS 服务启动失败' });
+      const r = await fetch(`${TTS_HTTP_BASE}/warmup`, {
+        method: 'POST',
+        // 模型加载 1-3 分钟
+        signal: AbortSignal.timeout(240000),
+      });
+      const d = (await r.json()) as { ok?: boolean; model_loaded?: boolean; error?: string };
+      if (!r.ok || !d.ok) return json(res, 500, { ok: false, error: d.error ?? `模型加载失败（${r.status}）` });
+      json(res, 200, { ok: true, model_loaded: !!d.model_loaded });
+    } catch (e) {
+      json(res, 500, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  ctx.effect(() => () => {
+    if (ttsProc) {
+      try {
+        ttsProc.kill();
+      } catch { /* ignore */ }
+      ttsProc = null;
+    }
+  });
+
   // 注册路由（精确路径，含尾部斜杠变体）
   const disposers = [
     webServer.register({ kind: 'exact', path: '/aemeath/api/settings', handler: handle }),
@@ -206,6 +396,12 @@ export function apply(ctx: Context): void {
     webServer.register({ kind: 'exact', path: '/aemeath/api/memory/', handler: handleMemory }),
     webServer.register({ kind: 'exact', path: '/aemeath/api/boot-info', handler: handleBootInfo }),
     webServer.register({ kind: 'exact', path: '/aemeath/api/boot-info/', handler: handleBootInfo }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts', handler: handleTts }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/', handler: handleTts }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/warmup', handler: handleTtsWarmup }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/warmup/', handler: handleTtsWarmup }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/status', handler: handleTtsStatus }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/status/', handler: handleTtsStatus }),
   ];
   ctx.effect(() => () => disposers.forEach((d) => d()));
   console.log('[aemeath-ui] 设置端点已注册: GET/POST /aemeath/api/settings');

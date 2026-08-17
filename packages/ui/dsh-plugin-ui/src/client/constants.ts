@@ -11,6 +11,7 @@ export const FEATURE_NAMESPACES = [
   'aemeath-retriever',
   'aemeath-memory',
   'aemeath-workflow',
+  'aemeath-tts',
 ] as const;
 
 /** 允许前端切换默认角色的 settings namespace（dsh 官方 agent-presets）。 */
