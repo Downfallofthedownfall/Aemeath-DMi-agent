@@ -1,18 +1,15 @@
 // ============================================================
-// i18n.ts —— Aemeath UI 本地化基础设施（三语：zh/en/de）
-// 接线：接入平台 dsh-client-locale 服务（ctx.locale）。
-//   - register：向平台注册 aemeath 命名空间字典（zh/en/de）
+// i18n.ts —— Aemeath UI 本地化基础设施（双语：zh/en）
+// 接线：接入平台 dsh-client-locale 服务（ctx.locale，平台原生支持 zh/en）。
+//   - register：向平台注册 aemeath 命名空间字典（zh/en）
 //   - t()：模块级翻译函数（组件 import 直接调用；读取当前 active locale）
 //   - useLocale()：React hook，订阅 locale 切换触发重渲染
-// 平台限制：dsh-client-locale 的 LOCALES 常量只有 zh/en（setLocale('de') 会
-//   throw），德文需 patch 平台包（见 scripts/patch-de-locale.ps1）。
-//   但 register 的字典查找链支持任意 locale id：active 命中 de 字典即生效。
 // ============================================================
 import { useSyncExternalStore } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { LocaleSnapshot } from '@deepseek-ai/dsh-client-locale/client';
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots';
-import { zh, en, de } from './locales.ts';
+import { zh, en } from './locales.ts';
 
 export const LOCALE_NS = 'aemeath';
 
@@ -28,7 +25,7 @@ let localeRuntime:
   | null = null;
 
 /** 已注册的字典（模块级，供 t() 兜底 + 测试注入）。 */
-const fallbackDicts: Record<string, Record<string, string>> = { zh, en, de };
+const fallbackDicts: Record<string, Record<string, string>> = { zh, en };
 
 /**
  * 安装 i18n：向平台注册 aemeath 字典，绑定 t()。
@@ -46,8 +43,17 @@ export function installI18n(ctx: ClientContext): void {
 
   if (locale) {
     // 平台 register 的类型化重载只接受 zh/en（Record<LocaleId, ...>）；
-    // 这里用单语 untyped 重载逐个注册，de 也能注册进查找链。
-    const disposers = [locale.register(LOCALE_NS, 'zh', zh), locale.register(LOCALE_NS, 'en', en), locale.register(LOCALE_NS, 'de', de)];
+    // 这里用单语 untyped 重载逐个注册。
+    // try/catch：HMR 热重载/插件重复 apply 时同 ns 重复注册会 throw，
+    // 不能因字典注册失败拖垮整个 UI 插件（t() 仍可用，缺字典回退 zh）。
+    const disposers: Array<() => void> = [];
+    for (const [id, dict] of [['zh', zh], ['en', en]] as const) {
+      try {
+        disposers.push(locale.register(LOCALE_NS, id, dict));
+      } catch {
+        // 已注册过（重载）：跳过，不抛
+      }
+    }
     tFn = locale.bind(LOCALE_NS);
     localeRuntime = {
       subscribe: (l) => locale.subscribe(l),
@@ -58,7 +64,7 @@ export function installI18n(ctx: ClientContext): void {
   }
 
   // 平台 locale 服务缺失（测试/独立环境）：退化为本地字典查找。
-  let active: 'zh' | 'en' | 'de' = 'zh';
+  let active: 'zh' | 'en' = 'zh';
   const listeners = new Set<() => void>();
   tFn = (key, params) => {
     const tpl = fallbackDicts[active]?.[key] ?? zh[key as keyof typeof zh] ?? key;

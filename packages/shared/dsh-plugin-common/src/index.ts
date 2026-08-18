@@ -83,20 +83,19 @@ export function warn(msg: string): void {
 function currentLocale(ctx: Context): string {
   try {
     const v = ctx.settings?.get(settingsNamespace('locale')) as { preference?: string } | undefined;
-    const pref = v?.preference;
-    return pref === 'en' || pref === 'de' ? pref : 'zh';
+    return v?.preference === 'en' ? 'en' : 'zh';
   } catch {
     return 'zh';
   }
 }
 
 /**
- * 按 locale 解析人格文件路径：<base>.<locale>.md 存在时优先（如 aemeath.en.md），
- * 否则回退配置的 file。中文（zh）直接使用默认 file。
+ * 按 locale 解析人格文件路径：<base>.en.md 存在时优先，否则回退配置的 file。
+ * 中文（zh）直接使用默认 file。
  */
 function personaFileForLocale(file: string, locale: string): string {
-  if (locale === 'zh') return file;
-  const localized = file.replace(/\.md$/, '') + `.${locale}.md`;
+  if (locale !== 'en') return file;
+  const localized = file.replace(/\.md$/, '') + '.en.md';
   try {
     readFileSync(localized, 'utf-8');
     return localized;

@@ -181,6 +181,5 @@
   disabled: true
 - id: ui-settings-plugin-inventory
   disabled: true
-# 官方 models 设置页/DeepSeek onboarding 弹窗：由我们的「爱弥斯」设置页（API key 表单）替代
-- id: ui-settings-models
-  disabled: true
+# 2026-08-17：重新启用官方 models 设置页（用户要求加回 dsh 自带 responses/messages 接口）——
+# 我们的「爱弥斯」设置页只做 API key 快捷填写，模型/provider 配置回到官方 Models 页

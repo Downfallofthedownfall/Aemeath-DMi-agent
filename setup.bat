@@ -80,14 +80,6 @@ if %APP_ERR% neq 0 (
 )
 echo [OK] Electron shell dependencies installed
 
-echo [8/8] Enabling German locale (patch dsh client-locale, idempotent)...
-powershell -ExecutionPolicy Bypass -File scripts\patch-de-locale.ps1
-if %errorlevel% neq 0 (
-    echo [WARN] patch-de-locale failed (German UI unavailable; English/Chinese still work)
-) else (
-    echo [OK] German locale enabled
-)
-
 echo.
 echo ============================================
 echo  Setup Complete!
@@ -100,8 +92,7 @@ echo  2. Web UI: .\scripts\dsh.ps1 --profile aemeath --port 3081
 echo     浏览器打开 http://127.0.0.1:3081 （默认角色：爱弥斯）
 echo  3. API Key: 在 Web 界面「设置 -^> API 密钥」填写，或写入 .dsh-home/.credentials.yaml
 echo     （缺省回退环境变量 DEEPSEEK_API_KEY）
-echo  4. 语言: Web 界面「设置 -^> 语言」可选 中文 / English / Deutsch（npm install 后需重跑
-echo     scripts\patch-de-locale.ps1 启用德文；英文/中文无需）
+echo  4. 语言: Web 界面「设置 -^> 语言」可选 中文 / English
 echo  5. 基准: python packages\benchmark\run_benchmark.py
 echo  6. TTS (可选): 需 IndexTTS2 引擎 venv（默认 D:\index-tts\.venv\Scripts\python.exe，
 echo     可用环境变量 AEMEATH_TTS_PYTHON 指定解释器）

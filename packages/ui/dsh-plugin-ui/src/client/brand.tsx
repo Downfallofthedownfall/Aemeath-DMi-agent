@@ -8,7 +8,7 @@
 // ============================================================
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
-import { t } from './i18n.ts';
+import { t, useLocale } from './i18n.ts';
 
 /** 品牌徽记：⚛ 爱弥斯。纯 inline SVG 避免外部资源。 */
 export function BrandMark(): JSX.Element {
@@ -24,6 +24,7 @@ export function BrandMark(): JSX.Element {
 
 /** 设置页面标题（品牌位）；供设置面板 header 复用。 */
 export function BrandTitle(): JSX.Element {
+  useLocale(); // locale 切换时刷新品牌文案
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
       <span style={{ color: 'var(--dsw-alias-state-business-primary)' }}>
@@ -39,6 +40,7 @@ export function BrandTitle(): JSX.Element {
  * 宽栏显示标题，窄栏（rail）只显示徽记。
  */
 export function SidebarBrand({ wide }: { wide: boolean }): JSX.Element {
+  useLocale(); // locale 切换时刷新品牌文案
   return (
     <span
       style={{
@@ -64,6 +66,7 @@ export function SidebarBrand({ wide }: { wide: boolean }): JSX.Element {
 
 /** 设置页面标题为品牌位（替换 dsh 原版 "Settings"）。 */
 export function BrandSettingsHeader(): JSX.Element {
+  useLocale();
   return <BrandTitle />;
 }
 
