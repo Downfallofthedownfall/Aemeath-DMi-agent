@@ -48,7 +48,11 @@ export const inject = ['storageDomain', 'commands', 'credentials', 'settings'];
 export const Config = z.object({
   defaultPreset: z.string(),
   l2RecallTopK: z.number(),
+  /** L3（global 池）容量上限：超限按 importance×recency 淘汰最低者。 */
   l3Capacity: z.number(),
+  /** L2（mode 池）容量上限：同样超限淘汰（默认 1000；L2 无容量上限会导致
+   *  学期级 study_log 记忆无界累积——旧实现只对 global 执行容量淘汰）。 */
+  l2Capacity: z.number(),
   /** L1 采集缓冲容量（每会话轮次上限；80% 阈值触发总结卸载）。 */
   l1Capacity: z.number(),
   /** L1 触发阈值（0~1，默认 0.8）。 */
@@ -87,6 +91,7 @@ export interface MemoryConfig {
   defaultPreset?: string;
   l2RecallTopK?: number;
   l3Capacity?: number;
+  l2Capacity?: number;
   l1Capacity?: number;
   l1Threshold?: number;
   l1MaxTokens?: number;
@@ -145,6 +150,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
   const topK = config.l2RecallTopK ?? 5;
   const l3Capacity = config.l3Capacity ?? 500;
+  const l2Capacity = config.l2Capacity ?? 1000;
   const l1Capacity = Math.max(8, config.l1Capacity ?? 40);
   const l1Threshold = Math.min(1, Math.max(0.1, config.l1Threshold ?? 0.8));
   const l1MaxTokens = Math.max(512, config.l1MaxTokens ?? 3000);
@@ -266,26 +272,27 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     }
   };
 
-  // ---- L3 容量淘汰：importance×recency 最低者先沉淀后淘汰 ----
-  const enforceCapacity = async (): Promise<void> => {
+  // ---- L2/L3 容量淘汰：各 scope 独立容量，importance×recency 最低者淘汰 ----
+  const enforceCapacity = async (scope: 'mode' | 'global', capacity: number): Promise<void> => {
     const candidates = memoryService
       .list()
       .map(({ key, rec }) => ({ id: key, importance: rec.importance, lastAccess: rec.last_access, scope: rec.scope, status: rec.status }));
-    const evict = selectEviction(candidates, l3Capacity, Date.now());
+    const evict = selectEviction(candidates, scope, capacity, Date.now());
     if (!evict.length) return;
-    await promoteProfileFacts();
+    // L3（global）淘汰前先沉淀稳定画像；L2（mode）无 user_fact，跳过
+    if (scope === 'global') await promoteProfileFacts();
     for (const id of evict) {
       const rec = memories.get(id);
       if (!rec) continue;
       await memories.put(id, { ...rec, deleted: true, status: 'dormant' });
-      await auditWrite('capacity_evict', id, 'L3 容量淘汰（已先沉淀画像）');
-      log(`L3 容量淘汰：${id.slice(0, 8)}（${rec.content.slice(0, 20)}…）`);
+      await auditWrite('capacity_evict', id, `${scope === 'global' ? 'L3' : 'L2'} 容量淘汰（${scope === 'global' ? '已先沉淀画像' : '直接淘汰'}）`);
+      log(`${scope === 'global' ? 'L3' : 'L2'} 容量淘汰：${id.slice(0, 8)}（${rec.content.slice(0, 20)}…）`);
     }
   };
 
   const saveMemory = async (preset: string, content: string, category: Category, importance: number, confidence: number, sid: string, scope: 'mode' | 'global'): Promise<string> => {
     const id = await memoryService.save({ content, category, importance, confidence, scope, preset, source_mode: preset });
-    if (scope === 'global') await enforceCapacity();
+    await enforceCapacity(scope, scope === 'global' ? l3Capacity : l2Capacity);
     log(`记忆已写入 preset=${preset} cat=${category} imp=${importance} scope=${scope}（${content.slice(0, 30)}…）`);
     return id;
   };
@@ -654,6 +661,22 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         void flushStaleL1(sid, `最后更新 ${Math.round((now - lastTs) / 86400000)} 天前`);
       }
     }
+    // 陈旧行硬清理：dormant（衰减/supersede）或已删（容量淘汰/用户删除）的行
+    // 距上次访问超过宽限期（decayDays + 30 天）后彻底删除——这些行不再参与召回，
+    // 只占存储并拖慢 list/stats/检索与每 6h 遍历（此前的实现让它们永久驻留）。
+    // 例外保护：user_fact 且未被取代的保留（画像沉淀每轮已抄录其要点，但此处
+    // 不删原始行以防画像截断丢失细节）。
+    const PURGE_GRACE_DAYS = 30;
+    const purgeCutoff = now - (decayDays + PURGE_GRACE_DAYS) * 24 * 3600 * 1000;
+    for (const [key, rec] of memories.entries()) {
+      if (rec.last_access >= purgeCutoff) continue;
+      const isGarbage = rec.deleted === true || (rec.status === 'dormant' && !(rec.category === 'user_fact' && !rec.superseded_by));
+      if (!isGarbage) continue;
+      void memories
+        .delete(key)
+        .then(() => auditWrite('purge_dormant', key, `陈旧行清理（status=${rec.status} deleted=${!!rec.deleted}，距上次访问 ${Math.round((now - rec.last_access) / 86400000)} 天）`))
+        .catch(() => undefined);
+    }
     void promoteProfileFacts();
   }, 6 * 3600 * 1000);
   if (decayTimer.unref) decayTimer.unref();
@@ -799,7 +822,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
               const payload = await readJsonLimited(req);
               const prefix = payload.idPrefix;
               if (typeof prefix !== 'string' || !prefix) return send(400, { ok: false, error: 'idPrefix required' });
-              return send(200, { ok: await memoryService.softDelete(prefix) });
+              return send(200, { ok: (await memoryService.softDelete(prefix)) > 0 });
             }
             if (url === '/memory/knowledge/status') {
               if (req.method !== 'POST') return send(405, { ok: false, error: 'method not allowed: POST' });

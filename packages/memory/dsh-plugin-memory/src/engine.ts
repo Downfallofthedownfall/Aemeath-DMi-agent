@@ -28,19 +28,21 @@ export function evictionValue(rec: EvictionCandidate, now: number): number {
 
 /**
  * 选出应淘汰的记录 id（升序价值最低的 N 个）。
- * 只考虑 scope='global' 且 status='active' 且未标记 deleted 的候选。
+ * 只考虑指定 scope 且 status='active' 且未标记 deleted 的候选。
+ * L2（scope='mode'）与 L3（scope='global'）各自独立容量、独立淘汰池。
  * @param records 全部记录（调用方过滤 deleted）
+ * @param scope   淘汰池：'global'（L3）或 'mode'（L2）
  * @param capacity 容量上限
  * @param now      当前时间戳
  * @returns 需要淘汰的 id 列表（已超出容量的部分）
  */
-export function selectEviction(records: EvictionCandidate[], capacity: number, now: number): string[] {
-  const globalActive = records
-    .filter((r) => r.scope === 'global' && r.status === 'active')
+export function selectEviction(records: EvictionCandidate[], scope: 'mode' | 'global', capacity: number, now: number): string[] {
+  const active = records
+    .filter((r) => r.scope === scope && r.status === 'active')
     .sort((a, b) => evictionValue(a, now) - evictionValue(b, now));
-  const over = globalActive.length - capacity;
+  const over = active.length - capacity;
   if (over <= 0) return [];
-  return globalActive.slice(0, over).map((r) => r.id);
+  return active.slice(0, over).map((r) => r.id);
 }
 
 /**
