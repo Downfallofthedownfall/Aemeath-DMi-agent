@@ -4,7 +4,7 @@
 >
 > **架构 / Architecture**: v2 is rebuilt on the DeepSeek Harness (dsh) plugin system. **The platform is just the engine — the moat is the physics content track**: Worldbook knowledge base, exam benchmark, weekly usage log (see [docs/usage-log.md](docs/usage-log.md) and migration plan `docs/v2-migration-plan.md`).
 >
-> **状态 / Status**: M0–M6 engine + M5 frontend delivered; security hardening (S1–S5 / C1–C26) done; 73 unit tests green.
+> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; 92 unit tests green.
 
 ---
 
@@ -33,6 +33,8 @@ Built on [DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.1.0-rc.6`) a
 | Lecture retrieval + Altklausur benchmark | ✅ M4 | SQLite FTS5 BM25 (Chinese bigram), 6 metrics, headless runner |
 | Solving workflow (SymPy verification) | ✅ M6 | Plan → execute → ✅/❌ verify → conclusion + source; honest degradation on tool failure |
 | Frontend overhaul + desktop shell | ✅ M5 | Forced light theme, brand layer, hero + role cards, quick settings, workspace picker, memory panel, TTS button, Electron shell (`app/`) |
+| i18n (zh/en) | ✅ 2026-08 | UI strings via locale service; personas per locale (`*.en.md`) |
+| Curriculum plugin (Modulhandbuch) | ✅ 2026-08 | Semester module summary injection + `curriculum_query` tool, WiSe/SoSe detection, gatekeeper link |
 | Security hardening | ✅ 2026-08 | S1–S5 (sympy sandbox / clipboard / CORS / memory-http token) + C1–C26 (build / config / frontend / python / electron) |
 
 > Full milestone & acceptance details: `docs/v2-migration-plan.md` (§5). Project report: `docs/PROJECT_REPORT.md`.
@@ -102,6 +104,7 @@ cd app && npm install
 | TypeScript (plugins) · Cordis | dsh plugin monorepo (`packages/`) |
 | Python microservices (MCP) | SymPy compute / YOLO-OCR vision / IndexTTS2 TTS / keyboard-mouse control, wired via dsh `mcp-client` (`packages/py-services/`) |
 | SQLite FTS5 | Lecture retrieval (BM25) |
+| Curriculum plugin | Modulhandbuch course catalog → semester summary injection + module query (`packages/curriculum/`) |
 | Electron (41) | Desktop pet shell (managed dsh + branded window, packaging via electron-builder) |
 | **i18n (zh/en)** | UI strings via dsh locale service (`packages/ui/dsh-plugin-ui/src/client/i18n.ts` + `locales.ts`); personas per locale (`profiles/aemeath/personas/*.en.md`) |
 
@@ -114,7 +117,7 @@ cd app && npm install
 ### Project structure
 
 ```
-packages/            # v2 plugin monorepo (common/worldbook/memory/retriever/workflow/benchmark/py-services/ui)
+packages/            # v2 plugin monorepo (common/worldbook/memory/retriever/workflow/curriculum/benchmark/py-services/ui)
 packages/py-services # v1 Python microservices → MCP servers (sympy/vision/tts/control, zero-dep mcp_core)
 profiles/            # dsh profiles (aemeath = Web main, aemeath-run = one-shot/benchmark)
 scripts/dsh.ps1      # dsh wrapper (project-local DSH_HOME + cwd + preset sync)
@@ -128,16 +131,17 @@ electron-app/        # v1 (frozen, tag v1.0; migrated files removed, shell refer
 ```bash
 npm test -w @aemeath/dsh-plugin-common       # 8  (OOC rule layer)
 npm test -w @aemeath/dsh-plugin-worldbook    # 10 (trigger/order/chain/token budget)
-npm test -w @aemeath/dsh-plugin-memory       # 38 (gatekeeper/BM25-conflict/engine/L1 buffer)
+npm test -w @aemeath/dsh-plugin-memory       # 48 (gatekeeper/BM25-conflict/engine/L1 buffer)
 npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
-# Total: 73 unit tests (all green)
+npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
+# Total: 92 unit tests (all green)
 ```
 
 ### Roadmap (next)
 
 1. Frontend polish: P4 inline tool UIs, P5 shell light-theme polish.
-2. Content track: real lecture notes + Altklausur exams → full 6-metric benchmark.
+2. Content track: real lecture notes + Altklausur exams + complete Modulhandbuch → full 6-metric benchmark.
 3. M6 v2 / M3 leftovers: codeMode enablement, knowledge-layer → retriever bridge, v1 memory.db migration run-through.
 
 ---
@@ -167,6 +171,8 @@ npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimens
 | 讲义检索 + Altklausur 基准 | ✅ M4 | SQLite FTS5 BM25（中文 bigram），六指标，headless 驱动 |
 | 解题工作流（SymPy 验证） | ✅ M6 | 计划→执行→✅/❌ 验证标记→结论+来源；工具故障诚实降级 |
 | 前端改造 + 桌宠壳 | ✅ M5 | 强制亮色、品牌层、hero + 角色卡、快速设置、工作区选择、记忆面板、TTS 按钮、Electron 壳（app/） |
+| i18n（中/英） | ✅ 2026-08 | UI 文案走 locale 服务；人格按 locale 加载（`*.en.md`） |
+| curriculum 课程插件（Modulhandbuch） | ✅ 2026-08 | 学期模块摘要常驻注入 + curriculum_query 工具，WiSe/SoSe 学期判断，gatekeeper 联动 |
 | 安全加固 | ✅ 2026-08 | S1–S5（sympy 沙箱/剪贴板/CORS/记忆端点 token）+ C1–C26（构建/配置/前端/Python/Electron） |
 
 > 完整里程碑与验收见 `docs/v2-migration-plan.md`（§5）；全项目报告见 `docs/PROJECT_REPORT.md`。
@@ -236,6 +242,7 @@ cd app && npm install
 | TypeScript（插件）· Cordis | dsh 插件 monorepo（`packages/`） |
 | Python 微服务（MCP） | SymPy 计算 / YOLO-OCR 视觉 / IndexTTS2 语音 / 键鼠控制，经 dsh `mcp-client` 接入（`packages/py-services/`） |
 | SQLite FTS5 | 讲义检索（BM25） |
+| curriculum 插件 | Modulhandbuch 课程目录 → 学期摘要注入 + 模块检索（`packages/curriculum/`） |
 | Electron（41） | 桌宠壳（托管 dsh + 品牌窗口，electron-builder 打包） |
 | **i18n（中/英）** | UI 文案走 dsh locale 服务（`packages/ui/dsh-plugin-ui/src/client/i18n.ts` + `locales.ts`）；人格按 locale 选文件（`profiles/aemeath/personas/*.en.md`） |
 
@@ -248,7 +255,7 @@ cd app && npm install
 ### 项目结构
 
 ```
-packages/            # v2 插件 monorepo（common/worldbook/memory/retriever/workflow/benchmark/py-services/ui）
+packages/            # v2 插件 monorepo（common/worldbook/memory/retriever/workflow/curriculum/benchmark/py-services/ui）
 packages/py-services # v1 Python 微服务 → MCP server（sympy/vision/tts/control，mcp_core 零依赖）
 profiles/            # dsh profile（aemeath=Web 主 profile，aemeath-run=一次性/基准）
 scripts/dsh.ps1      # dsh 包装脚本（项目内 DSH_HOME + cwd + preset 同步）
@@ -262,26 +269,27 @@ electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留�
 ```bash
 npm test -w @aemeath/dsh-plugin-common       # 8  （OOC 规则层）
 npm test -w @aemeath/dsh-plugin-worldbook    # 10 （触发/排序/chain 防环/token 预算）
-npm test -w @aemeath/dsh-plugin-memory       # 38 （守门员/BM25 冲突/引擎/L1 缓冲）
+npm test -w @aemeath/dsh-plugin-memory       # 48 （守门员/BM25 冲突/引擎/L1 缓冲）
 npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
-# 合计：73 项单测（全绿）
+npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
+# 合计：92 项单测（全绿）
 ```
 
 ### 下一步
 
 1. 前端打磨收尾：P4 工具内联 UI、P5 桌宠壳亮色打磨。
-2. 内容轨：真实讲义 + Altklausur 真题 → 完整六指标基准。
+2. 内容轨：真实讲义 + Altklausur 真题 + Modulhandbuch 数据完善 → 完整六指标基准。
 3. M6 v2 / M3 遗留：codeMode 启用、知识层 → retriever 桥接、v1 memory.db 迁移跑通。
 
 ---
 
 ## ⚠️ 免责声明 / Disclaimer
 
-本项目为粉丝同人作品，角色「爱弥斯」「星炬」及其世界观出自游戏《鸣潮》（Kuro Games 库洛游戏）。本项目与 Kuro Games 无任何关联，未获其官方授权；仅供学习交流使用，**禁止商用**；角色美术、语音等素材版权归原作者/版权方所有；如涉及侵权，请联系删除相关内容。
+本项目为粉丝同人作品，角色「爱弥斯」「星炬」及其世界观出自游戏《鸣潮》（Kuro Games 库洛游戏）。本项目与 Kuro Games 无任何关联，未获其官方授权；仅供学习交流使用，**禁止商用**；角色美术、语音等素材版权归原作者/版权方所有；如涉及侵权，请联系删除相关内容。第三方组件、模型权重与许可证清单见 [Third_Party_Notices.md](Third_Party_Notices.md)（含 YOLOv8 AGPL-3.0 与 IndexTTS2 模型非商用协议提示）。
 
-*This is a fan-made project. The characters "Aemeath" and "Stellar Torch" and their world belong to the game Wuthering Waves (Kuro Games). This project is not affiliated with or endorsed by Kuro Games. For learning purposes only — **no commercial use**; character art/voice assets belong to their respective owners; contact us to remove any infringing content.*
+*This is a fan-made project. The characters "Aemeath" and "Stellar Torch" and their world belong to the game Wuthering Waves (Kuro Games). This project is not affiliated with or endorsed by Kuro Games. For learning purposes only — **no commercial use**; character art/voice assets belong to their respective owners; contact us to remove any infringing content. Third-party components, model weights and licenses are listed in [Third_Party_Notices.md](Third_Party_Notices.md) (including AGPL-3.0 notice for YOLOv8 and the non-commercial IndexTTS2 model license).*
 
 ## 📄 许可证 / License
 
-MIT License (code). See [LICENSE](LICENSE).
+MIT License (code). See [LICENSE](LICENSE) and [Third_Party_Notices.md](Third_Party_Notices.md).
