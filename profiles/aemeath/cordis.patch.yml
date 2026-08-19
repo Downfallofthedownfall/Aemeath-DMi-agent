@@ -181,5 +181,19 @@
   disabled: true
 - id: ui-settings-plugin-inventory
   disabled: true
+# —— 重新启用 dsh 网络搜索工具链（web-app bundle 默认禁用 tool-web——
+#     导致主 profile 的 agent 看不到 web_search 工具，只会用 web_scraper 抓搜索页被反爬；
+#     provider web-search-deepseek 已在 base 启用（复用 DEEPSEEK_API_KEY）——
+#     tool-web 恢复后 web_search/web_fetch 工具对 agent 可见）——
+- id: tool-web
+  disabled: false
+# —— 重新启用 dsh skill 机制（web-app bundle 默认禁用 skill-filesystem/tool-skill；
+#     本项目用 skill 承载联网搜索行为指南：.dsh/skills/web-search.md——
+#     指导 agent 联网搜索一律走 dsh 内置 web_search 工具，不用 web_scraper 抓
+#     搜索引擎结果页（会被反爬拦截）。headless profile 默认启用，主 profile 需在此恢复）——
+- id: skill-filesystem
+  disabled: false
+- id: tool-skill
+  disabled: false
 # 2026-08-17：重新启用官方 models 设置页（用户要求加回 dsh 自带 responses/messages 接口）——
 # 我们的「爱弥斯」设置页只做 API key 快捷填写，模型/provider 配置回到官方 Models 页

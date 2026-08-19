@@ -213,6 +213,11 @@ async function resolveBlocksPrivate(url: string): Promise<boolean> {
 // 钉 IP + Host 头的严格化；如需加固，改为自行解析后经自定义 Agent/net.connect
 // 连接已校验的公网 IP 并携带 Host 头。
 
+// 搜索引擎结果页 URL（bing/google/baidu/ddg/yahoo 的 search 形态）：有反爬
+// （验证页/403/空壳结果），抓取必然失败；搜索应走 dsh 内置 web_search 工具
+// （DeepSeek 官方搜索接口，结构化结果 + 来源）。命中直接拒绝并指路。
+const SEARCH_PAGE_URL = /(bing\.com|cn\.bing\.com)\/search|google\.com\/search|baidu\.com\/s(?=[?/]|$)|duckduckgo\.com\/\?q=|search\.yahoo\.com\/search/i;
+
 // ============================================================
 // 插件主体
 // ============================================================
@@ -300,9 +305,10 @@ export function apply(ctx: Context, config: CommonConfig): void {
     defineTool({
       name: 'web_scraper',
       description:
-        '抓取网页正文文本（去除 script/style 与标签，返回前 3000 字符）。用于查证网页内容、说明书、新闻等。',
+        '抓取具体网页的正文文本（去除 script/style 与标签，返回前 3000 字符）。用于查证已知 URL 的文章/文档/新闻内容。' +
+        '⚠ 搜索不要用它：抓取搜索引擎结果页（bing/google/baidu 的 search URL）会被反爬拦截。搜索请用 dsh 内置 web_search 工具，拿到来源 URL 后再用本工具抓正文。',
       parameters: {
-        url: { type: 'string', required: true, description: '网页 URL，如 https://example.com/page' },
+        url: { type: 'string', required: true, description: '具体的文章/页面 URL（非搜索引擎结果页），如 https://example.com/page' },
       },
       output: {
         schema: { type: 'string' },
@@ -311,6 +317,10 @@ export function apply(ctx: Context, config: CommonConfig): void {
       execute: async (args: { url: string }) => {
         const url = args.url;
         try {
+          // 搜索引擎结果页：反爬必失败，拒绝并指路 dsh 内置 web_search
+          if (SEARCH_PAGE_URL.test(url)) {
+            return `Web scraper error: 这是搜索引擎结果页（${url.slice(0, 100)}），有反爬且不适合抓取。请改用 dsh 内置的 web_search 工具搜索，再对返回的具体文章 URL 调用本工具。`;
+          }
           // S6：SSRF 防护——私网/回环/保留地址或非 http(s) 一律拒绝
           if (await resolveBlocksPrivate(url)) {
             return `Web scraper error: URL 不可访问（拒绝私网/回环/保留地址或非 http(s)）: ${url.slice(0, 120)}`;
