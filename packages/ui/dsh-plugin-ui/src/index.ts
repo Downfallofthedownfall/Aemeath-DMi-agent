@@ -29,7 +29,11 @@ export const inject = ['webServer', 'settings', 'memory'];
 export const DEFAULT_WORKSPACE_DIR = '.chat';
 
 /** 本插件管理的 settings namespaces（与引擎插件注册名一致）。 */
-export const FEATURE_NAMESPACES = ['aemeath-common', 'aemeath-worldbook', 'aemeath-retriever', 'aemeath-memory', 'aemeath-workflow', 'aemeath-tts'];
+export const FEATURE_NAMESPACES = ['aemeath-common', 'aemeath-worldbook', 'aemeath-retriever', 'aemeath-memory', 'aemeath-workflow', 'aemeath-tts', 'aemeath-ui'];
+
+/** 前端上报的 UI locale 所在 namespace/字段（语言指令注入读它）。 */
+export const UI_LOCALE_NAMESPACE = 'aemeath-ui';
+export const UI_LOCALE_FIELD = 'locale';
 
 /** 允许前端切换默认角色的 settings namespace（dsh 官方 agent-presets）。 */
 export const AGENT_PRESET_NAMESPACE = 'agent-presets';
@@ -207,6 +211,21 @@ export function apply(ctx: Context): void {
 
     json(res, 405, { ok: false, error: 'method not allowed' });
   };
+
+  // —— UI locale namespace（2026：前端上报 active locale → 语言指令注入读取）——
+  // 前端在 locale 变化时 POST /aemeath/api/settings {ns:'aemeath-ui', patch:{locale:'en'}}；
+  // host 侧语言指令 provider 每次 assembly 读它，让模型回复跟随前端语言。
+  installSettingsSection(
+    ctx,
+    settingsNamespace(UI_LOCALE_NAMESPACE),
+    z.object({ [UI_LOCALE_FIELD]: z.string().required(false) }),
+    { locale: '' },
+    {
+      setSource: () => undefined,
+      onChange: () => undefined,
+    },
+  );
+  console.log('[aemeath-ui] aemeath-ui 设置 namespace 已注册（locale 上报）');
 
   // —— TTS 设置 namespace（2026-08-17：前端「朗读」开关，settings.yaml 持久化）——
   // 引擎侧无行为（合成在 tts HTTP 服务），仅承载 enabled 开关供前端门控。

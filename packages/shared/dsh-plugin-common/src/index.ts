@@ -104,6 +104,36 @@ function personaFileForLocale(file: string, locale: string): string {
   }
 }
 
+/**
+ * 读取前端上报的 UI locale（settings.aemeath-ui.locale，前端在 locale 变化时
+ * 通过 /aemeath/api/settings 写入）。这是"跟随前端语言"提示词的权威来源：
+ * 前端能感知浏览器语言与显式选择，host 只读平台 preference 无法覆盖"跟随浏览器"。
+ * 返回 'en' / 'zh'；未上报返回 ''（不注入语言指令）。
+ */
+function uiLocale(ctx: Context): string {
+  try {
+    const v = ctx.settings?.get(settingsNamespace('aemeath-ui')) as { locale?: string } | undefined;
+    const l = v?.locale;
+    return l === 'en' || l === 'zh' ? l : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 语言指令文本：注入 system prompt，约束模型回复语言跟随前端 UI。
+ * 前端 locale=en → 英文回复；zh → 中文回复；未上报（''）→ 不注入（跟随 persona/对话）。
+ */
+function languageDirective(locale: string): string {
+  if (locale === 'en') {
+    return 'Language: Always reply in English. The user interface language is English — keep all answers in English, including when quoting the knowledge base or lecture notes (translate/paraphrase content rather than switching to Chinese).';
+  }
+  if (locale === 'zh') {
+    return '语言：请始终用中文回复。界面语言为中文——所有回答（含引用知识库/讲义内容时）都用中文表达。';
+  }
+  return '';
+}
+
 // ============================================================
 // OOC 规则层（纯函数，供单测）
 // ============================================================
@@ -371,6 +401,16 @@ export function apply(ctx: Context, config: CommonConfig): void {
         order: 0,
         text,
       });
+      // 语言指令 section（order 紧贴 persona 之后）：provider 每次 assembly 求值，
+      // 读前端上报的 aemeath-ui.locale —— 前端切语言后无需重挂 agent，下一条回复即生效。
+      // 未上报（''）时 section 文本为空，renderPrompt 会丢弃空 section，不影响 prompt。
+      agent.ctx.systemPrompt.section({
+        name: 'aemeath:language',
+        order: 1,
+        text: () => languageDirective(uiLocale(agent.ctx)),
+      });
+      const uiLoc = uiLocale(agent.ctx);
+      log(`语言指令已挂载 → agent=${agent.id} locale=${uiLoc || '(未上报，不注入)'}`);
       mountedAgentPersonas.add(agent.id);
       log(`人格已挂载 → preset=${preset} agent=${agent.id}（${text.length} 字符）`);
     } catch (e) {

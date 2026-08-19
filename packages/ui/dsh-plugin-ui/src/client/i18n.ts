@@ -101,3 +101,25 @@ export function useLocale(): string {
   );
   return snap.active;
 }
+
+/** 当前 active locale（供上报等非渲染场景读取；未安装时默认 zh）。 */
+export function currentActiveLocale(): string {
+  return localeRuntime?.getSnapshot().active ?? 'zh';
+}
+
+/**
+ * 上报 UI locale 到 host（settings.aemeath-ui.locale）。
+ * 语言指令注入（common 插件）据此让模型回复跟随前端语言。
+ * 幂等：值相同不重复写；失败静默（下次 locale 变化重试）。
+ */
+export function reportLocaleToHost(locale: string): void {
+  if (typeof fetch === 'undefined') return;
+  void fetch('/aemeath/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ns: 'aemeath-ui', patch: { locale } }),
+    signal: AbortSignal.timeout(6000),
+  }).catch(() => {
+    /* 上报失败静默：host 语言指令缺省不注入，不影响 UI */
+  });
+}

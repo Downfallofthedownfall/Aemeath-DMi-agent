@@ -6,7 +6,7 @@
 // ============================================================
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
-import { installI18n } from './i18n.ts';
+import { installI18n, reportLocaleToHost, currentActiveLocale } from './i18n.ts';
 import { registerThemes } from './theme.ts';
 import { applyBrand } from './brand.tsx';
 import { registerSettingsSection, FEATURES } from './settings.tsx';
@@ -129,6 +129,18 @@ export function apply(ctx: ClientContext): void {
       void faces.role.refresh();
     }),
   );
+
+  // 4.5) UI locale → host 上报（语言指令注入用）：
+  //   启动时上报一次当前 locale（跟随浏览器/持久化偏好），locale/change 时再上报。
+  //   common 插件的 system-prompt 语言 section 每次 assembly 读 aemeath-ui.locale。
+  ctx.effect(() => {
+    reportLocaleToHost(currentActiveLocale());
+    const off = ctx.on('locale/change', (snap) => {
+      const id = (snap as { active?: string })?.active;
+      if (id === 'en' || id === 'zh') reportLocaleToHost(id);
+    });
+    return off;
+  });
 
   // 暴露给测试/检查脚本（cordis ctx 为代理对象，不可直接 setProperty）
   void FEATURES;
