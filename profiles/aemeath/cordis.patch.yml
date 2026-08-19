@@ -181,6 +181,27 @@
   disabled: true
 - id: ui-settings-plugin-inventory
   disabled: true
+# —— 定制权限预设：danger-full-access 的 approval 由 never 改为 ask ——
+# dsh 默认把 danger-full-access 配成 approval: never（无人值守/CI 语义：一切
+# 需要审批的操作确定性拒绝）。结果是"完全访问"反而静默拒绝服务——例如
+# mcp__control__* 键鼠/程序控制被 aemeath-common 强制 tools/pre-execute ask，
+# full access 下直接 rejected（用户观察到的"mcp 输入被拒"）。
+# 本地交互桌宠永远有人在：期望语义是"沙箱全开 + 弹窗确认"。故覆盖该预设为 ask
+#（presets 为整体替换，须写全 read-only / workspace-write / danger-full-access）。
+# 注意：已切过 old 预设的会话持有事件日志里的旧 override，需新会话重新选一次预设。
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: ask
 # —— 重新启用 dsh 网络搜索工具链（web-app bundle 默认禁用 tool-web——
 #     导致主 profile 的 agent 看不到 web_search 工具，只会用 web_scraper 抓搜索页被反爬；
 #     provider web-search-deepseek 已在 base 启用（复用 DEEPSEEK_API_KEY）——

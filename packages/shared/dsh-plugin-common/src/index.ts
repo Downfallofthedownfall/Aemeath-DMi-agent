@@ -14,6 +14,9 @@
 import { readFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { lookup } from 'node:dns/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -49,6 +52,9 @@ export const Config = z.object({
     baseUrl: z.string(),
     model: z.string(),
   }),
+  /** 系统审批弹窗（S7）：mcp__control__* 等需审批的调用改弹系统级 MessageBox
+   *  （前台显示 + 回车允许/Esc 拒绝），免去切回 dsh Web UI 点审批。默认开。 */
+  systemApproval: z.boolean(),
 });
 
 export interface PersonaConfig {
@@ -65,6 +71,7 @@ export interface CommonConfig {
   personas?: Record<string, PersonaConfig>;
   oocRules?: Record<string, OocRuleConfig>;
   oocLlm?: { enabled?: boolean; apiKey?: string; baseUrl?: string; model?: string };
+  systemApproval?: boolean;
 }
 
 // ===== 日志（[前缀] 约定） =====
@@ -74,6 +81,88 @@ export function log(msg: string): void {
 
 export function warn(msg: string): void {
   console.warn(`[aemeath-common] ⚠ ${msg}`);
+}
+
+// ============================================================
+// S7：系统审批（免 alt-tab 切回 Web UI）
+// mcp__control__* 等敏感工具调用 → 系统级审批，两种形态：
+//   首选：右下角通知 + 全局快捷键（scripts/ask-notify.ps1）——
+//     气泡通知右下角弹出、托盘图标常驻、全程不抢焦点不切窗口；
+//     Ctrl+Alt+1 = 允许，Ctrl+Alt+2 = 拒绝，点击通知/托盘菜单亦可。
+//   fallback：模态 MessageBox（回车=允许 Esc=拒绝），通知脚本不可用时使用。
+// 实现：spawn powershell；参数经环境变量传入（防注入）；脚本需 UTF-8 BOM
+// （PowerShell 5.1 无 BOM 按 GBK 读，中文会破坏解析）。
+// 超时/失败 → unavailable，由调用方回退 Web UI 审批（fail-open 到既有路径）。
+// ============================================================
+const execFileAsync = promisify(execFile);
+
+/** 系统审批超时（秒/毫秒）：用户有足够时间决策；超时回退 Web UI。 */
+const SYSTEM_ASK_TIMEOUT_SEC = 120;
+const SYSTEM_ASK_TIMEOUT_MS = SYSTEM_ASK_TIMEOUT_SEC * 1000;
+
+/** 并发信号量：同一时刻只弹一个审批（并发调用排队，第二个回退 Web UI）。 */
+let systemAskActive = false;
+
+/** 右下角通知脚本（ESM：import.meta.url → lib/index.js，../scripts/ 与包同目录）。 */
+const SYSTEM_ASK_NOTIFY_PS = fileURLToPath(new URL('../scripts/ask-notify.ps1', import.meta.url));
+
+/** fallback：模态 MessageBox 脚本（单引号 TS 字符串：$ / 反引号均为字面量，PS 侧解释）。 */
+const SYSTEM_ASK_PS_ZH = [
+  'Add-Type -AssemblyName System.Windows.Forms',
+  '$tool = $env:AEMEATH_ASK_TOOL',
+  '$reason = $env:AEMEATH_ASK_REASON',
+  '$msg = "爱弥斯想调用：$tool`n`n$reason`n`n是否允许？`n（回车=允许，Esc=拒绝）"',
+  '$r = [System.Windows.Forms.MessageBox]::Show($msg, "爱弥斯 · 权限确认", "YesNo", "Question", "Button1")',
+  "if ($r -eq 'Yes') { Write-Output 'ALLOW' } else { Write-Output 'DENY' }",
+].join('; ');
+
+/** fallback：模态 MessageBox 脚本（英文版，locale=en 时用）。 */
+const SYSTEM_ASK_PS_EN = [
+  'Add-Type -AssemblyName System.Windows.Forms',
+  '$tool = $env:AEMEATH_ASK_TOOL',
+  '$reason = $env:AEMEATH_ASK_REASON',
+  '$msg = "Aemeath wants to call: $tool`n`n$reason`n`nAllow it?`n(Enter = Allow, Esc = Reject)"',
+  '$r = [System.Windows.Forms.MessageBox]::Show($msg, "Aemeath · Permission Request", "YesNo", "Question", "Button1")',
+  "if ($r -eq 'Yes') { Write-Output 'ALLOW' } else { Write-Output 'DENY' }",
+].join('; ');
+
+async function systemApproval(toolName: string, reason: string, locale: string): Promise<'allow' | 'deny' | 'unavailable'> {
+  if (systemAskActive) return 'unavailable';
+  systemAskActive = true;
+  try {
+    // 首选：右下角通知 + 全局快捷键（F5 同意 / F6 拒绝 / 点击通知按钮）
+    try {
+      const { stdout } = await execFileAsync(
+        'powershell',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SYSTEM_ASK_NOTIFY_PS, '-TimeoutSec', String(SYSTEM_ASK_TIMEOUT_SEC)],
+        {
+          timeout: SYSTEM_ASK_TIMEOUT_MS + 10_000,
+          // 参数走环境变量：避免命令行拼接注入（reason 可能含引号/换行）；locale 供脚本双语切换
+          env: { ...process.env, AEMEATH_ASK_TOOL: toolName, AEMEATH_ASK_REASON: reason, AEMEATH_ASK_LOCALE: locale },
+          windowsHide: true, // 隐藏 PowerShell 控制台黑框（通知/托盘是 GUI，不受影响）
+        },
+      );
+      const out = stdout.trim().toUpperCase();
+      if (out === 'ALLOW') return 'allow';
+      if (out === 'DENY') return 'deny';
+      return 'unavailable'; // TIMEOUT：用户未决策 → 回退 Web UI
+    } catch {
+      warn('系统通知审批不可用，回退模态 MessageBox');
+    }
+    // fallback：模态 MessageBox（回车=允许，Esc=拒绝；按 locale 选文案）
+    const msgScript = locale === 'en' ? SYSTEM_ASK_PS_EN : SYSTEM_ASK_PS_ZH;
+    const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', msgScript], {
+      timeout: SYSTEM_ASK_TIMEOUT_MS,
+      env: { ...process.env, AEMEATH_ASK_TOOL: toolName, AEMEATH_ASK_REASON: reason },
+      windowsHide: true,
+    });
+    return stdout.trim().toUpperCase().includes('ALLOW') ? 'allow' : 'deny';
+  } catch (e) {
+    warn(`系统审批不可用（回退 Web UI 审批）：${(e as Error).message}`);
+    return 'unavailable';
+  } finally {
+    systemAskActive = false;
+  }
 }
 
 /**
@@ -268,20 +357,36 @@ export function apply(ctx: Context, config: CommonConfig): void {
   );
   log('冒烟工具 aemeath/version 已注册');
 
-  // ---- S4 修复：键鼠/程序控制工具强制审批（全 preset 生效） ----
+  // ---- S4/S7 修复：键鼠/程序控制工具强制审批（全 preset 生效） ----
   // control_mcp 的工具（mcp__control__*）会在用户机器上真实操作键鼠/窗口、启动程序，
   // 且 control_open 白名单含任意存在的 .exe 路径。模型被注入后可直接调用，因此这里
-  // 对所有 mcp__control__* 调用强制返回 kind:'ask'——dsh 原生 approval 缝决定放行：
-  // 缺省策略 ask 交给 answerer（无人应答 fail-closed deny），never 策略直接拒绝。
+  // 对所有 mcp__control__* 调用强制审批。审批方式（S7，默认开）：
+  //   系统级审批——右下角通知 + 托盘图标 + 全局快捷键（Ctrl+Alt+1 允许 /
+  //   Ctrl+Alt+2 拒绝，点击通知亦可），不抢焦点不切窗口；通知不可用时回退
+  //   模态 MessageBox；仍不可用 → 回退 kind:'ask' 走 dsh 原生 Web UI 审批
+  //   （缺省策略 ask 交给 answerer，无人应答 fail-closed deny）。
   // 放在公共插件（而非 workflow）是为了与 workflow.enabled 开关无关、始终挂载。
+  const systemApprovalEnabled = config.systemApproval ?? true;
   ctx.on('tools/pre-execute', async (exec, next) => {
     const decision = await next();
     if (decision.kind !== 'allow') return decision;
     if (!exec.name.startsWith('mcp__control__')) return decision;
-    log(`[gate] ${exec.name} 需要用户审批（键鼠/程序控制）`);
-    return { kind: 'ask', reason: `${exec.name} 会在用户机器上真实操作键鼠/窗口或启动程序，需要您确认后才会执行。` };
+    const reason = `${exec.name} 会在用户机器上真实操作键鼠/窗口或启动程序，需要您确认后才会执行。`;
+    if (systemApprovalEnabled) {
+      const verdict = await systemApproval(exec.name, reason, currentLocale(ctx));
+      if (verdict === 'allow') {
+        log(`[gate] ${exec.name} 用户已批准（系统通知）`);
+        return decision;
+      }
+      if (verdict === 'deny') {
+        log(`[gate] ${exec.name} 用户拒绝（系统通知）`);
+        return { kind: 'deny' as const, reason: '用户在系统审批中拒绝了该操作。' };
+      }
+    }
+    // 系统弹窗关闭/不可用 → 回退 Web UI 审批
+    return { kind: 'ask' as const, reason };
   });
-  log('键鼠/程序控制工具审批已挂载（tools/pre-execute ask，mcp__control__* 全 preset）');
+  log(`键鼠/程序控制工具审批已挂载（tools/pre-execute，mcp__control__* 全 preset；系统审批通知=${systemApprovalEnabled ? '开' : '关（回退 Web UI）'}）`);
 
   // ---- 1.5) v1 轻量工具迁移：get_current_time / web_scraper / arxiv_search ----
   ctx.tools.register(

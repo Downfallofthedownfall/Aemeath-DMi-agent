@@ -159,18 +159,27 @@ def control_mouse_scroll(amount=-3):
 @server.tool(
     "control_keyboard_type",
     "键盘输入文本（支持中文，经剪贴板粘贴实现）。可先聚焦指定窗口；"
-    "文本中可用 {ENTER} 表示回车分段。输入完成后恢复原剪贴板。",
+    "文本中可用 {ENTER} 表示回车分段。输入完成后恢复原剪贴板。"
+    "⚠ Web 应用输入框（GeoGebra/在线编辑器等）聚焦方式按优先级："
+    "① tabFocus=N（先按 N 次 Tab 键盘导航聚焦，最可靠，推荐）——OCR 像素坐标常不准，"
+    "键盘导航由浏览器保证命中可聚焦元素；② x/y（detect_screen 定位的坐标，仅键盘"
+    "导航失败时用）。聚焦与输入必须在本调用内一次完成（审批弹窗交互会移走焦点，"
+    "拆成两次调用时第二次输入会落空）。只激活窗口不聚焦输入框时粘贴会落空甚至"
+    "触发权限弹窗。",
     {
         "type": "object",
         "properties": {
             "text": {"type": "string", "description": '要输入的文本，如 "42号混泥土" 或 "第一行{ENTER}第二行"'},
             "title": {"type": "string", "description": "可选：先激活标题包含此字符串的窗口"},
+            "tabFocus": {"type": "number", "description": "可选：输入前先按 N 次 Tab 聚焦输入框（0-20，键盘导航优先，最可靠）"},
+            "x": {"type": "number", "description": "可选：目标输入框屏幕 x 坐标（仅键盘导航失败时用，先点击聚焦再输入）"},
+            "y": {"type": "number", "description": "可选：目标输入框屏幕 y 坐标（与 x 成对）"},
         },
         "required": ["text"],
         "additionalProperties": False,
     },
 )
-def control_keyboard_type(text: str, title=""):
+def control_keyboard_type(text: str, title="", tabFocus=0, x=None, y=None):
     _require_deps()
     if not text:
         return {"success": True, "action": "type", "length": 0}
@@ -180,6 +189,8 @@ def control_keyboard_type(text: str, title=""):
     if text.upper().count('{ENTER}') > MAX_ENTER_SEGMENTS:
         return {"success": False, "action": "type",
                 "error": f"分段过多（{{ENTER}} 超过 {MAX_ENTER_SEGMENTS} 个）"}
+    if (x is None) != (y is None):
+        return {"success": False, "action": "type", "error": "x/y 必须成对提供或都不提供"}
 
     if title:
         try:
@@ -192,6 +203,23 @@ def control_keyboard_type(text: str, title=""):
                 time.sleep(0.4)
         except Exception:  # noqa: BLE001
             pass
+
+    # 键盘导航聚焦（优先）：按 N 次 Tab 把焦点移进目标输入框。浏览器/系统保证
+    # Tab 命中当前可聚焦元素，比 OCR 像素坐标可靠（坐标在 canvas/缩放/多显示器下
+    # 经常不准导致点击落空）。
+    tabN = max(0, min(int(tabFocus or 0), 20))
+    for _ in range(tabN):
+        pyautogui.press('tab')
+        time.sleep(0.15)
+
+    # 坐标点击聚焦（fallback：键盘导航失败时用）
+    if x is not None and y is not None:
+        try:
+            pyautogui.click(int(x), int(y))
+            time.sleep(0.3)
+        except Exception as e:  # noqa: BLE001
+            return {"success": False, "action": "type",
+                    "error": f"点击聚焦失败 ({int(x)},{int(y)}): {e}"}
 
     # 保存剪贴板（粘贴后恢复）
     saved = None
@@ -217,7 +245,8 @@ def control_keyboard_type(text: str, title=""):
                 pyautogui.press('enter')
                 time.sleep(0.2)
         result = {"success": True, "action": "type", "length": len(text),
-                  "segments": len(segments), "focused": bool(title)}
+                  "segments": len(segments), "focused": bool(title),
+                  "tabFocus": tabN, "clicked": x is not None and y is not None}
     finally:
         try:
             if saved and saved.strip():
