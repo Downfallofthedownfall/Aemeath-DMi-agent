@@ -202,6 +202,14 @@
       danger-full-access:
         sandbox: danger-full-access
         approval: ask
+# —— 重新启用文件系统工具（web-app bundle 默认禁用 tool-fs/tool-fs-search——
+#     学习场景需要读写工作区文件（笔记/资料）：read / write / edit / read_image
+#     + glob / grep。读写受沙箱约束：workspace-write 仅限工作区，danger-full-access
+#     全盘。bash/pwsh 保持禁用（纯对话角色不暴露 shell）——
+- id: tool-fs
+  disabled: false
+- id: tool-fs-search
+  disabled: false
 # —— 重新启用 dsh 网络搜索工具链（web-app bundle 默认禁用 tool-web——
 #     导致主 profile 的 agent 看不到 web_search 工具，只会用 web_scraper 抓搜索页被反爬；
 #     provider web-search-deepseek 已在 base 启用（复用 DEEPSEEK_API_KEY）——
