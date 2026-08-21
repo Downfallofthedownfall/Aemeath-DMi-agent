@@ -31,7 +31,7 @@ if (Test-Path $srcPresets) {
 
 # —— 3) 定位 dsh CLI：项目内 → npx 缓存 → PATH（C10：npx 缓存可能命中其他项目
 #    的旧版 dsh，逐一校验版本号后才采用）——
-$expectedDshVersion = '0.1.0-rc.8'
+$expectedDshVersion = '0.1.1-rc.1'
 
 function Test-DshCliVersion {
   param([string]$bin)
@@ -67,7 +67,7 @@ function Find-DshCli {
 
 $dshBin = Find-DshCli
 if (-not $dshBin) {
-  Write-Error "[dsh.ps1] 找不到匹配版本（$expectedDshVersion）的 dsh CLI。请先执行: npm install --save-dev @deepseek-ai/dsh@0.1.0-rc.8"
+  Write-Error "[dsh.ps1] 找不到匹配版本（$expectedDshVersion）的 dsh CLI。请先执行: npm install --save-dev @deepseek-ai/dsh@0.1.1-rc.1"
   exit 1
 }
 Write-Host "[dsh.ps1] 使用 dsh: $dshBin"

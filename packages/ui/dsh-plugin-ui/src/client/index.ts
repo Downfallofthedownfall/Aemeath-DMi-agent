@@ -113,7 +113,7 @@ export function apply(ctx: ClientContext): void {
   // 4) 事件订阅（凭据更新 / 设置文档更新 → 同步 face 与开关）
   const remote = ctx.remote;
   ctx.effect(() =>
-    remote.$on('credentials/updated', () => {
+    remote.$on('credentials/reference-updated', () => {
       void faces.credentials.refresh();
     }),
   );
