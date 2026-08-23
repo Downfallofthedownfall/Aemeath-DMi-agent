@@ -131,14 +131,24 @@ class McpServer:
                                    "isError": True}})
             return
         # 结果序列化独立 try（C20：json.dumps 失败不应被误报为"参数错误"）
-        try:
-            text = json.dumps(result, ensure_ascii=False)
-        except (TypeError, ValueError) as e:  # noqa: BLE001
-            self._log(f"[{self.name}] 工具 {name} 结果序列化失败: {traceback.format_exc()}")
-            text = json.dumps({"success": False, "error": f"结果序列化失败: {e}"},
-                              ensure_ascii=False)
+        # C22：内容数组透传——工具可返回 {"_mcp_content": [MCP content blocks...]}
+        # 以发送多块结果（如 text + image，供 dsh-mcp-client 附图为模型输入）；
+        # 其余任何返回仍按原有 JSON 文本块处理，向后兼容。
+        content_blocks = None
+        if (isinstance(result, dict)
+                and isinstance(result.get("_mcp_content"), list)
+                and all(isinstance(b, dict) for b in result["_mcp_content"])):
+            content_blocks = result["_mcp_content"]
+        else:
+            try:
+                text = json.dumps(result, ensure_ascii=False)
+            except (TypeError, ValueError) as e:  # noqa: BLE001
+                self._log(f"[{self.name}] 工具 {name} 结果序列化失败: {traceback.format_exc()}")
+                text = json.dumps({"success": False, "error": f"结果序列化失败: {e}"},
+                                  ensure_ascii=False)
+            content_blocks = [{"type": "text", "text": text}]
         self._send({"jsonrpc": "2.0", "id": msg_id,
-                    "result": {"content": [{"type": "text", "text": text}]}})
+                    "result": {"content": content_blocks}})
 
     # ---- 主循环 ----
     def run(self):

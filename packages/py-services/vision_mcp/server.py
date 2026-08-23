@@ -2,9 +2,13 @@
 # ============================================================
 # vision_mcp/server.py — 视觉识别 MCP server（自 v1 vision_server.py 移植）
 # 工具（dsh 侧名称 mcp__vision__<name>）：
-#   detect_screen     YOLOv8 目标检测（主屏幕，COCO 80 类，conf≥0.3）
-#   ocr_screen        屏幕 OCR（EasyOCR 中文+英文，置信度>0.25）
-#   describe_screen   场景描述（YOLO 物体 + OCR 文字合成一句描述）
+#   capture_screen    复杂任务：截屏保存到截图缓存并把图片直接附加给模型（模型支持图片输入时）
+#   ocr_screen        简单任务：屏幕 OCR（EasyOCR 中文+英文，置信度>0.25）——只要文字的快速路径
+#   detect_screen     简单任务：YOLOv8 目标检测（主屏幕，COCO 80 类，conf≥0.3）
+#   describe_screen   回退方案：当前模型不支持图片输入时的 YOLO+OCR 合成描述
+# 两级流程：简单任务（短文本/物体存在性）用 OCR/YOLO；复杂任务（图表、手写、
+# 小字、布局、需要整体视觉理解）用 capture_screen 截图直发视觉模型
+# （deepseek-v4-flash-vision-exp / GPT-4o 等），并保留截图缓存供后续复用。
 # 模型资产：yolov8n.pt 与本文件同目录（自 electron-app/ 迁移）。
 # 模型加载策略：YOLO 首次调用懒加载；EasyOCR 首次调用懒加载（v1 同款）。
 # 运行：python packages/py-services/vision_mcp/server.py
@@ -13,6 +17,9 @@ import os
 import sys
 import json
 import threading
+import base64
+import time
+from pathlib import Path
 
 # ---- 限制 OpenBLAS/线程数，防止内存爆炸（v1 同款） ----
 os.environ['OPENBLAS_NUM_THREADS'] = '2'
@@ -125,6 +132,39 @@ def _capture_screen():
         return Image.frombytes('RGB', shot.size, shot.rgb)
 
 
+# ---- 截图缓存（C22：复杂任务截图 → 缓存文件 + 图片块直发模型）----
+# 目录相对 MCP cwd（cordis.patch.yml 固定 cwd='.'，即仓库根）；可用
+# AEMEATH_SCREENSHOT_DIR 环境变量覆盖。
+SCREENSHOT_DIR = Path(os.environ.get('AEMEATH_SCREENSHOT_DIR', 'temp/screenshots'))
+SCREENSHOT_MAX_AGE_SECONDS = 24 * 3600   # 超过 24h 的截图清理
+SCREENSHOT_KEEP = 50                     # 最多保留 50 张
+
+
+def _screenshot_cache_path():
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    return SCREENSHOT_DIR / f"screen_{time.strftime('%Y%m%d_%H%M%S')}.png"
+
+
+def _prune_screenshot_cache():
+    """按年龄与数量清理缓存（失败不阻塞截图）。"""
+    try:
+        now = time.time()
+        for f in SCREENSHOT_DIR.glob('screen_*.png'):
+            try:
+                if now - f.stat().st_mtime > SCREENSHOT_MAX_AGE_SECONDS:
+                    f.unlink()
+            except OSError:
+                pass
+        files = sorted(SCREENSHOT_DIR.glob('screen_*.png'), key=lambda p: p.stat().st_mtime)
+        for f in files[:-SCREENSHOT_KEEP]:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    except Exception as e:  # noqa: BLE001
+        print(f"[vision_mcp] 截图缓存清理失败: {e}", file=sys.stderr)
+
+
 def _ocr_input_gray(img):
     """截图 → 灰度。EasyOCR 内部按 canvas_size=2560 缩放检测，
     输入分辨率对耗时影响极小（4K 全屏 ≈6s），故不做降采样保识别质量。"""
@@ -189,8 +229,9 @@ def _start_warmup():
 
 @server.tool(
     "detect_screen",
-    "YOLOv8 目标检测：识别当前主屏幕上的物体（COCO 80 类，置信度≥0.3），"
-    "返回检测列表（类别/置信度/边框）与汇总。适合回答「屏幕上有什么」。",
+    "【简单任务】YOLOv8 目标检测：识别当前主屏幕上的物体（COCO 80 类，置信度≥0.3），"
+    "返回检测列表（类别/置信度/边框）与汇总。适合回答「屏幕上有什么物体/在哪个位置」。"
+    "需要理解图表、布局、小字等整体视觉内容时不要用本工具，改用 capture_screen 截图直接发给模型。",
     {"type": "object", "properties": {}, "additionalProperties": False},
 )
 def detect_screen():
@@ -212,8 +253,10 @@ def detect_screen():
 
 @server.tool(
     "ocr_screen",
-    "屏幕 OCR：识别当前主屏幕上的文字（中文+英文，置信度>0.25），"
-    "返回文本行列表与汇总。适合读取屏幕上的标题/对话框/代码。",
+    "【简单任务】屏幕 OCR：快速读取当前主屏幕上的文字（中文+英文，置信度>0.25），"
+    "返回文本行列表与汇总。适合只要文字的快速场景：标题/对话框/短代码/按钮文字。"
+    "需要理解图表、电路图、手写、公式、界面布局或小字区域时 OCR 不适用，"
+    "请改用 capture_screen 截图直接发给支持图片的模型。",
     {"type": "object", "properties": {}, "additionalProperties": False},
 )
 def ocr_screen():
@@ -229,7 +272,9 @@ def ocr_screen():
 
 @server.tool(
     "describe_screen",
-    "场景描述：结合 YOLO 物体检测与 OCR 文字，生成当前屏幕的一段自然语言描述。",
+    "【回退方案】场景描述：结合 YOLO 物体检测与 OCR 文字，生成当前屏幕的一段自然语言描述。"
+    "仅当当前模型不支持图片输入（纯文本模型）时使用；模型支持图片时请用 capture_screen 直接看图，"
+    "本工具会丢失颜色、布局与图形细节。",
     {"type": "object", "properties": {}, "additionalProperties": False},
 )
 def describe_screen():
@@ -262,6 +307,36 @@ def describe_screen():
         "yolo_objects": yolo_desc,
         "ocr_texts": ocr_lines[:30],
         "total_ocr": len(ocr_lines),
+    }
+
+
+@server.tool(
+    "capture_screen",
+    "【复杂任务】截取当前主屏幕：保存到截图缓存（temp/screenshots/）并把图片作为附件直接发送给当前模型"
+    "（模型声明图片输入能力时自动生效，如 deepseek-v4-flash-vision-exp / GPT-4o 等）。"
+    "适合需要整体视觉理解的复杂任务：图表/电路图/几何图形、手写与公式、小字区域、界面布局、"
+    "截图中的题目/文档等。返回缓存文件路径，后续可基于它复用（局部放大、裁剪、再次引用）。"
+    "注意：仅需屏幕文字时用 ocr_screen（更快更省）；当前模型不支持图片时，图片块会被降级为提示文本，"
+    "此时应改用 ocr_screen + describe_screen。",
+    {"type": "object", "properties": {}, "additionalProperties": False},
+)
+def capture_screen():
+    img = _capture_screen()
+    path = _screenshot_cache_path()
+    img.save(path, format="PNG")
+    _prune_screenshot_cache()
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {
+        "_mcp_content": [
+            {"type": "text", "text": json.dumps({
+                "success": True,
+                "cache_path": str(path),
+                "width": img.width,
+                "height": img.height,
+                "hint": "截图已作为图片附件附加给模型；如需局部区域，可基于 cache_path 继续处理（放大/裁剪/再引用）。",
+            }, ensure_ascii=False)},
+            {"type": "image", "data": data, "mimeType": "image/png"},
+        ],
     }
 
 
