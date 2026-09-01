@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # scripts/dsh.ps1 — Aemeath v2 的 dsh 包装脚本
 #   1) 固定 DSH_HOME = 仓库 .dsh-home（项目内隔离，不碰全局 web profile）
 #   2) 固定 cwd = 仓库根（配置文件里的相对路径依赖它）
@@ -31,7 +31,7 @@ if (Test-Path $srcPresets) {
 
 # —— 3) 定位 dsh CLI：项目内 → npx 缓存 → PATH（C10：npx 缓存可能命中其他项目
 #    的旧版 dsh，逐一校验版本号后才采用）——
-$expectedDshVersion = '0.1.1-rc.1'
+$expectedDshVersion = '0.1.1-rc.2'
 
 function Test-DshCliVersion {
   param([string]$bin)
@@ -67,7 +67,7 @@ function Find-DshCli {
 
 $dshBin = Find-DshCli
 if (-not $dshBin) {
-  Write-Error "[dsh.ps1] 找不到匹配版本（$expectedDshVersion）的 dsh CLI。请先执行: npm install --save-dev @deepseek-ai/dsh@0.1.1-rc.1"
+  Write-Error "[dsh.ps1] 找不到匹配版本（$expectedDshVersion）的 dsh CLI。请先执行: npm install --save-dev @deepseek-ai/dsh@0.1.1-rc.2"
   exit 1
 }
 Write-Host "[dsh.ps1] 使用 dsh: $dshBin"
@@ -94,6 +94,14 @@ if (Test-Path $profilesDir) {
     }
   }
 }
+
+# —— ⚠ 关键防护：profile 的 @deepseek-ai 是「junction → 仓库根 node_modules」——
+# 若在任何 profiles/*/ 目录里执行 `npm install`，npm 的 reify 会顺着该 junction
+# 把仓库根 node_modules/@deepseek-ai 的内容删空（本会话已多次踩坑，需 `npm install`
+# 恢复根）。因此：依赖安装/升级一律只在仓库根目录跑；profiles 只需通过本 junction
+# 与根保持同步，其 package-lock.json 可单独用 `npm install --package-lock-only`
+# 更新（不 reify、不碰 junction、安全）。
+Write-Host "[dsh.ps1] 提示：本 profile 的 @deepseek-ai 为 junction→仓库根；请勿在 profiles/* 内运行 npm install（会清空根目录依赖，只在仓库根安装）"
 
 Push-Location $root
 & $dshBin @args

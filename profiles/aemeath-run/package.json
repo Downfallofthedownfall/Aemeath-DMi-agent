@@ -8,7 +8,7 @@
     "@aemeath/dsh-plugin-retriever": "file:../../packages/retriever/dsh-plugin-retriever",
     "@aemeath/dsh-plugin-workflow": "file:../../packages/workflow/dsh-plugin-workflow",
     "@aemeath/dsh-plugin-worldbook": "file:../../packages/worldbook/dsh-plugin-worldbook",
-    "@deepseek-ai/dsh-mcp-client": "^0.1.1-rc.1"
+    "@deepseek-ai/dsh-mcp-client": "^0.1.1-rc.2"
   },
   "dsh": {
     "profile": {

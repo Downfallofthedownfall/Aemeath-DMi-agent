@@ -352,7 +352,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
         schema: { type: 'string' },
         render: (_args, value) => [{ type: 'text', text: String(value) }],
       },
-      execute: async () => `aemeath ${VERSION} (dsh 0.1.1-rc.1)`,
+      execute: async () => `aemeath ${VERSION} (dsh 0.1.1-rc.2)`,
     }),
   );
   log('冒烟工具 aemeath/version 已注册');

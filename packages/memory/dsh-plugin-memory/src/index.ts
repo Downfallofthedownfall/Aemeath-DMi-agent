@@ -79,6 +79,9 @@ export const Config = z.object({
     libraries: z.dict(z.string()),
   }),
   decayDays: z.number(),
+  /** 记忆触动词：用户说这些词时立即总结该会话 L1 缓冲（跳过 minBatch 攒批），
+   *  让记忆当场落库、跨会话立即可用。默认内建一组，此处可追加/覆盖自定义触发词。 */
+  termTriggerPhrases: z.array(z.string()),
   adminHttp: z.object({
     enabled: z.boolean(),
     port: z.number(),
@@ -99,6 +102,7 @@ export interface MemoryConfig {
   knowledge?: { enabled?: boolean };
   worldbook?: { enabled?: boolean; libraries?: Record<string, string> };
   decayDays?: number;
+  termTriggerPhrases?: string[];
   adminHttp?: { enabled?: boolean; port?: number; token?: string };
 }
 
@@ -175,6 +179,14 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const llm = config.llm ?? { enabled: false, apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', batchSize: LLM_BATCH_SIZE_DEFAULT, minBatch: 4 };
   const llmMinBatch = Math.max(2, llm.minBatch ?? 4);
   const adminHttp = config.adminHttp ?? { enabled: true, port: 18895 };
+
+  // 记忆触动词：用户说这些词 → 立即总结当前会话 L1 缓冲（跳过 minBatch 攒批，
+  // 记忆当场落库、跨会话立即可读）。默认内建一组；config.termTriggerPhrases 追加。
+  const termTrigger = [
+    /记住/i, /记一下/i, /记下来/i, /记着/i, /整理/i, /总结/i, /总结一下/i,
+    /记到/i, /写入记忆/i, /存进记忆/i, /列入记忆/i, /记笔记/i, /回顾一下/i,
+    ...(config.termTriggerPhrases ?? []).map((p) => new RegExp(p, 'i')),
+  ];
 
   // ---- 打开存储域 ----
   const domain = await ctx.storageDomain.open(MEMORY_DOMAIN);
@@ -348,6 +360,13 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         await bufferL1(sid, { sessionId: sid, query: turn.query, reply: turn.reply, preset: turn.preset, ts: turn.ts, kind: 'fact' });
         break;
     }
+
+    // 记忆触动词：当前轮含"记住/整理/总结…" → 立即总结该会话 L1 缓冲（force 跳过
+    // minBatch），记忆当场落库、跨会话立即可用。空缓冲时 summarizeL1 无副作用。
+    if (termTrigger.some((re) => re.test(turn.query))) {
+      log(`记忆触动词「${turn.query.slice(0, 20)}」→ 触发 ${sid.slice(0, 8)} 的 L1 即时总结（跨会话可读）`);
+      await summarizeL1(sid, false, true);
+    }
   };
 
   /** 规则初筛直达：知识层（accepted，不经 LLM/评审门）+ worldbook 桥接（physicist 馆，生成文件热重载）。 */
@@ -468,10 +487,12 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
    * L1 总结卸载：把会话缓冲总结为记忆候选（落 L2/L3）+ 知识候选（落知识层 pending）。
    * LLM 启用且批次 ≥ minBatch → 总结层 LLM（攒批省 token）；批次不足 → 留在缓冲继续攒（持久化）；
    * forceByTokens=true（token 预算触发）时跳过 minBatch 攒批——单轮超长对话不应卡在攒批里。
+   * force=true（session 结束时强制）也跳过 minBatch：会话是独立 sessionId，轮次不跨会话累积，
+   * 短会话（1-2 轮）永远达不到 minBatch，"攒批留到下次"实际永不发生 → L1 无限积压。
    * LLM 未启用/无 key → 规则兜底（fallbackUnload）。
    * 完成后精确移除已总结轮次（并发新进轮次不误清）。
    */
-  const summarizeL1 = async (sid: string, forceByTokens = false): Promise<void> => {
+  const summarizeL1 = async (sid: string, forceByTokens = false, force = false): Promise<void> => {
     if (summarizing.has(sid)) return;
     const turns = memoryService.l1Turns(sid);
     if (!turns.length) return;
@@ -485,7 +506,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
       const apiKey = await resolveLlmKey();
       if (llm.enabled && apiKey) {
-        if (turns.length < llmMinBatch && !forceByTokens) {
+        if (turns.length < llmMinBatch && !forceByTokens && !force) {
           // 攒批：批次不足不调 LLM，留在 L1 持久化缓冲，等下次会话继续攒（省 token）
           log(`L1 攒批中（${sid.slice(0, 8)}：${turns.length}/${llmMinBatch} 轮，未达最小批次，暂不总结）`);
           return;
@@ -630,12 +651,25 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       await summarizeL1(sid);
     }
   });
-  // ---- session/disposed：真正会话结束 → 清理未配对采集缓冲与 scratch（防长跑无界增长） ----
+  // ---- session/disposed：真正会话结束 → 强制总结 L1 + 清理缓冲/scratch ----
+  // 会话结束才做强制总结（force=true 跳过 minBatch）：会话是独立 sessionId，轮次不跨会话
+  // 累积，短会话（1-2 轮）永远达不到 minBatch——session/flush 的"攒批留到下次"对短会话
+  // 实际永不发生，会导致 L1 无限积压（用户曾见 53 轮未清）。会话真正结束时强制落库清空。
   ctx.on('session/disposed', (session) => {
     turnBuffer.delete(session.id);
     memoryService.clearScratch(session.id);
+    if (memoryService.l1Count(session.id) > 0) {
+      void summarizeL1(session.id, false, true).catch((e) => warn(`L1 会话结束总结失败: ${(e as Error).message}`));
+    }
   });
-  log('session/flush 已接入（L1 缓冲总结卸载）；session/disposed 已接入（残留清理）');
+  log('session/flush 已接入（L1 缓冲总结卸载）；session/disposed 已接入（强制总结 + 残留清理）');
+
+  // ---- 启动清理：一次性规则兜底清空历史积压 L1 ----
+  // 历史短会话攒批永不达标而积压的轮次（进程重启前产生的）；规则兜底只落规则识别的
+  // 记忆（计划/身份/知识类），其余丢弃，不调 LLM。此后正常会话经 session/disposed 即时总结。
+  for (const sid of memoryService.l1Sessions()) {
+    void flushStaleL1(sid, '启动积压清理');
+  }
 
   // ---- 衰减（宿主级定时）+ 沉淀 + L1 陈旧清理 ----
   const decayTimer = setInterval(() => {

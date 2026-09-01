@@ -10,7 +10,7 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "@deepseek-ai/dsh": "^0.1.1-rc.1",
+    "@deepseek-ai/dsh": "^0.1.1-rc.2",
     "electron": "^43.4.0",
     "electron-builder": "^24.13.3"
   },

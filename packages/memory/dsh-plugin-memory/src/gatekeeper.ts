@@ -18,6 +18,20 @@ export type MemoryAction =
 
 export type Category = 'user_fact' | 'study_log' | 'preference' | 'relationship' | 'session_summary';
 
+/**
+ * 个人学习计划/目标（semester plan 类）：直存 user_fact → L3 global（跨角色稳定事实）。
+ * 与身份模式同源——都是用户关于自己的、值得跨会话/跨角色记住的安排。
+ * 位置：在强知识识别之前，避免含"积分/微分/矩阵"等强知识词的计划句（如
+ * "我的目标是把微积分学好"）被误判为 knowledge_direct——那是计划不是知识。
+ * 收敛：需明确的计划/意向动词 + 学习/考试类宾语；"我打算今天吃…/去超市"无学习
+ * 宾语，不命中；"今天吃什么"无计划动词，不命中。
+ */
+const PERSONAL_PLAN_PATTERN = /(我|我的)?(计划|打算|目标|准备|决定|希望|要|想).{0,15}(学|读|复习|考|攻克|掌握|通过|完成|写完|记牢|练习|刷)/;
+
+export function isPersonalPlan(text: string): boolean {
+  return PERSONAL_PLAN_PATTERN.test(text);
+}
+
 /** 凭据特征（v1 敏感黑名单思路）：命中必须 blocked，绝不进记忆。 */
 const CREDENTIAL_PATTERNS = [
   /api[_-]?key/i,
@@ -164,7 +178,22 @@ export function decide(query: string, reply: string): MemoryAction {
     if (re.test(q) || re.test(r)) return { kind: 'blocked', reason: '含凭据特征' };
   }
 
-  // 2) 显式记忆命令 → save（importance 90）
+  // 2) 个人学习计划/目标（semester plan）→ save（user_fact，直存 L3 global）
+  //      置于显式记忆命令之前：否则"这学期我要学物理"会先被 EXPLICIT_SAVE 的
+  //      /我(正在|要)学/ 拦截成 study_log（mode=L2），到不了 L3。
+  //      且优先于强知识：含"积分/微分"等强知识词的计划句是"计划"不是知识
+  //      （如"我的目标是把微积分学好"）——否则会被 knowledge_direct 误入库。
+  //      疑问信号不直存（"我这学期要学什么？"是提问不是计划），交 L1 采集。
+  if (!QUESTION_SIGNALS.test(q) && isPersonalPlan(q)) {
+    return {
+      kind: 'save',
+      importance: 70,
+      category: 'user_fact',
+      content: extractMemory(q),
+    };
+  }
+
+  // 3) 显式记忆命令 → save（importance 90）
   if (EXPLICIT_SAVE_PATTERNS.some((re) => re.test(q))) {
     return {
       kind: 'save',
@@ -174,7 +203,7 @@ export function decide(query: string, reply: string): MemoryAction {
     };
   }
 
-  // 2.5) 身份事实句式 → save（user_fact，直存 L3 global，无需"记住"关键词）
+  // 3.5) 身份事实句式 → save（user_fact，直存 L3 global，无需"记住"关键词）
   //      疑问信号（吗/呢/怎么/什么…）→ 不直存，交 L1 采集由 LLM 拆分"身份+提问"，
   //      身份规则只对纯陈述句生效（防"我毕业了吗/我现在读高中吗"带问尾误判）。
   if (!QUESTION_SIGNALS.test(q) && IDENTITY_PATTERNS.some((re) => re.test(q))) {
@@ -186,7 +215,7 @@ export function decide(query: string, reply: string): MemoryAction {
     };
   }
 
-  // 3) 强知识模式（公式/定律/数学术语）→ knowledge_direct（规则初筛直达，不经 LLM）
+  // 4) 强知识模式（公式/定律/数学术语）→ knowledge_direct（规则初筛直达，不经 LLM）
   //    B1 修复：知识命中来源决定内容/主题取哪个——提问本身含知识（如"F=ma 是什么？"）
   //    取提问；仅回复含知识（如问"这是什么？"答"F=ma"）则取回复文本，避免把
   //    "这是什么？"这类提问本身当成知识写入知识层/worldbook。
