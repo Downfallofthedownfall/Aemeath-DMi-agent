@@ -4,7 +4,9 @@
 // 抽出到独立模块避免循环依赖。
 // ============================================================
 
-/** 引擎插件 settings namespaces（与各引擎插件 installSettingsSection 注册名一致）。 */
+/** 引擎插件 settings namespaces（与各引擎插件 installSettingsSection 注册名一致）。
+ *  追加 aemeath-ui：host 侧已注册该 namespace（locale 上报），并把外观个人化
+ *  字段（助手气泡/行高/段落间距/自定义字体）也持久化于此，供设置页外观 tab 使用。 */
 export const FEATURE_NAMESPACES = [
   'aemeath-common',
   'aemeath-worldbook',
@@ -12,6 +14,7 @@ export const FEATURE_NAMESPACES = [
   'aemeath-memory',
   'aemeath-workflow',
   'aemeath-tts',
+  'aemeath-ui',
 ] as const;
 
 /** 允许前端切换默认角色的 settings namespace（dsh 官方 agent-presets）。 */
