@@ -1,14 +1,14 @@
 // ============================================================
-// 记忆管理面板（M5 F2 v2）——按 L1/L2/L3 分层展示
-//   L1 暂存区：会话内工作态（scratch，内存态，随进程存活）
-//   L2 角色记忆：scope=mode（角色隔离）
-//   L3 共享记忆：scope=global（跨角色共享）
-// 数据源：host 端点 /aemeath/api/memory（GET {l1,l2,l3,stats} + POST delete）
-//         新增：POST { action:'toWorldbook', id } —— 把一条 L2/L3 记忆写入世界书（纯手动）
-// 增强（L2/L3 → 世界书，纯手动）：
-//   1. 每条 L2/L3 记忆行加「加入世界书」按钮（手动确认 → 生成条目，热重载生效）。
-//   2. 新条目检测：localStorage 记录已见 id + 首次基线；每次面板加载对比出新 L2/L3 记忆，
-//      弹确认框问是否加入世界书（每次出现新条目才弹，符合"纯手动 + 弹出确认"）。
+// 记忆管理面板（M5 F2 v4）——按 L0/L1/L2·L3 分层展示，博采 Cyrene 分层记忆面板的思想
+//   （只借"分层 tier + 内联删除 + 搜索过滤"的交互结构，不复制其代码；数据源不变：
+//    host /aemeath/api/memory）。
+//   L0 画像/身份：memory 插件全局 userProfile 沉淀的事实（高可信 → 只读展示）。
+//   L1 近期：近期 L2/L3（按 last_access）+ L1 采集缓冲（l1Buffer）+ L1 暂存区（scratch）。
+//   L2·L3 片段：可搜索记忆列表（content/category/scope/importance/status）+ 软删除。
+//   —— 编辑：host /aemeath/api/memory 无 update 路径（ctx.memory 无 public update 方法），
+//      故片段只读展示 + 软删；若要改内容需"删除 + 记忆层重新沉淀"，不做内联编辑。
+//   —— 回顾：数据源未提供 reflections（无对应端点/记录），故不渲染该 tier（cleanly omitted）。
+//   —— 保留既有"加入世界书"纯手动桥接（逐条按钮 + 新记忆确认弹窗 + 自动弹开关）。
 // ============================================================
 import { useEffect, useState } from 'react';
 import { t, useLocale } from './i18n.ts';
@@ -22,6 +22,7 @@ export interface MemoryItem {
   preset: string;
   status: string;
   created_at: number;
+  last_access?: number;
 }
 
 export interface ScratchEntry {
@@ -43,6 +44,8 @@ export interface MemoryData {
   stats: MemoryStats;
   l1Buffer?: BufferSession[];
   l1Capacity?: { capacity: number; threshold: number } | null;
+  /** L0 用户画像事实（全局 userProfile.facts，只读展示）。 */
+  profile?: string[];
 }
 
 export interface BufferTurn {
@@ -144,7 +147,7 @@ async function apiToWorldbook(id: string, opts?: { library?: string; topic?: str
   return { id: d.id, title: d.title };
 }
 
-/** 一条 L2/L3 记忆行（含「加入世界书」+「删除」）。 */
+/** 一条 L2/L3 记忆行（含「加入世界书」+「删除」；只读展示，无内联编辑——无 update 端点）。 */
 function MemoryRow({ m, onDelete, deleting, onToWorldbook, wbBusy, wbMsg }: { m: MemoryItem; onDelete: (id: string) => void; deleting: boolean; onToWorldbook: (id: string) => void; wbBusy: boolean; wbMsg?: string }): JSX.Element {
   useLocale();
   const imp = importanceColor(m.importance);
@@ -167,6 +170,9 @@ function MemoryRow({ m, onDelete, deleting, onToWorldbook, wbBusy, wbMsg }: { m:
           </span>
           <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-secondary)' }}>{CATEGORY_KEYS[m.category] ? t(CATEGORY_KEYS[m.category]) : m.category}</span>
           <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' }}>{PRESET_KEYS[m.preset] ? t(PRESET_KEYS[m.preset]) : m.preset}</span>
+          <span style={{ fontSize: 10, padding: '0 6px', borderRadius: 999, background: 'var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-secondary)' }}>
+            {m.scope === 'global' ? 'L3' : 'L2'}
+          </span>
           <span style={{ fontSize: 10, color: 'var(--dsw-alias-label-tertiary)' }}>{fmtTime(m.created_at)}</span>
           {m.status === 'dormant' ? (
             <span style={{ fontSize: 10, color: 'var(--dsw-alias-label-tertiary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 999, padding: '0 5px' }}>{t('memory.dormant')}</span>
@@ -311,6 +317,14 @@ function WorldbookConfirmModal({ pending, busy, onConfirm, onDismiss }: { pendin
   );
 }
 
+function sortByImp(list: MemoryItem[]): MemoryItem[] {
+  return [...list].sort((a, b) => b.importance - a.importance || (b.created_at ?? 0) - (a.created_at ?? 0));
+}
+
+function sortByRecent(list: MemoryItem[]): MemoryItem[] {
+  return [...list].sort((a, b) => (b.last_access ?? b.created_at ?? 0) - (a.last_access ?? a.created_at ?? 0));
+}
+
 /** 记忆面板主体（hooks 在此）。 */
 function MemoryPanelBody(): JSX.Element {
   useLocale(); // locale 切换时刷新面板文案
@@ -318,6 +332,10 @@ function MemoryPanelBody(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  // tier 切换（L0 画像 / L1 近期 / L2·L3 片段）
+  const [tab, setTab] = useState<'profile' | 'recent' | 'list'>('list');
+  // L2·L3 搜索过滤
+  const [query, setQuery] = useState('');
 
   // —— 世界书桥接状态 ——
   const [wbBusy, setWbBusy] = useState<string | null>(null);
@@ -330,9 +348,9 @@ function MemoryPanelBody(): JSX.Element {
     setError(null);
     try {
       const res = await fetch('/aemeath/api/memory', { signal: AbortSignal.timeout(8000) });
-      const d = (await res.json()) as { ok?: boolean; l1?: ScratchEntry[]; l2?: MemoryItem[]; l3?: MemoryItem[]; stats?: MemoryStats; l1Buffer?: BufferSession[]; l1Capacity?: { capacity: number; threshold: number } | null; code?: string; error?: string };
+      const d = (await res.json()) as { ok?: boolean; l1?: ScratchEntry[]; l2?: MemoryItem[]; l3?: MemoryItem[]; stats?: MemoryStats; l1Buffer?: BufferSession[]; l1Capacity?: { capacity: number; threshold: number } | null; profile?: string[]; code?: string; error?: string };
       if (!res.ok || !d.ok) throw new Error(localizeError(d.code, d.error ?? `load failed (${res.status})`));
-      setData({ l1: d.l1 ?? [], l2: d.l2 ?? [], l3: d.l3 ?? [], stats: d.stats ?? { active: 0, dormant: 0, byPreset: {}, byScope: {} }, l1Buffer: d.l1Buffer ?? [], l1Capacity: d.l1Capacity ?? null });
+      setData({ l1: d.l1 ?? [], l2: d.l2 ?? [], l3: d.l3 ?? [], stats: d.stats ?? { active: 0, dormant: 0, byPreset: {}, byScope: {} }, l1Buffer: d.l1Buffer ?? [], l1Capacity: d.l1Capacity ?? null, profile: d.profile ?? [] });
       // 新条目检测：首次运行建立基线（不弹，避免历史记忆洪水）；其后对比已见 id
       const l2l3 = [...(d.l2 ?? []), ...(d.l3 ?? [])];
       if (!localStorage.getItem(WB_INIT_KEY)) {
@@ -433,14 +451,24 @@ function MemoryPanelBody(): JSX.Element {
     setPending(l2l3.filter((m) => !seen.has(m.id)));
   };
 
-  const sortByImp = (list: MemoryItem[]): MemoryItem[] =>
-    [...list].sort((a, b) => b.importance - a.importance || (b.created_at ?? 0) - (a.created_at ?? 0));
   const l2 = data ? sortByImp(data.l2) : [];
   const l3 = data ? sortByImp(data.l3) : [];
   const l1 = data?.l1 ?? [];
   const l1Buffer = data?.l1Buffer ?? [];
   const l1BufferTurns = l1Buffer.reduce((n, s) => n + s.turns.length, 0);
   const bufCap = data?.l1Capacity?.capacity ?? 40;
+  const profileFacts = data?.profile ?? [];
+  const recent = sortByRecent([...(data?.l2 ?? []), ...(data?.l3 ?? [])]).slice(0, 8);
+
+  // L2·L3 搜索过滤（内容 / 分类 / 状态 / 角色 / 层）
+  const q = query.trim().toLowerCase();
+  const l2l3All = sortByImp([...(data?.l2 ?? []), ...(data?.l3 ?? [])]);
+  const filtered = q
+    ? l2l3All.filter((m) => [m.content, m.category, m.status, m.preset, m.scope].join(' ').toLowerCase().includes(q))
+    : l2l3All;
+
+  const sectionStyle = { fontSize: 13, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 };
+  const noDataStyle = { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '8px 0' };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -467,6 +495,37 @@ function MemoryPanelBody(): JSX.Element {
         </button>
       </div>
 
+      {/* —— 分区 tab：L0 画像 / L1 近期 / L2·L3 片段 —— */}
+      <div style={{ display: 'flex', gap: 6, borderBottom: '1px solid var(--dsw-alias-border-l1)', paddingBottom: 8 }}>
+        {([
+          { id: 'profile', label: t('memory.tab.profile') },
+          { id: 'recent', label: t('memory.tab.recent') },
+          { id: 'list', label: t('memory.tab.list') },
+        ] as Array<{ id: 'profile' | 'recent' | 'list'; label: string }>).map((tier) => {
+          const active = tier.id === tab;
+          return (
+            <button
+              key={tier.id}
+              type="button"
+              onClick={() => setTab(tier.id)}
+              aria-pressed={active}
+              style={{
+                padding: '6px 14px',
+                borderRadius: 8,
+                border: 'none',
+                cursor: 'pointer',
+                background: active ? 'var(--dsw-alias-state-business-tertiary)' : 'transparent',
+                color: active ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-label-secondary)',
+                fontSize: 13,
+                fontWeight: active ? 700 : 500,
+              }}
+            >
+              {tier.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* 新记忆自动弹确认开关 */}
       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' }}>
         <input type="checkbox" checked={suggestOn} onChange={(e) => toggleSuggest(e.target.checked)} />
@@ -475,90 +534,139 @@ function MemoryPanelBody(): JSX.Element {
 
       {error ? <div style={{ fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' }}>{error}</div> : null}
 
-      {/* —— L1 采集缓冲（滚动对话，待总结） —— */}
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-          {t('memory.section.l1buffer')}
-          <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' }}>
-            {t('memory.section.l1buffer.hint', { cap: bufCap })}
-          </span>
+      {/* —— L0 画像 / 身份（只读：高可信） —— */}
+      {tab === 'profile' && (
+        <div>
+          <div style={sectionStyle}>
+            {t('memory.section.l0')}
+            <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' }}>{t('memory.section.l0.hint')}</span>
+          </div>
+          {profileFacts.length === 0 ? (
+            <div style={noDataStyle}>{t('memory.empty.l0')}</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {profileFacts.map((f, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '8px 10px', borderRadius: 10, background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l1)' }}>
+                  <span style={{ flex: 'none', fontSize: 10, padding: '0 6px', borderRadius: 999, background: 'var(--dsw-alias-state-business-tertiary)', color: 'var(--dsw-alias-state-business-primary)', fontWeight: 700 }}>L0</span>
+                  <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-primary)', lineHeight: 1.5 }}>{f}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        {l1Buffer.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '8px 0' }}>{t('memory.empty.l1buffer')}</div>
-        ) : (
-          l1Buffer.map((s) => (
-            <div key={s.sessionId} style={{ marginBottom: 6, padding: '8px 10px', borderRadius: 10, background: 'var(--dsw-alias-bg-base)', border: '1px dashed var(--dsw-alias-border-l2)' }}>
-              <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 4 }}>{t('memory.session.turns', { id: s.sessionId.slice(0, 8), n: s.turns.length })}</div>
-              {s.turns.map((turn, i) => (
-                <div key={i} style={{ fontSize: 12, color: 'var(--dsw-alias-label-primary)', lineHeight: 1.5, padding: '2px 0' }}>
-                  <span style={{ color: 'var(--dsw-alias-state-business-primary)', fontWeight: 600 }}>{t('memory.q')}</span>：{turn.query}
-                  {turn.reply ? (
-                    <div style={{ paddingLeft: 22, color: 'var(--dsw-alias-label-secondary)' }}>
-                      <span style={{ color: 'var(--dsw-alias-state-error-primary)', fontWeight: 600 }}>{t('memory.a')}</span>：{turn.reply}
+      )}
+
+      {/* —— L1 近期：近期 L2/L3 + L1 采集缓冲 + L1 暂存区 —— */}
+      {tab === 'recent' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <div style={sectionStyle}>
+              {t('memory.section.recent')}
+              <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' }}>{t('memory.section.recent.hint')}</span>
+            </div>
+            {recent.length === 0 ? (
+              <div style={noDataStyle}>{t('memory.empty.recent')}</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {recent.map((m) => (
+                  <MemoryRow key={m.id} m={m} deleting={deleting === m.id} onDelete={(id) => void remove(id)} onToWorldbook={(id) => void manualToWorldbook(id)} wbBusy={wbBusy === m.id} wbMsg={wbMsg[m.id]} />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* L1 采集缓冲（滚动对话，待总结） */}
+          <div>
+            <div style={sectionStyle}>
+              {t('memory.section.l1buffer')}
+              <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' }}>
+                {t('memory.section.l1buffer.hint', { cap: bufCap })}
+              </span>
+            </div>
+            {l1Buffer.length === 0 ? (
+              <div style={noDataStyle}>{t('memory.empty.l1buffer')}</div>
+            ) : (
+              l1Buffer.map((s) => (
+                <div key={s.sessionId} style={{ marginBottom: 6, padding: '8px 10px', borderRadius: 10, background: 'var(--dsw-alias-bg-base)', border: '1px dashed var(--dsw-alias-border-l2)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 4 }}>{t('memory.session.turns', { id: s.sessionId.slice(0, 8), n: s.turns.length })}</div>
+                  {s.turns.map((turn, i) => (
+                    <div key={i} style={{ fontSize: 12, color: 'var(--dsw-alias-label-primary)', lineHeight: 1.5, padding: '2px 0' }}>
+                      <span style={{ color: 'var(--dsw-alias-state-business-primary)', fontWeight: 600 }}>{t('memory.q')}</span>：{turn.query}
+                      {turn.reply ? (
+                        <div style={{ paddingLeft: 22, color: 'var(--dsw-alias-label-secondary)' }}>
+                          <span style={{ color: 'var(--dsw-alias-state-error-primary)', fontWeight: 600 }}>{t('memory.a')}</span>：{turn.reply}
+                        </div>
+                      ) : null}
                     </div>
-                  ) : null}
+                  ))}
                 </div>
+              ))
+            )}
+          </div>
+
+          {/* L1 暂存区（会话内工作态） */}
+          <div>
+            <div style={sectionStyle}>
+              {t('memory.section.l1scratch')}
+              <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' }}>{t('memory.section.l1scratch.hint')}</span>
+            </div>
+            {l1.length === 0 ? (
+              <div style={noDataStyle}>{t('memory.empty.l1scratch')}</div>
+            ) : (
+              l1.map((s) => (
+                <div key={s.sessionId} style={{ marginBottom: 6, padding: '8px 10px', borderRadius: 10, background: 'var(--dsw-alias-bg-base)', border: '1px dashed var(--dsw-alias-border-l2)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 4 }}>{t('memory.session.turns', { id: s.sessionId.slice(0, 8), n: s.items.length })}</div>
+                  {s.items.map((it) => (
+                    <div key={it.key} style={{ fontSize: 12, color: 'var(--dsw-alias-label-primary)', lineHeight: 1.5, padding: '2px 0' }}>
+                      <span style={{ color: 'var(--dsw-alias-state-business-primary)', fontWeight: 600 }}>{it.key}</span>：{it.content}
+                    </div>
+                  ))}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* —— L2·L3 片段：搜索 + 软删（只读展示，无内联编辑） —— */}
+      {tab === 'list' && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+            <input
+              type="text"
+              value={query}
+              placeholder={t('memory.search.placeholder')}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{
+                flex: 1,
+                height: 30,
+                padding: '0 10px',
+                borderRadius: 8,
+                border: '1px solid var(--dsw-alias-border-l1)',
+                background: 'var(--dsw-alias-bg-base)',
+                color: 'var(--dsw-alias-label-primary)',
+                fontSize: 12,
+                outline: 'none',
+              }}
+            />
+            {query ? (
+              <button type="button" onClick={() => setQuery('')} style={{ flex: 'none', fontSize: 11, color: 'var(--dsw-alias-state-business-primary)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px' }}>
+                {t('memory.search.clear')}
+              </button>
+            ) : null}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 8 }}>{t('memory.section.list.hint')}</div>
+          {filtered.length === 0 ? (
+            <div style={noDataStyle}>{q ? t('memory.empty.search') : t('memory.empty.list')}</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {filtered.map((m) => (
+                <MemoryRow key={m.id} m={m} deleting={deleting === m.id} onDelete={(id) => void remove(id)} onToWorldbook={(id) => void manualToWorldbook(id)} wbBusy={wbBusy === m.id} wbMsg={wbMsg[m.id]} />
               ))}
             </div>
-          ))
-        )}
-      </div>
-
-      {/* —— L1 暂存区 —— */}
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-          {t('memory.section.l1scratch')}
-          <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' }}>{t('memory.section.l1scratch.hint')}</span>
+          )}
         </div>
-        {l1.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '8px 0' }}>{t('memory.empty.l1scratch')}</div>
-        ) : (
-          l1.map((s) => (
-            <div key={s.sessionId} style={{ marginBottom: 6, padding: '8px 10px', borderRadius: 10, background: 'var(--dsw-alias-bg-base)', border: '1px dashed var(--dsw-alias-border-l2)' }}>
-              <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 4 }}>{t('memory.session.turns', { id: s.sessionId.slice(0, 8), n: s.items.length })}</div>
-              {s.items.map((it) => (
-                <div key={it.key} style={{ fontSize: 12, color: 'var(--dsw-alias-label-primary)', lineHeight: 1.5, padding: '2px 0' }}>
-                  <span style={{ color: 'var(--dsw-alias-state-business-primary)', fontWeight: 600 }}>{it.key}</span>：{it.content}
-                </div>
-              ))}
-            </div>
-          ))
-        )}
-      </div>
-
-      {/* —— L2 角色记忆 —— */}
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-          {t('memory.section.l2')}
-          <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' }}>{t('memory.section.l2.hint')}</span>
-        </div>
-        {l2.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '8px 0' }}>{t('memory.empty.l2')}</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {l2.map((m) => (
-              <MemoryRow key={m.id} m={m} deleting={deleting === m.id} onDelete={(id) => void remove(id)} onToWorldbook={(id) => void manualToWorldbook(id)} wbBusy={wbBusy === m.id} wbMsg={wbMsg[m.id]} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* —— L3 共享记忆 —— */}
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-          {t('memory.section.l3')}
-          <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' }}>{t('memory.section.l3.hint')}</span>
-        </div>
-        {l3.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '8px 0' }}>{t('memory.empty.l3')}</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {l3.map((m) => (
-              <MemoryRow key={m.id} m={m} deleting={deleting === m.id} onDelete={(id) => void remove(id)} onToWorldbook={(id) => void manualToWorldbook(id)} wbBusy={wbBusy === m.id} wbMsg={wbMsg[m.id]} />
-            ))}
-          </div>
-        )}
-      </div>
+      )}
 
       {/* 新记忆确认弹窗（每次出现新条目 → 弹确认） */}
       <WorldbookConfirmModal pending={pending} busy={wbBusy} onConfirm={(m) => void modalConfirm(m)} onDismiss={modalDismiss} />

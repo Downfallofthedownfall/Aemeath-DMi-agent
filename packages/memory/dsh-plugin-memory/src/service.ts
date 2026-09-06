@@ -158,6 +158,11 @@ export class MemoryService extends Service {
     return matches.length;
   }
 
+  /** 用户画像事实（L0 身份/偏好，全局 userProfile），供记忆面板「画像」只读展示。 */
+  profileFacts(): string[] {
+    return [...this.deps.profile.get().facts];
+  }
+
   /** 统计（/memory stats 与面板）。 */
   stats(): { active: number; dormant: number; archived: number; byPreset: Record<string, number>; byScope: Record<string, number>; l1: number; knowledge: Record<string, number> } {
     const out = { active: 0, dormant: 0, archived: 0, byPreset: {} as Record<string, number>, byScope: {} as Record<string, number>, l1: 0, knowledge: { pending: 0, accepted: 0, rejected: 0 } };

@@ -145,6 +145,8 @@ export function apply(ctx: Context): void {
     list(): Array<{ key: string; rec: Record<string, unknown> }>;
     stats(): { active: number; dormant: number; byPreset: Record<string, number>; byScope: Record<string, number> };
     softDelete(idPrefix: string): Promise<boolean>;
+    /** L0 用户画像事实（全局 userProfile.facts，记忆面板「画像」只读展示用）。 */
+    profileFacts?(): string[];
     /** L1 采集缓冲（滚动对话，待总结）：会话列表 + 各会话轮次（2026-08-17 面板暴露）。 */
     l1Sessions?(): string[];
     l1Turns?(sid: string): Array<{ query?: string; reply?: string; kind?: string; ts?: number; preset?: string }>;
@@ -476,8 +478,11 @@ export function apply(ctx: Context): void {
           preset: rec.preset ?? '',
           status: rec.status ?? 'active',
           created_at: rec.created_at ?? 0,
+          last_access: rec.last_access ?? 0,
         }));
         const stats = memory.stats();
+        // L0 用户画像事实（全局 userProfile.facts）；memory service 旧版无此方法时回退空数组
+        const profile = memory.profileFacts?.() ?? [];
         // L1 scratch（会话内暂存）+ L2 mode + L3 global 分组
         const scratch = (memory as unknown as { allScratch?: () => Record<string, Record<string, string>> }).allScratch?.() ?? {};
         const l1 = Object.entries(scratch).map(([sid, slot]) => ({
@@ -496,7 +501,7 @@ export function apply(ctx: Context): void {
         })).filter((s) => s.turns.length > 0);
         const l2 = items.filter((m) => m.scope === 'mode');
         const l3 = items.filter((m) => m.scope === 'global');
-        json(res, 200, { ok: true, l1, l2, l3, stats, l1Buffer, l1Capacity: memory.l1CapacityOf?.() ?? null });
+        json(res, 200, { ok: true, l1, l2, l3, stats, l1Buffer, l1Capacity: memory.l1CapacityOf?.() ?? null, profile });
         return;
       }
       if (req.method === 'POST') {
