@@ -171,6 +171,9 @@ export const zh = {
   'status.thinking': '思考中',
   'status.speaking': '朗读中',
 
+  // —— 分段角色切换（mode-switch.tsx，feat #3）——
+  'modeswitch.aria': '切换角色',
+
   // —— host API 错误（index.ts 返回、前端 toast 显示）——
   'errors.tts.disabled': '语音朗读已关闭（设置 → 语音朗读）',
   'errors.tts.textTooLong': 'text 过长（{n} 字，上限 500）',
@@ -349,6 +352,9 @@ export const en: Record<AemeathKey, string> = {
   'status.idle': 'Companion',
   'status.thinking': 'Thinking',
   'status.speaking': 'Reading aloud',
+
+  // —— Segmented role switch (mode-switch.tsx, feat #3)——
+  'modeswitch.aria': 'Switch role',
 
   'errors.tts.disabled': 'Text-to-speech is disabled (Settings → Text-to-speech)',
   'errors.tts.textTooLong': 'Text too long ({n} chars, limit 500)',

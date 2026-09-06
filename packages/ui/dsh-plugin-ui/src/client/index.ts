@@ -17,6 +17,7 @@ import { registerQuickSettings } from './quick-settings.tsx';
 import { registerWorkspaceSelector } from './workspace-selector.tsx';
 import { registerWorkspaceBootstrap } from './bootstrap.ts';
 import { registerCharacterStatus } from './status.tsx';
+import { registerModeSwitch } from './mode-switch.tsx';
 import { injectFluentStyles } from './styles/fluent.ts';
 import { injectDeDshStyles } from './styles/de-dsh.ts';
 import { createFaces } from './faces.ts';
@@ -103,6 +104,12 @@ export function apply(ctx: ClientContext): void {
   registerCharacterStatus(ctx, () => ({
     role: faces.role,
     scopes: Object.fromEntries(faces.scopes),
+  }));
+
+  // 2.9.7) 会话顶栏 · 分段角色切换（ModeSwitch 芯片：与 hero/quick-settings 共用 role face，
+  //   保持同步，不冲突；点击 → role.set → agent-presets.default，镜像到 localStorage）
+  registerModeSwitch(ctx, () => ({
+    role: faces.role,
   }));
 
   // 3) 设置页（P3 瘦身：功能开关 / 记忆管理 / API key；角色已前移主界面）
