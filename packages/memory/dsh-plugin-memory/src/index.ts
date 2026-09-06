@@ -34,7 +34,7 @@ import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-credentials';
-import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, type Category } from './gatekeeper.js';
+import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, writeGate, classifyConflict, type Category, type WriteGateVerdict, type ConflictDecision, type ConflictType } from './gatekeeper.js';
 import { search as bm25Search, overlapScore } from './bm25.js';
 import { selectEviction, suggestProfileFacts } from './engine.js';
 import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
@@ -315,13 +315,13 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     return id;
   };
 
-  const supersedeMemory = async (oldKey: string, preset: string, content: string, category: Category, sid: string): Promise<void> => {
+  const supersedeMemory = async (oldKey: string, preset: string, content: string, category: Category, sid: string, clash: ConflictDecision): Promise<void> => {
     const old = memories.get(oldKey);
     if (!old) return;
     const newId = await saveMemory(preset, content, category, Math.max(60, old.importance), 0.8, sid, old.scope);
     await memories.put(oldKey, { ...old, superseded_by: newId, status: 'dormant', confidence: Math.max(0, old.confidence - 0.2) });
-    await auditWrite('supersede', oldKey, `被 ${newId.slice(0, 8)} 取代（时间证据冲突）`);
-    log(`冲突 supersede：${oldKey.slice(0, 8)} → ${newId.slice(0, 8)}（${content.slice(0, 30)}…）`);
+    await auditWrite('supersede', oldKey, `被 ${newId.slice(0, 8)} 取代（${clash.type}${clash.viaLlm ? '·LLM' : '·规则'}：${clash.reason}）`);
+    log(`冲突 supersede（${clash.type}${clash.viaLlm ? '·LLM' : '·规则'}）：${oldKey.slice(0, 8)} → ${newId.slice(0, 8)}（${content.slice(0, 30)}…）`);
   };
 
   /**
@@ -347,14 +347,28 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         const mems = allMemories();
         const hits = bm25Search(`${turn.query} ${turn.reply}`, mems, 1);
         // 第三关：相似度判定改用有界 overlapScore（原裸 BM25 分数阈值 0.8 无量纲、随语料漂移）
-        const hitRec = hits.length > 0 ? mems.find((m) => m.id === hits[0].id) : undefined;
+        const hitRec = hits.length > 0 ? memories.get(hits[0].id) : undefined;
         const conflictHit = !!hitRec && overlapScore(`${turn.query} ${turn.reply}`, hitRec.content) >= 0.5 && hasTimeEvidence(turn.query);
+        // B5 写门：user_fact（核心画像）只接收用户明确自述的事实；锁存/幻觉 → 拦截（仅审计），
+        // 非第一人称自述 → 降置信保存（demote）。
+        const wg: WriteGateVerdict = decision.category === 'user_fact'
+          ? writeGate(turn.query, decision.content)
+          : { action: 'accept', reason: '非用户事实，不经写门' };
         // L3 升级：user_fact 类显式事实 → global（跨角色稳定）
         const scope: 'mode' | 'global' = decision.category === 'user_fact' ? 'global' : 'mode';
-        if (conflictHit) {
-          await supersedeMemory(hits[0].id, turn.preset, decision.content, decision.category, sid);
+        if (wg.action === 'drop') {
+          await auditWrite('write_gate', undefined, `user_fact 被写门拦截：${wg.reason}（「${decision.content.slice(0, 30)}」）`);
+          log(`写门拦截 user_fact（${sid.slice(0, 8)}）：${wg.reason}`);
+          break;
+        }
+        const confidence = wg.action === 'demote' ? (wg.confidence ?? 0.55) : 0.9;
+        const importance = wg.action === 'demote' ? Math.max(0, decision.importance - 20) : decision.importance;
+        if (conflictHit && hitRec) {
+          // B6 类型化冲突：先分类（preference_evolution / direct_conflict）再 supersede，类型记入审计
+          const clash = await resolveConflictTyped(hitRec.content, decision.content, hitRec.category, decision.category);
+          await supersedeMemory(hits[0].id, turn.preset, decision.content, decision.category, sid, clash);
         } else {
-          await saveMemory(turn.preset, decision.content, decision.category, decision.importance, 0.9, sid, scope);
+          await saveMemory(turn.preset, decision.content, decision.category, importance, confidence, sid, scope);
         }
         // 规则初筛扩展：显式命令 + 内容是知识型（如"记住 F=ma"）→ 也直达知识层/worldbook（不经 LLM）
         if (knowledgeEnabled && isStrongKnowledge(decision.content)) {
@@ -468,10 +482,24 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
   /** 一条记忆候选落库（规则级 consolidate：supersede / merge / save）。preset 取该会话角色。 */
   const applyMemoryCandidate = async (m: L1MemoryCandidate, preset: string, sid: string): Promise<void> => {
+    // B5 写门：L1 总结出的 user_fact 候选也只接收用户明确自述的事实；否则拦截/降置信（不污染画像）。
+    const wg: WriteGateVerdict = m.category === 'user_fact'
+      ? writeGate(m.content, m.content)
+      : { action: 'accept', reason: '非用户事实，不经写门' };
+    if (wg.action === 'drop') {
+      await auditWrite('write_gate', undefined, `L1 user_fact 候选被写门拦截：${wg.reason}（「${m.content.slice(0, 30)}」）`);
+      log(`写门拦截 L1 user_fact（${sid.slice(0, 8)}）：${wg.reason}`);
+      return;
+    }
+    const confidence = wg.action === 'demote' ? (wg.confidence ?? 0.55) : 0.7;
     const target = consolidateTarget(m.content, allMemories());
     if (target.action === 'supersede' && target.targetId) {
       const old = memories.get(target.targetId);
-      await supersedeMemory(target.targetId, old?.preset ?? preset, m.content, m.category, sid);
+      if (old) {
+        // B6 类型化冲突：分类后再 supersede，类型记入审计
+        const clash = await resolveConflictTyped(old.content, m.content, old.category, m.category);
+        await supersedeMemory(target.targetId, old?.preset ?? preset, m.content, m.category, sid, clash);
+      }
       return;
     }
     if (target.action === 'merge' && target.targetId) {
@@ -484,7 +512,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         return;
       }
     }
-    await saveMemory(preset, m.content, m.category, m.importance, 0.7, sid, m.scope);
+    const importance = wg.action === 'demote' ? Math.max(0, m.importance - 20) : m.importance;
+    await saveMemory(preset, m.content, m.category, importance, confidence, sid, m.scope);
   };
 
   /** 一条知识候选落知识层（pending 评审门）。sourceKind 区分 LLM 总结提取 / 规则兜底直录。 */
@@ -616,6 +645,47 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       return { memories: parsed.memories ?? [], knowledge: parsed.knowledge ?? [] };
     } catch (e) {
       warn(`总结层 LLM 调用失败: ${(e as Error).message}`);
+      return null;
+    }
+  };
+
+  /**
+   * B6 类型化冲突判定：LLM 启用且有 key 时可选经由 LLM 分类（preference_evolution /
+   * direct_conflict）；否则/失败时退回 deterministic classifyConflict（规则兜底，测试稳定）。
+   */
+  const resolveConflictTyped = async (oldContent: string, newContent: string, oldCategory: Category, newCategory: Category): Promise<ConflictDecision> => {
+    const apiKey = await resolveLlmKey();
+    if (llm.enabled && apiKey) {
+      const label = await callConflictLlm(oldContent, newContent, oldCategory, newCategory, apiKey);
+      if (label) return { type: label.type, reason: label.reason, viaLlm: true };
+    }
+    return classifyConflict(oldContent, newContent, oldCategory, newCategory);
+  };
+
+  /** 调 LLM 做冲突类型判定（B6 可选 LLM 通道）；失败/解析失败返回 null（走规则兜底）。 */
+  const callConflictLlm = async (oldContent: string, newContent: string, oldCategory: Category, newCategory: Category, apiKey: string): Promise<ConflictDecision | null> => {
+    try {
+      const prompt = `记忆冲突判定。旧记忆（${oldCategory}）：「${oldContent.slice(0, 120)}」；新记忆（${newCategory}）：「${newContent.slice(0, 120)}」。请仅输出 JSON {"type":"preference_evolution"|"direct_conflict","reason":"简短原因"}。preference_evolution=用户改变了偏好（新值生效）；direct_conflict=矛盾/被取代的事实（新值生效）。`;
+      const resp = await fetch(`${llm.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: llm.model,
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' },
+          max_tokens: 200,
+          temperature: 0.0,
+        }),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
+      const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
+      const text = data.choices?.[0]?.message?.content ?? '{}';
+      const parsed = JSON.parse(text) as { type?: ConflictType; reason?: string };
+      if (parsed.type !== 'preference_evolution' && parsed.type !== 'direct_conflict') return null;
+      return { type: parsed.type, reason: parsed.reason ?? 'LLM 判定', viaLlm: true };
+    } catch (e) {
+      warn(`冲突判定 LLM 调用失败（走规则兜底）: ${(e as Error).message}`);
       return null;
     }
   };

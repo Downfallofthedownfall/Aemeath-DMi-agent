@@ -4,7 +4,7 @@
 // 注：用 node 直接执行（node:test 的子进程 spawn 在沙箱下不可用）
 // ============================================================
 import assert from 'node:assert/strict';
-import { checkOoc, extractText } from '../lib/index.js';
+import { checkOoc, extractText, runtimeContextDirective, executionDirective } from '../lib/index.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -57,6 +57,25 @@ t('extractText 只取 text 块', () => {
 
 t('extractText 容忍 undefined', () => {
   assert.equal(extractText(undefined), '');
+});
+
+t('runtimeContextDirective 始终非空且区分中英', () => {
+  const zh = runtimeContextDirective('zh');
+  const en = runtimeContextDirective('en');
+  const fallback = runtimeContextDirective('');
+  assert.ok(zh.length > 0);
+  assert.ok(en.length > 0);
+  assert.ok(fallback.length > 0);
+  assert.notEqual(zh, en);
+  assert.match(zh, /上下文/);
+  assert.match(en, /Runtime context/);
+});
+
+t('executionDirective 非空且为执行指令', () => {
+  const d = executionDirective();
+  assert.ok(d.length > 0);
+  assert.match(d, /任务正确/);
+  assert.match(d, /工具/);
 });
 
 console.log(`\n[ooc-check] ${passed} 项断言全部通过`);

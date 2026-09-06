@@ -3,7 +3,7 @@
 // 运行：npm test -w @aemeath/dsh-plugin-memory
 // ============================================================
 import assert from 'node:assert/strict';
-import { decide, isStrongKnowledge, classifyKnowledgeTopic } from '../lib/gatekeeper.js';
+import { decide, isStrongKnowledge, classifyKnowledgeTopic, writeGate, classifyConflict } from '../lib/gatekeeper.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -130,6 +130,56 @@ t('短陈述（≥2 字、非闲聊）→ pending 进 L1 滚动捕获（不再�
 t('纯占位单字仍 → skip', () => {
   assert.equal(decide('嗯', '').kind, 'skip');
   assert.equal(decide('哦', '').kind, 'skip');
+});
+
+// —— B5：user_fact 写门（Cyrene L0 身份：只收用户明确自述；锁存/幻觉拦截） ——
+t('B5 writeGate：第一人称直陈自述 → accept', () => {
+  const v = writeGate('我是准大一', '我是准大一');
+  assert.equal(v.action, 'accept');
+  assert.ok(v.reason.includes('第一人称'));
+});
+
+t('B5 writeGate：用户锁存（别记/忘了它）→ drop', () => {
+  assert.equal(writeGate('别记这个，我只是随便说说', '我是准大一').action, 'drop');
+  assert.equal(writeGate('忘了它吧', '我喜欢喝咖啡').action, 'drop');
+  assert.equal(writeGate('不要记这个', '我是准大一').action, 'drop');
+});
+
+t('B5 writeGate：空/悬挂字段名（疑似幻觉）→ drop', () => {
+  assert.equal(writeGate('我是准大一', '不详').action, 'drop');
+  assert.equal(writeGate('我是准大一', '  ').action, 'drop');
+  assert.equal(writeGate('我是准大一', '').action, 'drop');
+});
+
+t('B5 writeGate：非第一人称 → demote（降置信，仍保存）', () => {
+  const v = writeGate('他是准大一', '准大一，请多指教');
+  assert.equal(v.action, 'demote');
+  assert.equal(v.confidence, 0.5);
+});
+
+t('B5 writeGate：疑问句式非自述 → demote', () => {
+  const v = writeGate('我是准大一吗？', '我是准大一吗');
+  assert.equal(v.action, 'demote');
+  assert.equal(v.confidence, 0.5);
+});
+
+// —— B6：类型化冲突（Cyrene：preference_evolution / direct_conflict） ——
+t('B6 classifyConflict：偏好改变 → preference_evolution（新值生效）', () => {
+  const c = classifyConflict('我喜欢喝拿铁咖啡', '我现在更喜欢喝美式咖啡', 'preference', 'preference');
+  assert.equal(c.type, 'preference_evolution');
+  assert.equal(c.viaLlm, false);
+  assert.ok(c.reason.includes('偏好演变'));
+});
+
+t('B6 classifyConflict：时间证据状态变化 → direct_conflict（新值生效）', () => {
+  const c = classifyConflict('我下周三有物理考试', '我周三的物理考试考完了', 'study_log', 'study_log');
+  assert.equal(c.type, 'direct_conflict');
+  assert.equal(c.viaLlm, false);
+});
+
+t('B6 classifyConflict：非偏好无时间证据高相似 → 默认 direct_conflict', () => {
+  const c = classifyConflict('我下周三有物理考试', '我下周三有物理考试，有点紧张', 'study_log', 'study_log');
+  assert.equal(c.type, 'direct_conflict');
 });
 
 console.log(`\n[memory-gatekeeper] ${passed} 项断言全部通过`);

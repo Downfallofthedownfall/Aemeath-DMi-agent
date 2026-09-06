@@ -11,6 +11,8 @@
 //   5. 行为原则段（aemeath:craft，order=2）：跨角色通用的 prompt-craft，
 //      集中承载"诚实不编造/精炼/工具调用后/被指正/争议立场/拒绝方式/
 //      情感聊天格式/关怀不诊断"；persona 只保留角色专属内容（借 Claude 提示原则）。
+//   6. 借 Cyrene prompt 设计思想（只取思想，不复制文案）：稳定人格 + 动态运行
+//      上下文（aemeath:runtime-context，A1）；紧凑执行人格（aemeath:execution，A2）。
 // 端口/外部依赖：无（纯 harness 内插件）
 // ============================================================
 
@@ -261,6 +263,43 @@ function craftDirective(locale: string): string {
     ].join('\n');
   }
   return '';
+}
+
+/**
+ * 运行时上下文段文本（A1：稳定人格 + 动态尾巴；借 Cyrene prompt 设计的
+ * stablePrefix / runtimeContext 分离思路，只取思想不复制文案）。
+ * 每次 assembly 重新求值，专门承载"随回合变化"的内容——后续可填关系 /
+ * 记忆 / worldbook 线索。稳定人格段（deployment:persona）保留可缓存的
+ * 稳定字符串，这里只放动态尾巴，二者分离以保住 prompt-cache 命中率。
+ * locale=en → 英文；其余（含未上报）→ 中文，保证该段始终非空。
+ */
+export function runtimeContextDirective(locale: string): string {
+  if (locale === 'en') {
+    return [
+      'Runtime context (rebuilt every turn; filled by relationship / memory / worldbook cues):',
+      '- This block is re-evaluated on each assembly — only this-turn-scoped, ephemeral facts go here.',
+      '- Stable persona traits stay in the cached persona section above, not here.',
+    ].join('\n');
+  }
+  return [
+    '当前上下文（每轮重新求值；由关系 / 记忆 / worldbook 线索填充）：',
+    '- 本段每次组装时重建——只放"本回合才成立"的临时信息。',
+    '- 稳定的人格特征不写在这里，已由上面可缓存的人格段承载。',
+  ].join('\n');
+}
+
+/**
+ * 执行人格段文本（A2：紧凑执行人格，借 Cyrene cyrene_harness.md 的
+ * "Execution Persona"思路——任务正确 > 清晰 > 人格，不让角色个性泄漏进
+ * 工具调用/参数。只取思想，不复制文案。中文即可）。
+ */
+export function executionDirective(): string {
+  return [
+    '执行时（工具调用循环）：',
+    '- 任务正确性 > 清晰度 > 人格表现：先保证工具调用正确、目标达成。',
+    '- 工具参数保持中性，不带角色语气、不含人格化修辞。',
+    '- 调用工具的意图与结果用简短直白的语言说明，不渲染、不卖萌。',
+  ].join('\n');
 }
 
 // ============================================================
@@ -574,7 +613,9 @@ export function apply(ctx: Context, config: CommonConfig): void {
     const persona = config.personas?.[role ?? ''];
     log(`人格路由: agent=${agent.id} role=${role || '(未解析→' + (config.defaultPreset ?? '无') + ')'} defaultPreset=${config.defaultPreset} personaFile=${persona?.file ?? '(未匹配，等实时角色)'}`);
     try {
-      // persona 段：动态文本（每次 assembly 重算，跟随前端实时角色，切换即生效）
+      // persona 段（A1 稳定核心）：文本来自可缓存的稳定字符串（personaTextFor 按
+      // role+locale 缓存），每次 assembly 命中缓存返回同一串；切换实时角色/locale 时
+      // cache-miss 重新读文件。跟随前端实时角色（agent-presets.default），切换即生效。
       agent.ctx.systemPrompt.section({
         name: 'deployment:persona',
         order: 0,
@@ -592,6 +633,24 @@ export function apply(ctx: Context, config: CommonConfig): void {
         name: 'aemeath:craft',
         order: 2,
         text: () => craftDirective(uiLocale(agent.ctx)),
+      });
+      // A1（借 Cyrene prompt 设计，只取思想）：稳定人格 + 动态尾巴。
+      // deployment:persona 段的文本来自可缓存（role+locale 键）的稳定字符串，
+      // 每次 assembly 只是命中缓存返回同一串，唯一失效是角色切换/locale 变化
+      // （cache-miss 重读文件）。aemeath:runtime-context（order=3）则每次
+      // assembly 重新求值，专放随回合变化的动态上下文（关系/记忆/worldbook
+      // 线索，现为占位），与稳定人格分离以保住 prompt-cache 命中率。
+      agent.ctx.systemPrompt.section({
+        name: 'aemeath:runtime-context',
+        order: 3,
+        text: () => runtimeContextDirective(uiLocale(agent.ctx)),
+      });
+      // A2（借 Cyrene cyrene_harness.md 的 Execution Persona 思路）：紧凑执行人格，
+      // 只约束工具调用循环的风格——任务正确 > 清晰 > 人格，不让个性泄漏进工具调用/参数。
+      agent.ctx.systemPrompt.section({
+        name: 'aemeath:execution',
+        order: 5,
+        text: () => executionDirective(),
       });
       const uiLoc = uiLocale(agent.ctx);
       log(`语言指令已挂载 → agent=${agent.id} locale=${uiLoc || '(未上报，不注入)'}`);

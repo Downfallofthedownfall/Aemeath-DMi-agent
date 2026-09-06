@@ -35,7 +35,7 @@ t('selectEviction：超容量时淘汰价值最低的 global active', () => {
     { id: 'mode1', importance: 1, lastAccess: now - 400 * DAY, scope: 'mode', status: 'active' },
     { id: 'dorm', importance: 1, lastAccess: now - 400 * DAY, scope: 'global', status: 'dormant' },
   ];
-  const evict = selectEviction(records, 2, now);
+  const evict = selectEviction(records, 'global', 2, now);
   assert.equal(evict.length, 1);
   assert.equal(evict[0], 'old', '应淘汰价值最低的 global active；mode/dormant 不受影响');
 });
@@ -45,7 +45,7 @@ t('selectEviction：未超容量不淘汰', () => {
     { id: 'a', importance: 5, lastAccess: now - 300 * DAY, scope: 'global', status: 'active' },
     { id: 'b', importance: 95, lastAccess: now, scope: 'global', status: 'active' },
   ];
-  assert.deepEqual(selectEviction(records, 10, now), []);
+  assert.deepEqual(selectEviction(records, 'global', 10, now), []);
 });
 
 t('suggestProfileFacts：去重（子串级）+ 截断 + 上限', () => {

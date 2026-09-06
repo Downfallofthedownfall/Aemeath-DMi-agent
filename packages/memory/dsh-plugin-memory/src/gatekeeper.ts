@@ -9,6 +9,8 @@
 //   pending           —— 规则层拿不准 → 进 L1 缓冲攒批 → LLM 总结审核（省 token）
 // ============================================================
 
+import { overlapScore } from './bm25.js';
+
 export type MemoryAction =
   | { kind: 'blocked'; reason: string }
   | { kind: 'skip'; reason: string }
@@ -28,7 +30,12 @@ export type Category = 'user_fact' | 'study_log' | 'preference' | 'relationship'
  */
 const PERSONAL_PLAN_PATTERN = /(我|我的)?(计划|打算|目标|准备|决定|希望|要|想).{0,15}(学|读|复习|考|攻克|掌握|通过|完成|写完|记牢|练习|刷)/;
 
+/** 进行中状态信号：排除"在准备/正在…考试"这类当前活动陈述（不是计划/目标）。
+ *  否则"我最近在准备热力学考试"会被误判为个人计划而直存，违背"信息充足但待定 → L1 采集"的意图。 */
+const ONGOING_STUDY_PATTERN = /(正在|最近在|现在在|目前在)\s*(准备|准备着|学|复习)/;
+
 export function isPersonalPlan(text: string): boolean {
+  if (ONGOING_STUDY_PATTERN.test(text)) return false;
   return PERSONAL_PLAN_PATTERN.test(text);
 }
 
@@ -75,7 +82,7 @@ const QUESTION_SIGNALS = /[吗么呢吧]|怎么|什么|为什么|如何|多少|�
  *   - 疑问句由 decide() 的 QUESTION_SIGNALS 门统一排除，不在各模式里加 lookahead。
  */
 const IDENTITY_PATTERNS = [
-  /我(是|就是)?(准大一|大一新生|应届(生|高考)?生?)/,
+  /^我?(是|就是)?(准大一|大一新生|应届(生|高考)?生?)/,
   /我(今年|现在|目前|马上|即将)(就要|要|就|是)?(上|读|进|成为)?(大一|大二|大三|大四|研一|研二|研三|研究生|硕士|博士|本科生|专科生|高中生|初中生|小学生|新生|学生|大学|高中|初中|小学|本科|高一|高二|高三)/,
   /我(是|叫|叫做)(一名|一位|个)?(大一|大二|大三|大四|研一|研二|研三|研究生|硕士|博士|本科生|专科生|高中生|初中生|小学生|新生|学生|高一|高二|高三)/,
   /我(刚|刚刚|已经)?(高考完|中考完|毕业|考上|考进|被录取)/,
@@ -123,6 +130,103 @@ const TIME_EVIDENCE_PATTERNS = [
 /** 检测文本是否含时间证据（事实状态变化信号）。 */
 export function hasTimeEvidence(text: string): boolean {
   return TIME_EVIDENCE_PATTERNS.some((re) => re.test(text));
+}
+
+// ============================================================
+// B5 — user_fact 写门（L0 身份）。借用 Cyrene 记忆设计：核心画像只接收用户
+// 明确自述（certainty=explicit & attribution=user_explicit）的事实；须尊重用户
+// 锁存（"不要记/别记/忘了它"），并拒绝无来源/悬挂字段名的幻觉内容。
+// 纯函数、可单测；本块只做判定，不改 L1 缓冲机制。
+// ============================================================
+
+/** 用户主动锁存信号：命中则 drop（或 demote）该 user_fact。 */
+const USER_LOCK_PATTERNS = [
+  /不要记/, /别记/, /忘了它/, /忘掉(它)?/, /不用记/, /别存/, /不要存/, /别记住/,
+  /不用记住/, /删掉它/, /不用记了/,
+];
+
+/** 空/悬挂字段名（疑似幻觉、无可靠来源）：null/None/不详/待定/纯标点等。 */
+const HALLUCINATED_FACT_PATTERNS = [
+  /^(null|none|nil|n\/a|undefined|unknown|unknown_value|不详|未知|无|没有|空|无信息|待补充|待定|未提供|我不知道)\s*[:：]?\s*$/i,
+  /^[：:，,\s。.!！?？、;；]*$/,
+];
+
+export type WriteGateAction = 'accept' | 'demote' | 'drop';
+export interface WriteGateVerdict {
+  action: WriteGateAction;
+  reason: string;
+  /** demote 时建议的置信度（其余为 undefined）。 */
+  confidence?: number;
+}
+
+/**
+ * user_fact 写门：判定一条拟写入核心画像的事实是否放行。
+ * @param query   本轮用户原话（引述来源 = 用户）
+ * @param content 拟写入的 user_fact 内容
+ * @returns accept（放行）/ demote（降置信保存）/ drop（拦截，仅审计）
+ */
+export function writeGate(query: string, content: string): WriteGateVerdict {
+  const q = (query || '').trim();
+  const c = (content || '').trim();
+  // 用户锁存：明确要求"不要记/别记/忘了它" → drop（尊重用户意志）
+  if (USER_LOCK_PATTERNS.some((re) => re.test(q))) {
+    return { action: 'drop', reason: '用户主动锁存（不要记/别记/忘了它）' };
+  }
+  // 幻觉/悬挂字段名守卫：空值、无来源占位 → drop（不污染画像）
+  if (!c || c.length < 2 || HALLUCINATED_FACT_PATTERNS.some((re) => re.test(c))) {
+    return { action: 'drop', reason: '空/悬挂字段名——无可信来源（疑似幻觉）' };
+  }
+  // userExplicit=explicit & attribution=user_explicit：须第一人称自述 + 直陈句
+  const firstPerson = /我|我的|本人/.test(q);
+  const directStatement = !QUESTION_SIGNALS.test(q);
+  if (!firstPerson) {
+    return { action: 'demote', reason: '非第一人称直接陈述，来源可靠性降级', confidence: 0.5 };
+  }
+  if (!directStatement) {
+    return { action: 'demote', reason: '疑问句式非用户自述，来源可靠性降级', confidence: 0.5 };
+  }
+  return { action: 'accept', reason: '用户明确第一人称自述（user_explicit）' };
+}
+
+// ============================================================
+// B6 — 类型化冲突（借用 Cyrene 记忆设计）。把"裸 supersede"升级为：先分类
+// （preference_evolution / direct_conflict）再解决（新值生效），并把类型写进
+// 审计/冲突日志。LLM 可用时可选判定，否则走下方的确定性规则兜底（测试稳定）。
+// ============================================================
+
+export type ConflictType = 'preference_evolution' | 'direct_conflict';
+export interface ConflictDecision {
+  type: ConflictType;
+  reason: string;
+  /** 是否经 LLM 判定；false = 确定性规则兜底。 */
+  viaLlm: boolean;
+}
+
+/**
+ * 确定性冲突分类器（纯函数，可单测；也是 LLM 判定不可用时的兜底）。
+ * 信号：hasTimeEvidence（状态变化）、overlapScore（同一话题）、category（偏好域）、
+ *      内容中的"变更"词（改/换/不喜欢/更喜欢/现在）。
+ * - preference_evolution：偏好域内用户改变了偏好（旧偏好 → 新偏好，新值生效）；
+ * - direct_conflict：直接冲突/被取代（如时间证据"考完了"取代"有考试"，新值生效）。
+ * 两类"新值生效"的 supersede 语义保持一致，仅 type/reason 不同。
+ */
+export function classifyConflict(oldContent: string, newContent: string, oldCategory: Category, newCategory: Category): ConflictDecision {
+  const timeNew = hasTimeEvidence(newContent);
+  const overlap = overlapScore(oldContent, newContent);
+  const prefDomain = oldCategory === 'preference' || newCategory === 'preference';
+  const prefChange = /(改成|改为|不喜欢|不再喜欢|更喜欢|换成|现在喜欢|改喝|换喝|决定|想要|想喝|想学|喜欢上)/.test(newContent);
+  if (prefDomain && prefChange) {
+    return {
+      type: 'preference_evolution',
+      reason: `偏好演变：旧「${oldContent.slice(0, 12)}」→ 新「${newContent.slice(0, 12)}」（用户改变偏好，新值生效；overlap=${overlap.toFixed(2)}）`,
+      viaLlm: false,
+    };
+  }
+  return {
+    type: 'direct_conflict',
+    reason: `直接冲突/状态变化：新「${newContent.slice(0, 12)}」取代旧「${oldContent.slice(0, 12)}」（时间证据=${timeNew}，overlap=${overlap.toFixed(2)}，新值生效）`,
+    viaLlm: false,
+  };
 }
 
 /** 模块代码模式（汉堡物理系 Modulhandbuch）：PHY-XX / MATH\d → 学习语境。 */
