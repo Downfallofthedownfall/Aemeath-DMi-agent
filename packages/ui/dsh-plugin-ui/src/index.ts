@@ -139,6 +139,8 @@ export function apply(ctx: Context): void {
     l1Sessions?(): string[];
     l1Turns?(sid: string): Array<{ query?: string; reply?: string; kind?: string; ts?: number; preset?: string }>;
     l1CapacityOf?(): { capacity: number; threshold: number };
+    /** 纯手动桥接：把一条 L2/L3 记忆写入世界书生成文件（生成条目哈希去重，热重载生效）。 */
+    toWorldbook?(id: string, opts?: { library?: string; topic?: string }): Promise<{ ok: boolean; id?: string; title?: string; error?: string }>;
   } | undefined;
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -489,7 +491,20 @@ export function apply(ctx: Context): void {
       if (req.method === 'POST') {
         if (!checkWriteOrigin(req)) return jsonError(res, 403, 'memory.crossOrigin', 'cross-origin write denied');
         const raw = await readBody(req);
-        const parsed = JSON.parse(raw || '{}') as { idPrefix?: string };
+        const parsed = JSON.parse(raw || '{}') as { idPrefix?: string; action?: string; id?: string; library?: string; topic?: string };
+        // 纯手动桥接：把一条 L2/L3 记忆写入世界书生成文件（前端确认后调用；绝不自动触发）
+        if (parsed.action === 'toWorldbook') {
+          if (!memory.toWorldbook) return jsonError(res, 500, 'memory.toWorldbookUnavailable', 'worldbook bridge unavailable');
+          if (typeof parsed.id !== 'string' || !parsed.id) return jsonError(res, 400, 'memory.idRequired', 'id required');
+          const r = await memory.toWorldbook(parsed.id, {
+            library: typeof parsed.library === 'string' ? parsed.library : undefined,
+            topic: typeof parsed.topic === 'string' ? parsed.topic : undefined,
+          });
+          if (!r.ok) return jsonError(res, 400, 'memory.toWorldbookFailed', r.error ?? 'add to worldbook failed');
+          json(res, 200, { ok: true, id: r.id, title: r.title });
+          return;
+        }
+        // 默认：软删（action:'delete' 或直接 { idPrefix } 向后兼容）
         if (!parsed.idPrefix) {
           jsonError(res, 400, 'memory.idPrefixRequired', 'idPrefix required');
           return;

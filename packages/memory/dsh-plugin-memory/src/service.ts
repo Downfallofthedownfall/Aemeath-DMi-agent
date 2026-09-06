@@ -21,6 +21,12 @@ export interface MemoryServiceDeps {
   l1: KvTable<string, L1Turn[]>;
   profile: { get(): UserProfile; set(v: UserProfile): Promise<void> };
   auditWrite(action: string, memoryId: string | undefined, detail: string): Promise<void>;
+  /**
+   * （可选）L2/L3 记忆 → worldbook 桥接写入。由 index.ts 注入（复用其
+   * writeWorldbookEntry：写 preset 馆的 generated_knowledge.json，内容哈希去重）。
+   * 返回 null 表示该馆不可写/目标不存在（跳过）；返回 { id, title } 表示成功（含"已存在"幂等）。
+   */
+  writeWorldbook?: (input: { preset: string; content: string; topic: string; source: string }) => Promise<{ id: string; title: string } | null>;
 }
 
 export interface MemorySearchResult {
@@ -225,6 +231,32 @@ export class MemoryService extends Service {
     await this.deps.knowledge.update(found.key, (cur) => ({ ...cur, status }));
     await this.deps.auditWrite(`knowledge_${status}`, found.key, `评审：${status}`);
     return true;
+  }
+
+  // ===== L2/L3 记忆 → worldbook（纯手动桥接，前端确认后调用） =====
+  /**
+   * 把一条 L2/L3 记忆提升为世界书条目（写 preset 馆的 generated_knowledge.json）。
+   * 纯手动：仅在用户显式确认（前端按钮/弹窗）后调用，绝不自动触发。
+   * library 缺省取记忆的 preset（馆）；topic 缺省为空（由写入方按内容推导）。
+   * 返回 { ok, id, title }；worldbook 不可写（无依赖/无馆目录/失败）时返回 { ok:false, error }。
+   */
+  async toWorldbook(memoryId: string, opts: { library?: string; topic?: string } = {}): Promise<{ ok: boolean; id?: string; title?: string; error?: string }> {
+    const writer = this.deps.writeWorldbook;
+    if (!writer) return { ok: false, error: 'worldbook write unavailable' };
+    const found = this.allActive().find(({ key }) => key === memoryId);
+    if (!found) return { ok: false, error: 'memory not found' };
+    const rec = found.rec;
+    const library = opts.library ?? rec.preset;
+    const topic = opts.topic ?? '';
+    if (!rec.content.trim()) return { ok: false, error: 'empty memory content' };
+    try {
+      const entry = await writer({ preset: library, content: rec.content, topic, source: `记忆桥接（${rec.scope === 'global' ? 'L3' : 'L2'}）` });
+      if (!entry) return { ok: false, error: `worldbook write skipped（馆 ${library} 不可写或目标不存在）` };
+      await this.deps.auditWrite('to_worldbook', found.key, `L${rec.scope === 'global' ? '3' : '2'} 记忆 → worldbook（${entry.id}）`);
+      return { ok: true, id: entry.id, title: entry.title };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
   }
 
   // ===== L1 暂存区（scratch，会话内工作态） =====

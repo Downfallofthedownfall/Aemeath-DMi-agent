@@ -211,8 +211,14 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   };
 
   // ---- ctx.memory 服务 ----
-  const memoryService = new MemoryService(ctx, { memories, audit, knowledge, l1, profile, auditWrite }, { capacity: l1Capacity, threshold: l1Threshold });
-  log('ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch/l1/knowledge）');
+  // writeWorldbook 依赖为延迟闭包：writeWorldbookEntry 在下方定义，closure 在调用时才解析，
+  // 既避免了 undefined 引用，也让 service 的 toWorldbook（纯手动桥接）复用同一份写入逻辑。
+  const memoryService = new MemoryService(
+    ctx,
+    { memories, audit, knowledge, l1, profile, auditWrite, writeWorldbook: (input) => writeWorldbookEntry(input.preset, input.content, input.topic, input.source) },
+    { capacity: l1Capacity, threshold: l1Threshold },
+  );
+  log('ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch/l1/knowledge/toWorldbook）');
 
   // ---- 事实采集：缓冲每轮 (query, reply)，配对后进入 L1 分层 ----
   interface CollectedTurn { query: string; reply: string; preset: string; ts: number }
@@ -389,38 +395,43 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
    * worldbook 桥接：写 preset 对应馆的 generated_knowledge.json（数组追加、内容哈希去重）。
    * 模态隔离：每个模态的知识只写自己馆（不跨模态）；worldbook 注入本就按 preset 选馆，
    * 未命中时靠模型本身能力回答。热重载 ≤3s 生效。
+   * @param source 条目来源标注（知识直达默认「规则层生成（用户提问）」；记忆桥接传「记忆桥接 L2/L3」）
+   * @returns 成功（含"已存在"幂等）返回 { id, title }；不可写/失败返回 null
    */
-  const writeWorldbookEntry = async (preset: string, content: string, topic: string): Promise<void> => {
+  const writeWorldbookEntry = async (preset: string, content: string, topic: string, source = '规则层生成（用户提问）'): Promise<{ id: string; title: string } | null> => {
+    const title = topic || '物理知识';
     const dir = worldbook.libraries[preset];
     if (!dir) {
       log(`worldbook 桥接跳过（无 ${preset} 馆目录，不跨模态写入）`);
-      return;
+      return null;
     }
     const absDir = isAbsolute(dir) ? dir : join(process.cwd(), dir);
     const file = join(absDir, 'generated_knowledge.json');
     try {
       if (!existsSync(absDir)) {
         warn(`worldbook 馆目录不存在: ${absDir}（跳过桥接）`);
-        return;
+        return null;
       }
       const raw = existsSync(file) ? readFileSync(file, 'utf-8') : '[]';
       const entries = (JSON.parse(raw || '[]') as Array<Record<string, unknown>>);
       const id = `gen_${createHash('sha1').update(content).digest('hex').slice(0, 8)}`;
-      if (entries.some((e) => e.id === id)) return; // 去重
+      if (entries.some((e) => e.id === id)) return { id, title }; // 去重：已存在，幂等返回
       entries.push({
         id,
-        title: topic || '物理知识',
+        title,
         kind: 'knowledge',
         triggers: buildWorldbookTriggers(content, topic),
         content,
-        source: '规则层生成（用户提问）',
+        source,
         verifiable: false,
         priority: 1,
       });
       writeFileSync(file, JSON.stringify(entries, null, 2), 'utf-8');
       log(`worldbook 生成条目 +1（馆=${preset} ${id} [${topic}] ${content.slice(0, 30)}…，热重载 ≤3s 生效）`);
+      return { id, title };
     } catch (e) {
       warn(`worldbook 写入失败: ${(e as Error).message}`);
+      return null;
     }
   };
 
@@ -867,7 +878,19 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
               if (status !== 'accepted' && status !== 'rejected') return send(400, { ok: false, error: 'status must be accepted|rejected' });
               return send(200, { ok: await memoryService.knowledgeSetStatus(prefix, status) });
             }
-            return send(404, { ok: false, error: 'not found: use /memory/list | /memory/stats | /memory/delete | /memory/knowledge | /memory/knowledge/status | /memory/l1' });
+            if (url === '/memory/toWorldbook') {
+              // 纯手动桥接：把一条 L2/L3 记忆写入世界书生成文件（与 /aemeath/api/memory 同源，token 认证）
+              if (req.method !== 'POST') return send(405, { ok: false, error: 'method not allowed: POST' });
+              const payload = await readJsonLimited(req);
+              const id = payload.id;
+              if (typeof id !== 'string' || !id) return send(400, { ok: false, error: 'id required' });
+              const library = typeof payload.library === 'string' ? payload.library : undefined;
+              const topic = typeof payload.topic === 'string' ? payload.topic : undefined;
+              const r = await memoryService.toWorldbook(id, { library, topic });
+              if (!r.ok) return send(400, { ok: false, error: r.error });
+              return send(200, { ok: true, id: r.id, title: r.title });
+            }
+            return send(404, { ok: false, error: 'not found: use /memory/list | /memory/stats | /memory/delete | /memory/knowledge | /memory/knowledge/status | /memory/toWorldbook | /memory/l1' });
           } catch (e) {
             const err = e as Error & { status?: number };
             send(err.status ?? 400, { ok: false, error: err.message });
