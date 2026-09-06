@@ -146,8 +146,10 @@ _EMOJI_RE = re.compile(r'[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\
 
 
 def _clean_for_tts(text):
-    """合成前清洗：去 emoji，去纯中文标注型括号（保留含数字/单位/字母的括号）。"""
+    """合成前清洗：去 emoji、去中文标注型括号（保留含数字/单位/字母的括号）、
+    把换行/段落折叠成空格（避免段落/双换行触发 IndexTTS 长停顿——自然停顿由标点驱动）。"""
     text = _EMOJI_RE.sub('', text or '')
+    text = re.sub(r'(?:\r?\n)+', ' ', text)  # 换行/段落 → 单个空格
     def _sub(m):
         inner = m.group(1)
         return m.group(0) if re.search(r'\d|[A-Za-z=·/]', inner) else ''
