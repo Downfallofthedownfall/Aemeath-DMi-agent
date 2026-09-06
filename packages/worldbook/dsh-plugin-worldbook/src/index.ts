@@ -51,6 +51,16 @@ function warn(msg: string): void {
   console.warn(`[aemeath-worldbook] ⚠ ${msg}`);
 }
 
+/** 实时角色：前端选择写入的 agent-presets.default（与 common 插件 persona 一致）。 */
+function liveRole(ctx: Context): string | undefined {
+  try {
+    const ap = ctx.settings?.get?.(settingsNamespace('agent-presets')) as { default?: string } | undefined;
+    return ap?.default;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * C8 修复：worldbook 配置 service（name='worldbook'）——把 preset→馆目录映射
  * 暴露给其他插件（memory 的 worldbook 桥接直接读取），消除 cordis.patch.yml 里
@@ -206,7 +216,7 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
     // 若每个 step 都注入同一份 catalog，多 step 解题流程上下文会随 step 数线性膨胀。
     if (payload.step !== 1) return decision;
 
-    const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
+    const preset = liveRole(ctx) ?? resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     const lib = preset ? libs.get(preset) : undefined;
     if (!lib || !lib.entries.length) return decision;
 
@@ -229,7 +239,7 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
   ctx.tools.register(
     defineTool({
       name: 'retrieve_worldbook',
-      description: '从 Worldbook 知识库检索物理/数学知识条目，返回带来源与可验证标记的条目列表与注入文本。',
+      description: '从 Worldbook 知识库检索知识条目（物理/数学或陪伴），返回带来源与可验证标记的条目列表与注入文本。',
       parameters: {
         query: { type: 'string', required: true, description: '检索词（中文/英文/德文均可）' },
         library: { type: 'string', description: '知识馆：physicist（物理）或 aemeath（陪伴）；缺省取当前角色馆' },
@@ -239,7 +249,8 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
       },
       execute: async (args: { query: string; library?: string }, exec) => {
-        const libName = args.library || exec?.agent?.id || 'physicist';
+        // 双角色通用：缺省取前端实时角色馆（与 persona/知识注入一致）
+        const libName = args.library || liveRole(ctx) || config.defaultPreset || 'physicist';
         const entries = libs.get(libName)?.entries ?? [];
         const block = matchWorldbook(args.query, entries, maxTokens);
         return {
@@ -251,16 +262,6 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
     }),
   );
   log('工具 retrieve_worldbook 已注册');
-
-  // ---- 工具可见性隔离：爱弥斯（aemeath preset）不暴露检索工具 ----
-  const restrictAemeath = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
-    const preset = resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
-    if (preset !== 'aemeath') return;
-    agent.ctx.tools.restrict({ deny: ['retrieve_worldbook'] });
-    log(`preset=${preset}（${agent.id}）已隐藏 retrieve_worldbook 工具（工具集隔离）`);
-  };
-  for (const agent of ctx.agents.list()) restrictAemeath(agent);
-  ctx.on('agent/created', ({ agent }) => restrictAemeath(agent));
 
   // ---- 开关联动：settings enabled=false 时拒绝工具执行（全局动态 guard）----
   ctx.on('tools/pre-execute', async (exec, next) => {

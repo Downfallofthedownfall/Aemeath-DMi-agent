@@ -49,6 +49,16 @@ function warn(msg: string): void {
   console.warn(`[aemeath-curriculum] ⚠ ${msg}`);
 }
 
+/** 实时角色：前端选择写入的 agent-presets.default（与 common 插件 persona 一致）。 */
+function liveRole(ctx: Context): string | undefined {
+  try {
+    const ap = ctx.settings?.get?.(settingsNamespace('agent-presets')) as { default?: string } | undefined;
+    return ap?.default;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function apply(ctx: Context, config: CurriculumConfig): Promise<void> {
   if (config.enabled === false) {
     log('课程上下文已禁用（config.enabled=false）');
@@ -91,19 +101,20 @@ export async function apply(ctx: Context, config: CurriculumConfig): Promise<voi
   const summary = semesterSummary(data, semester);
   log(`当前学期判定：${semester}（可配置覆盖）`);
 
-  // ---- 常驻注入（physicist agent 创建时注册 system prompt section） ----
+  // ---- 常驻注入（system prompt section；动态跟随实时角色，仅 defaultPreset=physicist 时注入） ----
   const mountContext = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
     if (!runtime.enabled) return;
-    const preset = resolveSessionPreset(agent.session as never) ?? defaultPreset;
-    if (preset !== defaultPreset) return;
-    // 预算：摘要按 token 上限截断（中文≈字符）
-    const text = summary.length > injectTokens ? `${summary.slice(0, injectTokens)}\n（课程清单已截断，可用 curriculum_query 查全量）` : summary;
+    const summaryText = (): string => {
+      const role = liveRole(ctx) ?? defaultPreset;
+      if (role !== defaultPreset) return '';
+      return summary.length > injectTokens ? `${summary.slice(0, injectTokens)}\n（课程清单已截断，可用 curriculum_query 查全量）` : summary;
+    };
     agent.ctx.systemPrompt.section({
       name: 'aemeath:curriculum',
       order: 90, // persona(0) 之后、工具指引(100+) 之前
-      text,
+      text: summaryText,
     });
-    log(`课程上下文已挂载 → preset=${preset} agent=${agent.id.slice(0, 8)}（${text.length} 字符）`);
+    log(`课程上下文段已挂载（动态跟随实时角色）→ agent=${agent.id.slice(0, 8)}`);
   };
   for (const agent of ctx.agents.list()) mountContext(agent);
   ctx.on('agent/created', ({ agent }) => mountContext(agent));

@@ -8,6 +8,9 @@
 //   4. OOC 规则层：agent/pre-step 检查上一轮 assistant 输出，
 //      命中角色禁止模式 → [OOC] 日志 + steer 纠偏（规则函数纯函数，
 //      可单测；LLM 判定层留待 M6）
+//   5. 行为原则段（aemeath:craft，order=2）：跨角色通用的 prompt-craft，
+//      集中承载"诚实不编造/精炼/工具调用后/被指正/争议立场/拒绝方式/
+//      情感聊天格式/关怀不诊断"；persona 只保留角色专属内容（借 Claude 提示原则）。
 // 端口/外部依赖：无（纯 harness 内插件）
 // ============================================================
 
@@ -219,6 +222,43 @@ function languageDirective(locale: string): string {
   }
   if (locale === 'zh') {
     return '语言：请始终用中文回复。界面语言为中文——所有回答（含引用知识库/讲义内容时）都用中文表达。';
+  }
+  return '';
+}
+
+/**
+ * 行为原则段文本（跨角色通用，借 Claude 系统提示原则精简而来）：
+ * 统一约束"诚实不编造、论述精炼、工具调用后收束、被指正、争议立场、
+ * 拒绝方式、情感聊天格式、关怀不诊断"。集中在此（单一权威源），
+ * persona 只保留角色专属内容，两者不重复。
+ * locale=en → 英文；zh → 中文；未上报（''）→ 返回 ''（section 为空会被丢弃）。
+ */
+function craftDirective(locale: string): string {
+  if (locale === 'en') {
+    return [
+      'Behavior principles (universal; applies to every role):',
+      '- Be honest, never fabricate: if unsure, say so; never invent sources, data, or conclusions. Cite the knowledge base or lecture notes when you can — and don\'t pretend to have a source you don\'t.',
+      '- Be lean: every word should add information — no piling up jargon, no rambling. It\'s fine to finish over several turns rather than cramming everything in.',
+      '- After tool calls: once your last tool call ends, answer directly in one or two sentences; "done" alone is not an answer, and don\'t repeat what you already wrote before the call.',
+      '- When corrected: own it and fix it plainly — no groveling, no excess apology. If the other person is unreasonable, you don\'t have to keep yielding. Keep your self-respect.',
+      '- On contested stances: present the strongest case for that position and note it is the position itself; briefly mention opposing views without injecting your own bias.',
+      '- When declining or unable to fulfil a request: say so gently in a sentence or two, not as a list.',
+      '- In friendly, personal, or emotional chat: avoid bullet points and subheadings; keep a natural conversational tone.',
+      '- Care without diagnosing: when the user confides worries or feels down, be warm and supportive — don\'t amplify the negatives, don\'t diagnose, label, or guess motives. If it\'s serious, gently suggest a trusted person or a professional. Avoid filler emphasis like "honestly", "really", "truthfully" — you\'re already sincere.',
+    ].join('\n');
+  }
+  if (locale === 'zh') {
+    return [
+      '行为原则（通用，适用于所有角色）：',
+      '- 诚实不编造：不确定就直说；绝不编造来源、数据或结论。引用知识库/讲义时给得出处，给不出就不假装有。',
+      '- 论述精炼：每个词都要有信息量，不堆砌术语、不啰嗦；可拆成多轮讲完，不必一次塞满。',
+      '- 工具调用后：最后一次工具调用结束，用一两句话直接给答案；只写"已完成"不算回答，也不重复工具调用前已说的话。',
+      '- 被指正时：坦率承认并修正，不卑不亢，不过度道歉；对方无理时不必一味顺从，保持自尊。',
+      '- 涉及有争议的立场：呈现该立场的最强论证并注明这是该立场本身；对立观点简要交代，不夹带个人倾向。',
+      '- 拒绝或无法满足请求时：用一两句温和说明，不用一串项目符号。',
+      '- 友好、情感或私人聊天：不用项目符号或小标题，保持自然的对话语气。',
+      '- 关怀而不诊断：用户倾诉或情绪低落时，温暖陪伴与回应，不放大负面情绪，不诊断、不贴标签、不猜测动机；情况严重时温和建议找信任的人或专业人士聊聊。少用"其实""真的""说真的"这类强调词——你本来就很真诚。',
+    ].join('\n');
   }
   return '';
 }
@@ -484,14 +524,31 @@ export function apply(ctx: Context, config: CommonConfig): void {
   );
   log('轻量工具已注册：get_current_time / web_scraper / arxiv_search（v1 迁移）');
 
-  // ---- 2) 双人格注册（agent 作用域 shadowing，按 agent preset 分流；无 preset 时用 defaultPreset） ----
+  // ---- 2) 双人格注册（agent 作用域 shadowing）----
+  // persona 段**动态跟随前端实时角色选择**（settings agent-presets.default），
+  // 每次 assembly 重算 → 切换角色后下一条回复即换人格，无需先开新会话。
   const mountedAgentPersonas = new Set<string>();
-  const mountPersona = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
-    const preset = resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
-    const persona = config.personas?.[preset ?? ''];
-    if (!persona) return;
-    // i18n：按 settings.locale.preference 选择人格文件（zh 用默认，en/de 用 <base>.<locale>.md）
+
+  /** 实时角色：前端选择写入的 agent-presets.default；读不到则回退。 */
+  const currentRole = (): string | undefined => {
+    try {
+      const ap = ctx.settings?.get?.(settingsNamespace('agent-presets')) as { default?: string } | undefined;
+      return ap?.default;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** 按 role+locale 解析人格文本（结果缓存；switch 后新 role 会 cache-miss 重新读文件）。 */
+  const personaTextCache = new Map<string, string>();
+  const personaTextFor = (agent: { id: string; session: unknown }): string => {
+    const role = currentRole() ?? resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
+    const persona = config.personas?.[role ?? ''];
+    if (!persona) return '';
     const locale = currentLocale(ctx);
+    const key = `${role}:${locale}`;
+    const cached = personaTextCache.get(key);
+    if (cached !== undefined) return cached;
     let text = persona.text ?? '';
     if (!text && persona.file) {
       const localized = personaFileForLocale(persona.file, locale);
@@ -500,36 +557,48 @@ export function apply(ctx: Context, config: CommonConfig): void {
         text = readFileSync(p, 'utf-8').trim();
       } catch (e) {
         warn(`读取人格文件失败 ${p}: ${(e as Error).message}`);
-        return;
+        text = '';
       }
-      if (localized !== persona.file) log(`人格按 locale 选择: ${persona.file} → ${localized}（locale=${locale}）`);
     }
-    if (!text) return;
+    personaTextCache.set(key, text);
+    return text;
+  };
+
+  const mountPersona = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
     if (mountedAgentPersonas.has(agent.id)) {
       warn(`人格已挂载过（跳过重复）: agent=${agent.id}`);
       return;
     }
-    // 在 agent 作用域上下文注册 persona 槽（shadowing，不全局冲突）
+    if (Object.keys(config.personas ?? {}).length === 0) return;
+    const role = currentRole() ?? resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
+    const persona = config.personas?.[role ?? ''];
+    log(`人格路由: agent=${agent.id} role=${role || '(未解析→' + (config.defaultPreset ?? '无') + ')'} defaultPreset=${config.defaultPreset} personaFile=${persona?.file ?? '(未匹配，等实时角色)'}`);
     try {
+      // persona 段：动态文本（每次 assembly 重算，跟随前端实时角色，切换即生效）
       agent.ctx.systemPrompt.section({
         name: 'deployment:persona',
         order: 0,
-        text,
+        text: () => personaTextFor(agent),
       });
-      // 语言指令 section（order 紧贴 persona 之后）：provider 每次 assembly 求值，
+      // 语言指令 section（order 紧贴 persona 之后）：每次 assembly 求值，
       // 读前端上报的 aemeath-ui.locale —— 前端切语言后无需重挂 agent，下一条回复即生效。
-      // 未上报（''）时 section 文本为空，renderPrompt 会丢弃空 section，不影响 prompt。
       agent.ctx.systemPrompt.section({
         name: 'aemeath:language',
         order: 1,
         text: () => languageDirective(uiLocale(agent.ctx)),
       });
+      // 行为原则段（order=2）：跨角色通用（单一权威源），persona 只保留角色专属内容。
+      agent.ctx.systemPrompt.section({
+        name: 'aemeath:craft',
+        order: 2,
+        text: () => craftDirective(uiLocale(agent.ctx)),
+      });
       const uiLoc = uiLocale(agent.ctx);
       log(`语言指令已挂载 → agent=${agent.id} locale=${uiLoc || '(未上报，不注入)'}`);
       mountedAgentPersonas.add(agent.id);
-      log(`人格已挂载 → preset=${preset} agent=${agent.id}（${text.length} 字符）`);
+      log(`人格段已挂载（动态跟随实时角色）→ agent=${agent.id} 当前role=${role || '(未匹配，等实时角色)'}`);
     } catch (e) {
-      warn(`人格挂载失败（agent=${agent.id} preset=${preset}）: ${(e as Error).message}`);
+      warn(`人格挂载失败（agent=${agent.id} role=${role}）: ${(e as Error).message}`);
     }
   };
 

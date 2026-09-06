@@ -43,6 +43,16 @@ function warn(msg: string): void {
   console.warn(`[aemeath-retriever] ⚠ ${msg}`);
 }
 
+/** 实时角色：前端选择写入的 agent-presets.default（与 common 插件 persona 一致）。 */
+function liveRole(ctx: Context): string | undefined {
+  try {
+    const ap = ctx.settings?.get?.(settingsNamespace('agent-presets')) as { default?: string } | undefined;
+    return ap?.default;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 中文 bigram 化（"牛顿第二定律" → "牛顿 顿第 第二 二定 定律"）。 */
 function bigramize(cjk: string): string {
   const grams: string[] = [];
@@ -175,7 +185,7 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
     // 只在本轮第一步注入（与 memory/worldbook/workflow 对齐，防多 step 上下文线性膨胀）
     if (payload.step !== 1) return decision;
 
-    const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
+    const preset = liveRole(ctx) ?? resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
     if (preset !== 'physicist') return decision;
 
     // 取进入 step 的用户原始文本（跳过插件注入消息，如 worldbook/recall）

@@ -95,11 +95,13 @@ export function t(key: string, params?: Record<string, unknown>): string {
  * 在需要跟随语言切换的组件中调用（返回 active locale id 供调试/条件渲染）。
  */
 export function useLocale(): string {
-  const snap = useSyncExternalStore(
+  // 注意：getSnapshot 必须返回稳定值（字符串），不能返回整包对象——
+  // useSyncExternalStore 用 Object.is 比较快照，若每次都返回新对象会触发
+  // "getSnapshot should be cached / Maximum update depth exceeded"（React #310）死循环。
+  return useSyncExternalStore(
     (l) => localeRuntime?.subscribe(l) ?? (() => undefined),
-    () => localeRuntime?.getSnapshot() ?? ({ active: 'zh', locales: [], revision: 0 } as LocaleSnapshot),
+    () => localeRuntime?.getSnapshot().active ?? 'zh',
   );
-  return snap.active;
 }
 
 /** 当前 active locale（供上报等非渲染场景读取；未安装时默认 zh）。 */
