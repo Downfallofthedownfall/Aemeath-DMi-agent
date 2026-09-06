@@ -214,10 +214,13 @@ const SessionRowMemo = memo(function SessionRowMemo({
   archive: (id: string) => void;
 }): JSX.Element | null {
   useLocale(); // locale 切换时强制刷新预设徽章文案
-  if (!s || s.blank) return null;
-  const presetLabel = s.agentPreset === 'aemeath' ? t('sessions.preset.aemeath') : s.agentPreset === 'physicist' ? t('sessions.preset.physicist') : s.agentPreset ?? '';
+  // 铁律：hooks 必须无条件调用。Open/archive 的回调在 if 之前构造，
+  // 否则 s 在 undefined/blank → 就绪 之间跳变时 hooks 数量随之跳变 → React #310 崩溃
+  //（开新对话时 byId 某帧缺该项：先 return null 跳过 useCallback，下一帧恢复即崩）。
   const onClick = useCallback(() => open(id), [open, id]);
   const onDelete = useCallback(() => archive(id), [archive, id]);
+  if (!s || s.blank) return null;
+  const presetLabel = s.agentPreset === 'aemeath' ? t('sessions.preset.aemeath') : s.agentPreset === 'physicist' ? t('sessions.preset.physicist') : s.agentPreset ?? '';
   return (
     <SessionRow
       title={s.displayTitle ?? id.slice(0, 8)}
