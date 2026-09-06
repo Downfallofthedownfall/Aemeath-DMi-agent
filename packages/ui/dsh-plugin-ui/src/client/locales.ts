@@ -186,6 +186,14 @@ export const zh = {
   'status.thinking': '思考中',
   'status.speaking': '朗读中',
 
+  // —— 解题计划浮卡（workflow-todo.tsx，feature #5）——
+  'workflowtodo.title': '解题计划',
+  'workflowtodo.collapse': '折叠',
+  'workflowtodo.expand': '展开',
+  'workflowtodo.hide': '隐藏',
+  'workflowtodo.drag': '拖动',
+  'workflowtodo.progress': '已完成 {completed}/{total}',
+
   // —— 分段角色切换（mode-switch.tsx，feat #3）——
   'modeswitch.aria': '切换角色',
 
@@ -382,6 +390,14 @@ export const en: Record<AemeathKey, string> = {
   'status.idle': 'Companion',
   'status.thinking': 'Thinking',
   'status.speaking': 'Reading aloud',
+
+  // —— Solving-plan floating card (workflow-todo.tsx, feat #5)——
+  'workflowtodo.title': 'Solving plan',
+  'workflowtodo.collapse': 'Collapse',
+  'workflowtodo.expand': 'Expand',
+  'workflowtodo.hide': 'Hide',
+  'workflowtodo.drag': 'Drag',
+  'workflowtodo.progress': '{completed}/{total} done',
 
   // —— Segmented role switch (mode-switch.tsx, feat #3)——
   'modeswitch.aria': 'Switch role',

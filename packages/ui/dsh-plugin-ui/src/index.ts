@@ -489,6 +489,22 @@ export function apply(ctx: Context): void {
           sessionId: sid,
           items: Object.entries(slot).map(([k, v]) => ({ key: k, content: String(v).slice(0, 200) })),
         })).filter((s) => s.items.length > 0);
+        // 解题计划（feature #5：workflow.plan scratch）——按会话解析为步骤字符串数组，未截断
+        // （l1 的 content 只留 200 字符会破坏 plan JSON），供前端浮卡直接读。
+        // 只读已有 scratch 数据，不改 workflow/memory 后端。
+        const plans: Record<string, string[]> = {};
+        for (const [sid, slot] of Object.entries(scratch)) {
+          const raw = slot['workflow.plan'];
+          if (!raw) continue;
+          try {
+            const p = JSON.parse(raw) as unknown;
+            if (Array.isArray(p)) {
+              plans[sid] = p.map((s) => String(s)).map((s) => s.trim()).filter(Boolean);
+            }
+          } catch {
+            /* 坏 JSON：整会话跳过（前端显示空/off） */
+          }
+        }
         // L1 采集缓冲（滚动对话，待总结）——与 scratch 工作态区分，面板可见"攒批中"的内容
         const l1Buffer = (memory.l1Sessions?.() ?? []).map((sid) => ({
           sessionId: sid,
@@ -501,7 +517,7 @@ export function apply(ctx: Context): void {
         })).filter((s) => s.turns.length > 0);
         const l2 = items.filter((m) => m.scope === 'mode');
         const l3 = items.filter((m) => m.scope === 'global');
-        json(res, 200, { ok: true, l1, l2, l3, stats, l1Buffer, l1Capacity: memory.l1CapacityOf?.() ?? null, profile });
+        json(res, 200, { ok: true, l1, l2, l3, stats, l1Buffer, l1Capacity: memory.l1CapacityOf?.() ?? null, profile, plans });
         return;
       }
       if (req.method === 'POST') {
