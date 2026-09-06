@@ -360,6 +360,10 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         if (knowledgeEnabled && isStrongKnowledge(decision.content)) {
           await handleKnowledgeDirect(turn.preset, decision.content, classifyKnowledgeTopic(decision.content), sid, 'user_query');
         }
+        // 喂满 L1：显式 save 轮次的完整 (query+reply) 也进采集缓冲（此前 save 绕开 L1，
+        // 直存只存命令文字，图片/回复里的真正内容如课表被丢弃）。L1 → 总结层 LLM 会把
+        // 整轮（含模型复述的课表）提取为记忆。触动词（/记住|记一下/）下方会触发即时总结。
+        await bufferL1(sid, { sessionId: sid, query: turn.query, reply: turn.reply, preset: turn.preset, ts: turn.ts, kind: 'fact' });
         break;
       }
       case 'pending':
