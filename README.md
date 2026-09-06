@@ -4,7 +4,7 @@
 >
 > **架构 / Architecture**: v2 is rebuilt on the DeepSeek Harness (dsh) plugin system. **The platform is just the engine — the moat is the physics content track**: Worldbook knowledge base, exam benchmark, weekly usage log (see [docs/usage-log.md](docs/usage-log.md) and migration plan `docs/v2-migration-plan.md`).
 >
-> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; 92 unit tests green.
+> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona); 131 unit tests green.
 
 ---
 
@@ -29,7 +29,7 @@ Built on [DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.1.0-rc.6`) a
 | OOC rule layer (out-of-character correction) | ✅ M0 | Regex pre-step interception (LLM judge layer: M6, off by default) |
 | Smoke tool `aemeath/version` | ✅ M0 | Tool registration + session log verification |
 | Worldbook physics knowledge base (59+8 entries) | ✅ M2 | Physik I + Math I entries, dual-library isolation, hot reload, `retrieve_worldbook` tool |
-| Layered memory L1/L2/L3 + gatekeeper | ✅ M3 | Rule-first + LLM judge, BM25 dedup, conflict supersede, capacity eviction with user-profile sink, HTTP admin endpoint |
+| Layered memory L1/L2/L3 + gatekeeper (Cyrene-inspired) | ✅ 2026-08 | Rule-first + LLM judge, BM25 dedup, typed conflict (preference_evolution / direct_conflict), user-fact write-gate, activation-scored 3-state lifecycle (Active/Dormant/Archived), mood observer + relationship cue, HTTP admin endpoint |
 | Lecture retrieval + Altklausur benchmark | ✅ M4 | SQLite FTS5 BM25 (Chinese bigram), 6 metrics, headless runner |
 | Solving workflow (SymPy verification) | ✅ M6 | Plan → execute → ✅/❌ verify → conclusion + source; honest degradation on tool failure |
 | Frontend overhaul + desktop shell | ✅ M5 | Forced light theme, brand layer, hero + role cards, quick settings, workspace picker, memory panel, TTS button, Electron shell (`app/`) |
@@ -129,13 +129,13 @@ electron-app/        # v1 (frozen, tag v1.0; migrated files removed, shell refer
 ### Testing
 
 ```bash
-npm test -w @aemeath/dsh-plugin-common       # 8  (OOC rule layer)
+npm test -w @aemeath/dsh-plugin-common       # 15 (OOC rule layer + persona craft/runtime/execution)
 npm test -w @aemeath/dsh-plugin-worldbook    # 10 (trigger/order/chain/token budget)
-npm test -w @aemeath/dsh-plugin-memory       # 48 (gatekeeper/BM25-conflict/engine/L1 buffer)
+npm test -w @aemeath/dsh-plugin-memory       # 80 (gatekeeper/BM25-conflict/engine/L1 buffer + write-gate/typed-conflict/mood/relationship/DMAE-activation)
 npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
-# Total: 92 unit tests (all green)
+# Total: 131 unit tests (all green)
 ```
 
 ### Roadmap (next)
@@ -167,7 +167,7 @@ npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary
 | OOC 规则层（越界纠偏） | ✅ M0 | pre-step 正则拦截（LLM 判定层：M6，默认关） |
 | 冒烟工具 aemeath/version | ✅ M0 | 工具注册 + 会话日志验证 |
 | Worldbook 物理知识库（59+8 条） | ✅ M2 | Physik I + Math I 双馆隔离、热重载、retrieve_worldbook 工具 |
-| 分层记忆 L1/L2/L3 + 守门员 | ✅ M3 | 规则层优先 + LLM 判定，BM25 查重、冲突 supersede、容量淘汰前沉淀画像、HTTP 管理端点 |
+| 分层记忆 L1/L2/L3 + 守门员（借 Cyrene 思想） | ✅ 2026-08 | 规则层优先 + LLM 判定，BM25 查重、typed 冲突（偏好演化/直接冲突）、用户事实写入门禁、激活分三态生命周期（Active/Dormant/Archived）、情绪观察器 + 关系线索、HTTP 管理端点 |
 | 讲义检索 + Altklausur 基准 | ✅ M4 | SQLite FTS5 BM25（中文 bigram），六指标，headless 驱动 |
 | 解题工作流（SymPy 验证） | ✅ M6 | 计划→执行→✅/❌ 验证标记→结论+来源；工具故障诚实降级 |
 | 前端改造 + 桌宠壳 | ✅ M5 | 强制亮色、品牌层、hero + 角色卡、快速设置、工作区选择、记忆面板、TTS 按钮、Electron 壳（app/） |
@@ -267,13 +267,13 @@ electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留�
 ### 测试
 
 ```bash
-npm test -w @aemeath/dsh-plugin-common       # 8  （OOC 规则层）
+npm test -w @aemeath/dsh-plugin-common       # 15 （OOC 规则层 + 人格 craft/runtime/execution）
 npm test -w @aemeath/dsh-plugin-worldbook    # 10 （触发/排序/chain 防环/token 预算）
-npm test -w @aemeath/dsh-plugin-memory       # 48 （守门员/BM25 冲突/引擎/L1 缓冲）
+npm test -w @aemeath/dsh-plugin-memory       # 80 （守门员/BM25 冲突/引擎/L1 缓冲 + 写门/typed 冲突/情绪/关系/DMAE 激活）
 npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
-# 合计：92 项单测（全绿）
+# 合计：131 项单测（全绿）
 ```
 
 ### 下一步
