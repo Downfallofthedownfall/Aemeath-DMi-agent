@@ -18,6 +18,7 @@ import { registerWorkspaceSelector } from './workspace-selector.tsx';
 import { registerWorkspaceBootstrap } from './bootstrap.ts';
 import { registerCharacterStatus } from './status.tsx';
 import { registerWorkflowTodo } from './workflow-todo.tsx';
+import { registerComposerCards } from './composer-cards.tsx';
 import { registerModeSwitch } from './mode-switch.tsx';
 import { injectFluentStyles } from './styles/fluent.ts';
 import { injectDeDshStyles } from './styles/de-dsh.ts';
@@ -110,6 +111,10 @@ export function apply(ctx: ClientContext): void {
   // 2.9.6.5) 解题计划浮卡（feature #5）：当前会话 workflow.plan 步骤 + 进度，可拖动/折叠。
   //   数据只读 host /aemeath/api/memory 的 plans（workflow.plan scratch），非空且未隐藏才显示。
   registerWorkflowTodo(ctx);
+
+  // 2.9.6.6) 输入区交互卡宿主（feature #6）：composer 上方浮卡（runId 路由 + 结算清除），
+  //   当前真实信号 = 计划确认卡（复用 /aemeath/api/memory plans；动作仅结算/隐藏）。
+  registerComposerCards(ctx);
 
   // 2.9.7) 会话顶栏 · 分段角色切换（ModeSwitch 芯片：与 hero/quick-settings 共用 role face，
   //   保持同步，不冲突；点击 → role.set → agent-presets.default，镜像到 localStorage）

@@ -194,6 +194,14 @@ export const zh = {
   'workflowtodo.drag': '拖动',
   'workflowtodo.progress': '已完成 {completed}/{total}',
 
+  // —— 输入区交互卡宿主（composer-cards.tsx，feature #6）——
+  'composercards.plan.title': '解题计划已生成',
+  'composercards.plan.desc': '以下是解题计划，确认后开始执行。',
+  'composercards.plan.approve': '确认',
+  'composercards.plan.rerun': '重跑',
+  'composercards.plan.dismiss': '忽略',
+  'composercards.plan.steps': '共 {n} 步',
+
   // —— 分段角色切换（mode-switch.tsx，feat #3）——
   'modeswitch.aria': '切换角色',
 
@@ -398,6 +406,14 @@ export const en: Record<AemeathKey, string> = {
   'workflowtodo.hide': 'Hide',
   'workflowtodo.drag': 'Drag',
   'workflowtodo.progress': '{completed}/{total} done',
+
+  // —— In-composer interaction card host (composer-cards.tsx, feat #6)——
+  'composercards.plan.title': 'Solving plan ready',
+  'composercards.plan.desc': 'Here is the solving plan; confirm to start execution.',
+  'composercards.plan.approve': 'Approve',
+  'composercards.plan.rerun': 'Rerun',
+  'composercards.plan.dismiss': 'Dismiss',
+  'composercards.plan.steps': '{n} steps',
 
   // —— Segmented role switch (mode-switch.tsx, feat #3)——
   'modeswitch.aria': 'Switch role',
