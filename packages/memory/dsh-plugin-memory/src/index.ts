@@ -36,7 +36,7 @@ import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-credentials';
 import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, writeGate, classifyConflict, type Category, type WriteGateVerdict, type ConflictDecision, type ConflictType } from './gatekeeper.js';
 import { search as bm25Search, overlapScore } from './bm25.js';
-import { selectEviction, suggestProfileFacts } from './engine.js';
+import { selectEviction, suggestProfileFacts, computeActivation, classifyActivation, afterRecallActivation, ACTIVATION_DEFAULT, ACTIVATION_ACTIVE_THRESHOLD } from './engine.js';
 import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
 import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, relationshipRecordSchema, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn, type RelationshipRecord } from './types.js';
 import { MemoryService } from './service.js';
@@ -309,7 +309,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const enforceCapacity = async (scope: 'mode' | 'global', capacity: number): Promise<void> => {
     const candidates = memoryService
       .list()
-      .map(({ key, rec }) => ({ id: key, importance: rec.importance, lastAccess: rec.last_access, scope: rec.scope, status: rec.status }));
+      .map(({ key, rec }) => ({ id: key, importance: rec.importance, lastAccess: rec.last_access, scope: rec.scope, status: rec.status, activation: rec.activation }));
     const evict = selectEviction(candidates, scope, capacity, Date.now());
     if (!evict.length) return;
     // L3（global）淘汰前先沉淀稳定画像；L2（mode）无 user_fact，跳过
@@ -791,7 +791,14 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     if (!top.length) return decision;
 
     for (const { key, rec } of top) {
-      void memories.update(key, (cur) => ({ ...cur, last_access: now })).catch(() => undefined);
+      // 借 Cyrene wake-on-recall：召回即把 last_access 推到 now（近因变满），
+      // 叠满命中加成抬高激活值（衰减抵抗），并把 archived 唤醒回 active。
+      void memories
+        .update(key, (cur) => {
+          const wake = afterRecallActivation({ importance: cur.importance, activation: cur.activation ?? ACTIVATION_DEFAULT }, now);
+          return { ...cur, last_access: now, activation: wake.activation, status: wake.status };
+        })
+        .catch(() => undefined);
     }
 
     const block = ['## 关于用户的记忆（第一人称）', ...top.map(({ rec }) => `- [${rec.category}|imp=${rec.importance}|${rec.scope}] ${rec.content}`)].join('\n');
@@ -841,10 +848,17 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     const now = Date.now();
     for (const { key, rec } of memoryService.list()) {
       if (now - rec.last_access > decayDays * 24 * 3600 * 1000) {
-        const next = Math.max(0, rec.importance - 10);
+        // 借 Cyrene 激活衰减抵抗：按当前信号算激活值——
+        // 高激活（重要且未完全陈旧）→ 温和衰减（不动 importance，保持 active）；
+        // 否则（陈旧低激活）→ -10 importance + 按激活值落三态（dormant/archived）。
+        const lifeAct = computeActivation({ importance: rec.importance, lastAccess: rec.last_access, now });
+        const resist = lifeAct >= ACTIVATION_ACTIVE_THRESHOLD;
+        const next = resist ? rec.importance : Math.max(0, rec.importance - 10);
+        const nextActivation = resist ? lifeAct : computeActivation({ importance: next, lastAccess: rec.last_access, now });
+        const nextStatus = resist ? 'active' : classifyActivation(nextActivation);
         void memories
-          .update(key, (cur) => ({ ...cur, importance: next, status: next < 30 ? 'dormant' : cur.status }))
-          .then(() => auditWrite('decay', key, `importance ${rec.importance}→${next}`))
+          .update(key, (cur) => ({ ...cur, importance: next, activation: nextActivation, status: nextStatus }))
+          .then(() => auditWrite('decay', key, `importance ${rec.importance}→${next} activation→${nextActivation} status→${nextStatus}`))
           .catch(() => undefined);
       }
     }
@@ -860,7 +874,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         void flushStaleL1(sid, `最后更新 ${Math.round((now - lastTs) / 86400000)} 天前`);
       }
     }
-    // 陈旧行硬清理：dormant（衰减/supersede）或已删（容量淘汰/用户删除）的行
+    // 陈旧行硬清理：dormant/archived（衰减/supersede/三态降级）或已删（容量淘汰/用户删除）的行
     // 距上次访问超过宽限期（decayDays + 30 天）后彻底删除——这些行不再参与召回，
     // 只占存储并拖慢 list/stats/检索与每 6h 遍历（此前的实现让它们永久驻留）。
     // 例外保护：user_fact 且未被取代的保留（画像沉淀每轮已抄录其要点，但此处
@@ -869,7 +883,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     const purgeCutoff = now - (decayDays + PURGE_GRACE_DAYS) * 24 * 3600 * 1000;
     for (const [key, rec] of memories.entries()) {
       if (rec.last_access >= purgeCutoff) continue;
-      const isGarbage = rec.deleted === true || (rec.status === 'dormant' && !(rec.category === 'user_fact' && !rec.superseded_by));
+      const isGarbage = rec.deleted === true || ((rec.status === 'dormant' || rec.status === 'archived') && !(rec.category === 'user_fact' && !rec.superseded_by));
       if (!isGarbage) continue;
       void memories
         .delete(key)
@@ -879,7 +893,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     void promoteProfileFacts();
   }, 6 * 3600 * 1000);
   if (decayTimer.unref) decayTimer.unref();
-  log(`衰减已启用（${decayDays} 天未访问 -10 importance，每 6h 检查）`);
+  log(`衰减已启用（${decayDays} 天未访问：高激活抵抗衰减，其余 -10 importance + 按激活值落三态，每 6h 检查）`);
 
   // ---- /memory 命令 ----
   ctx.commands.register({
@@ -936,7 +950,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       if (cmd === 'stats') {
         const s = memoryService.stats();
         return ok(
-          `记忆统计：active=${s.active} dormant=${s.dormant} 按角色=${Object.entries(s.byPreset).map(([k, v]) => `${k}:${v}`).join(' ')} 按层=${Object.entries(s.byScope).map(([k, v]) => `${k}:${v}`).join(' ')} L1缓冲=${s.l1} 知识层=${Object.entries(s.knowledge).map(([k, v]) => `${k}:${v}`).join(' ')}`,
+          `记忆统计：active=${s.active} dormant=${s.dormant} archived=${s.archived} 按角色=${Object.entries(s.byPreset).map(([k, v]) => `${k}:${v}`).join(' ')} 按层=${Object.entries(s.byScope).map(([k, v]) => `${k}:${v}`).join(' ')} L1缓冲=${s.l1} 知识层=${Object.entries(s.knowledge).map(([k, v]) => `${k}:${v}`).join(' ')}`,
         );
       }
       return ok('用法: /memory list | stats | delete <id> | profile | scratch <sessionId> | l1 | knowledge [pending|accept <id>|reject <id>]');

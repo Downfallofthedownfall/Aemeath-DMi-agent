@@ -47,7 +47,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs"
+    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs"
   },
   "license": "MIT",
   "peerDependencies": {

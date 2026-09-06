@@ -13,6 +13,7 @@ import type { KvTable } from '@deepseek-ai/dsh-storage-domain';
 import { search as bm25Search } from './bm25.js';
 import { appendL1, removeL1Turns, shouldTriggerL1 } from './layers.js';
 import { buildRelationshipCue } from './mood.js';
+import { computeActivation, activationOf, ACTIVATION_DEFAULT, type LifecycleStatus } from './engine.js';
 import type { MemoryRecord, AuditRecord, KnowledgeRecord, UserProfile, RelationshipRecord, Category, L1Turn } from './types.js';
 
 export interface MemoryServiceDeps {
@@ -39,7 +40,8 @@ export interface MemorySearchResult {
   content: string;
   category: Category;
   importance: number;
-  status: 'active' | 'dormant';
+  activation: number;
+  status: LifecycleStatus;
 }
 
 export interface MemorySaveInput {
@@ -97,11 +99,17 @@ export class MemoryService extends Service {
       .map(({ key, rec }) => toResult(key, rec));
   }
 
-  /** 按 preset 召回（L2 mode + L3 global），供 pre-step 注入。 */
+  /**
+   * 按 preset 召回（L2 mode + L3 global），供 pre-step 注入。
+   * 借 Cyrene：按激活值降序（高激活优先），池含 active + archived——
+   * archived（未超期归档）也参与召回并被"唤醒"回 active（由调用方写回激活/状态）。
+   * dormant 不参与召回（保持原语义）。
+   */
   recallForPreset(preset: string, topK: number): Array<{ key: string; rec: MemoryRecord }> {
+    const now = Date.now();
     return this.allActive()
-      .filter(({ rec }) => rec.status === 'active' && (rec.scope === 'global' || rec.preset === preset))
-      .sort((a, b) => b.rec.importance - a.rec.importance)
+      .filter(({ rec }) => (rec.status === 'active' || rec.status === 'archived') && (rec.scope === 'global' || rec.preset === preset))
+      .sort((a, b) => actOf(b.rec, now) - actOf(a.rec, now) || b.rec.importance - a.rec.importance)
       .slice(0, topK);
   }
 
@@ -113,17 +121,22 @@ export class MemoryService extends Service {
   /** 写入一条记忆（守门员已判定后调用；scope 支持 mode/global）。 */
   async save(input: MemorySaveInput): Promise<string> {
     const id = randomUUID();
+    const now = Date.now();
+    const importance = input.importance ?? 50;
+    // 借 Cyrene：新记忆激活值按现有信号现算（importance intrinsic + 满近因），缺省 50 兜底
+    const activation = computeActivation({ importance, lastAccess: now, now });
     const rec: MemoryRecord = {
       id,
       scope: input.scope ?? 'mode',
       preset: input.preset,
       content: input.content,
       category: input.category ?? 'session_summary',
-      importance: input.importance ?? 50,
+      importance,
       confidence: input.confidence ?? 0.7,
       source_mode: input.source_mode ?? input.preset,
-      created_at: Date.now(),
-      last_access: Date.now(),
+      created_at: now,
+      last_access: now,
+      activation,
       status: 'active',
     };
     await this.deps.memories.put(id, rec);
@@ -146,10 +159,11 @@ export class MemoryService extends Service {
   }
 
   /** 统计（/memory stats 与面板）。 */
-  stats(): { active: number; dormant: number; byPreset: Record<string, number>; byScope: Record<string, number>; l1: number; knowledge: Record<string, number> } {
-    const out = { active: 0, dormant: 0, byPreset: {} as Record<string, number>, byScope: {} as Record<string, number>, l1: 0, knowledge: { pending: 0, accepted: 0, rejected: 0 } };
+  stats(): { active: number; dormant: number; archived: number; byPreset: Record<string, number>; byScope: Record<string, number>; l1: number; knowledge: Record<string, number> } {
+    const out = { active: 0, dormant: 0, archived: 0, byPreset: {} as Record<string, number>, byScope: {} as Record<string, number>, l1: 0, knowledge: { pending: 0, accepted: 0, rejected: 0 } };
     for (const { rec } of this.allActive()) {
       if (rec.status === 'active') out.active++;
+      else if (rec.status === 'archived') out.archived++;
       else out.dormant++;
       out.byPreset[rec.preset] = (out.byPreset[rec.preset] ?? 0) + 1;
       out.byScope[rec.scope] = (out.byScope[rec.scope] ?? 0) + 1;
@@ -315,6 +329,10 @@ export class MemoryService extends Service {
   }
 }
 
+function actOf(rec: MemoryRecord, now: number): number {
+  return activationOf({ importance: rec.importance, lastAccess: rec.last_access, activation: rec.activation }, now);
+}
+
 function toResult(key: string, rec: MemoryRecord): MemorySearchResult {
   return {
     id: key,
@@ -323,6 +341,7 @@ function toResult(key: string, rec: MemoryRecord): MemorySearchResult {
     content: rec.content,
     category: rec.category,
     importance: rec.importance,
+    activation: rec.activation ?? ACTIVATION_DEFAULT,
     status: rec.status,
   };
 }

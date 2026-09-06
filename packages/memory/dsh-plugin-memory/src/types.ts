@@ -15,7 +15,12 @@ export const memoryRecordSchema = z.object({
   source_mode: z.string(),
   created_at: z.number(),
   last_access: z.number(),
-  status: z.enum(['active', 'dormant']),
+  // 借 Cyrene L2 激活得分缓存的"partial DMAE 记忆生命周期"思想：给每条记录一个
+  // activation（默认 50），驱动三态分类（active/dormant/archived）。字段名向后兼容。
+  activation: z.number().default(50),
+  // 三态生命周期状态：active（活跃召回）/ dormant（衰减降级）/ archived（归档）
+  // —— 在原有 active|dormant 基础上扩展 archived（激活分类：≥60 active，30–59 dormant，<30 archived）。
+  status: z.enum(['active', 'dormant', 'archived']),
   superseded_by: z.string().nullable().optional(),
   deleted: z.boolean().nullable().optional(),
 });
