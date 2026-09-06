@@ -41,12 +41,13 @@
     "lib/layers.js",
     "lib/types.js",
     "lib/service.js",
+    "lib/mood.js",
     "lib/*.d.ts",
     "src"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs"
+    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs"
   },
   "license": "MIT",
   "peerDependencies": {

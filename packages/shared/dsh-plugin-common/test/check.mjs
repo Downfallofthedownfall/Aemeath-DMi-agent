@@ -4,7 +4,7 @@
 // 注：用 node 直接执行（node:test 的子进程 spawn 在沙箱下不可用）
 // ============================================================
 import assert from 'node:assert/strict';
-import { checkOoc, extractText, runtimeContextDirective, executionDirective } from '../lib/index.js';
+import { checkOoc, extractText, runtimeContextDirective, executionDirective, relationshipCueFor } from '../lib/index.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -76,6 +76,53 @@ t('executionDirective 非空且为执行指令', () => {
   assert.ok(d.length > 0);
   assert.match(d, /任务正确/);
   assert.match(d, /工具/);
+});
+
+// —— A4 relationship cue 注入（借 Cyrene 想法；返回给 runtime-context 段） ——
+t('runtimeContextDirective：无 cue 时保持占位且不含线索块', () => {
+  const zh = runtimeContextDirective('zh');
+  assert.match(zh, /上下文/);
+  assert.ok(!zh.includes('【近期关系线索】'));
+  assert.equal(runtimeContextDirective('zh', ''), zh);
+});
+
+t('runtimeContextDirective：带 cue 时把线索块一并注入', () => {
+  const cue = '【近期关系线索】\n- 当前状态：难过';
+  const zh = runtimeContextDirective('zh', cue);
+  assert.ok(zh.includes('【近期关系线索】'));
+  assert.match(zh, /当前状态：难过/);
+  assert.match(zh, /上下文/); // 占位说明仍在
+  const en = runtimeContextDirective('en', cue);
+  assert.ok(en.includes('【近期关系线索】'));
+  assert.match(en, /Runtime context/);
+});
+
+// —— relationshipCueFor：记忆插件缺失/异常时安全回退 ''（绝不抛错） ——
+t('relationshipCueFor：无 memory 服务 → 空串', () => {
+  assert.equal(relationshipCueFor({}, 'physicist'), '');
+  assert.equal(relationshipCueFor({ reflect: {} }, 'aemeath'), '');
+});
+
+t('relationshipCueFor：memory 提供 recallRelationshipCue → 返回 cue', () => {
+  const ctx = {
+    reflect: {
+      get: () => ({ recallRelationshipCue: (preset) => (preset === 'physicist' ? '【近期关系线索】ok' : '') }),
+    },
+  };
+  assert.equal(relationshipCueFor(ctx, 'physicist'), '【近期关系线索】ok');
+  assert.equal(relationshipCueFor(ctx, 'other'), '');
+});
+
+t('relationshipCueFor：reflect.get 抛错 → 回退空串（不抛给调用方）', () => {
+  const ctx = {
+    reflect: {
+      get: () => {
+        throw new Error('boom');
+      },
+    },
+  };
+  assert.doesNotThrow(() => relationshipCueFor(ctx, 'physicist'));
+  assert.equal(relationshipCueFor(ctx, 'physicist'), '');
 });
 
 console.log(`\n[ooc-check] ${passed} 项断言全部通过`);

@@ -68,4 +68,21 @@ export const knowledgeRecordSchema = z.object({
 });
 export type KnowledgeRecord = z.infer<typeof knowledgeRecordSchema>;
 
+/**
+ * 关系/情绪上下文记录（A3 mood observer + A4 relationship cue，借 Cyrene
+ * 桌面伴侣的"mood observer + relationship context"思路，只取思想不复制代码）。
+ * 按 preset（角色/人格）各存一份：mood 为平滑后的角色当前情绪标签，signal 为
+ * 关系信号，preference 为用户偏好，nextCareCue 为下一轮"照顾提示"。
+ * 供 ctx.memory.recallRelationshipCue() 生成【近期关系线索】注入块。
+ */
+export const relationshipRecordSchema = z.object({
+  mood: z.string(),
+  moodTs: z.number(),
+  signal: z.string(),
+  preference: z.string(),
+  nextCareCue: z.string(),
+  updatedTs: z.number(),
+});
+export type RelationshipRecord = z.infer<typeof relationshipRecordSchema>;
+
 export type { Category };

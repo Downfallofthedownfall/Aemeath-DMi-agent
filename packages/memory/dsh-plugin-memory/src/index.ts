@@ -38,8 +38,9 @@ import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, wri
 import { search as bm25Search, overlapScore } from './bm25.js';
 import { selectEviction, suggestProfileFacts } from './engine.js';
 import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
-import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn } from './types.js';
+import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, relationshipRecordSchema, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn, type RelationshipRecord } from './types.js';
 import { MemoryService } from './service.js';
+import { classifyMoodStable, majorityLabel, pushMoodWindow, relationshipSignalOf, nextCareCueOf, moodClassifierPrompt, MOOD_WINDOW_CAP } from './mood.js';
 
 export const name = 'aemeath-memory';
 export const inject = ['storageDomain', 'commands', 'credentials', 'settings'];
@@ -116,6 +117,8 @@ const MEMORY_DOMAIN = defineDomain({
     audit: domainTable<string, AuditRecord>(auditRecordSchema),
     knowledge: domainTable<string, KnowledgeRecord>(knowledgeRecordSchema),
     l1: domainTable<string, L1Turn[]>(l1TurnsSchema),
+    // A3/A4（借 Cyrene 想法）：关系/情绪上下文，按 preset（角色）各存一份
+    relationship: domainTable<string, RelationshipRecord>(relationshipRecordSchema),
   },
 });
 
@@ -197,6 +200,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const audit = domain.table('audit') as unknown as KvTable<string, AuditRecord>;
   const knowledge = domain.table('knowledge') as unknown as KvTable<string, KnowledgeRecord>;
   const l1 = domain.table('l1') as unknown as KvTable<string, L1Turn[]>;
+  const relationship = domain.table('relationship') as unknown as KvTable<string, RelationshipRecord>;
   const profile = domain.global as unknown as { get(): UserProfile; set(v: UserProfile): Promise<void> };
   log(`存储域 aemeath_memory 已打开（memories=${memories.size} 条历史记录, knowledge=${knowledge.size} 条知识, L1 缓冲=${l1.size} 会话, L1 容量=${l1Capacity} 阈值=${l1Threshold} token预算=${l1MaxTokens} minBatch=${llmMinBatch}）`);
 
@@ -215,10 +219,10 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   // 既避免了 undefined 引用，也让 service 的 toWorldbook（纯手动桥接）复用同一份写入逻辑。
   const memoryService = new MemoryService(
     ctx,
-    { memories, audit, knowledge, l1, profile, auditWrite, writeWorldbook: (input) => writeWorldbookEntry(input.preset, input.content, input.topic, input.source) },
+    { memories, audit, knowledge, l1, relationship, profile, auditWrite, writeWorldbook: (input) => writeWorldbookEntry(input.preset, input.content, input.topic, input.source) },
     { capacity: l1Capacity, threshold: l1Threshold },
   );
-  log('ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch/l1/knowledge/toWorldbook）');
+  log('ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch/l1/knowledge/toWorldbook/relationshipCue）');
 
   // ---- 事实采集：缓冲每轮 (query, reply)，配对后进入 L1 分层 ----
   interface CollectedTurn { query: string; reply: string; preset: string; ts: number }
@@ -231,6 +235,17 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       const oldest = turnBuffer.keys().next().value;
       if (oldest === undefined) break;
       turnBuffer.delete(oldest);
+    }
+  };
+
+  // ---- A3 mood observer 滚动窗口（近 MOOD_WINDOW_CAP 轮观测做多数表决；按 preset 维护） ----
+  const moodWindow = new Map<string, string[]>();
+  const trimMoodWindow = (): void => {
+    // 防无界增长：淘汰最旧（Map 保持插入序，超上限删最旧一条）
+    while (moodWindow.size > 512) {
+      const oldest = moodWindow.keys().next().value;
+      if (oldest === undefined) break;
+      moodWindow.delete(oldest);
     }
   };
 
@@ -332,6 +347,10 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
    *  pending（规则拿不准）→ 进 L1 缓冲攒批 → 80% 或攒够 minBatch → LLM 总结审核（省 token）。
    */
   const processTurn = async (sid: string, turn: CollectedTurn): Promise<void> => {
+    // A3（借 Cyrene 想法）：每轮更新角色情绪（mood observer）。fire-and-forget：
+    // void 掉 await，绝不阻塞本轮；出错也只记日志，不影响记忆主流程。
+    void observeMood(sid, turn).catch((e) => warn(`情绪观察失败: ${(e as Error).message}`));
+
     const decision = decide(turn.query, turn.reply);
     switch (decision.kind) {
       case 'blocked':
@@ -688,6 +707,67 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       warn(`冲突判定 LLM 调用失败（走规则兜底）: ${(e as Error).message}`);
       return null;
     }
+  };
+
+  // ---- A3 mood observer（借 Cyrene 桌面伴侣想法：小模型读对话标角色情绪 +
+  // 平滑 + 存关系日志；只取思想不复制代码） ----
+  /** 调小模型给角色当前情绪打标签（仅在本轮表情观察时、llm.enabled && apiKey 时）。 */
+  const callMoodLlm = async (query: string, reply: string, apiKey: string, personaHint: string): Promise<string | null> => {
+    try {
+      const resp = await fetch(`${llm.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: llm.model,
+          messages: [{ role: 'user', content: moodClassifierPrompt(query, reply, personaHint) }],
+          max_tokens: 16,
+          temperature: 0.0,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!resp.ok) return null;
+      const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
+      const label = (data.choices?.[0]?.message?.content ?? '').trim().replace(/[\s。.!！，,]+$/g, '');
+      return label || null;
+    } catch (e) {
+      warn(`情绪观察 LLM 调用失败（走规则兜底）: ${(e as Error).message}`);
+      return null;
+    }
+  };
+
+  /**
+   * 情绪观察器：给定一轮 (query, reply)，分类角色当前情绪并平滑后写入关系表。
+   * LLM 启用且有 key 时优先走 LLM（失败/无 key → 确定性规则兜底 classifyMoodStable）；
+   * 平滑用近 MOOD_WINDOW_CAP 轮观测的多数表决（majorityLabel），避免单轮跳变。
+   */
+  const observeMood = async (sid: string, turn: CollectedTurn): Promise<void> => {
+    if (!runtime.enabled) return;
+    const preset = turn.preset || config.defaultPreset || 'default';
+    // 直接读表（不走 service 的 relationshipGet，避免关键名差异；二者同源）
+    const stored = relationship.get(preset);
+    const apiKey = await resolveLlmKey();
+    let label: string;
+    if (llm.enabled && apiKey) {
+      const llmLabel = await callMoodLlm(turn.query, turn.reply, apiKey, preset);
+      label = llmLabel && llmLabel.trim() ? llmLabel.trim() : classifyMoodStable(turn.query, turn.reply);
+    } else {
+      label = classifyMoodStable(turn.query, turn.reply);
+    }
+    // 平滑：seed 窗口用已存情绪（跨重启连续），再推入新标签，多数表决
+    const window = pushMoodWindow(moodWindow.get(preset) ?? (stored?.mood ? [stored.mood] : []), label);
+    const mood = majorityLabel(window);
+    moodWindow.set(preset, window);
+    trimMoodWindow();
+    const rec: RelationshipRecord = {
+      mood,
+      moodTs: Date.now(),
+      signal: relationshipSignalOf(mood),
+      preference: stored?.preference ?? '',
+      nextCareCue: nextCareCueOf(mood),
+      updatedTs: Date.now(),
+    };
+    await relationship.put(preset, rec);
+    log(`情绪观察 preset=${preset} → ${mood}（本轮${label}，${window.length}/${MOOD_WINDOW_CAP} 窗）`);
   };
 
   // ---- 召回注入（agent/pre-step，form='recall'） ----

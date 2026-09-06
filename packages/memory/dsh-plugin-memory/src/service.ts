@@ -12,13 +12,16 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain';
 import { search as bm25Search } from './bm25.js';
 import { appendL1, removeL1Turns, shouldTriggerL1 } from './layers.js';
-import type { MemoryRecord, AuditRecord, KnowledgeRecord, UserProfile, Category, L1Turn } from './types.js';
+import { buildRelationshipCue } from './mood.js';
+import type { MemoryRecord, AuditRecord, KnowledgeRecord, UserProfile, RelationshipRecord, Category, L1Turn } from './types.js';
 
 export interface MemoryServiceDeps {
   memories: KvTable<string, MemoryRecord>;
   audit: KvTable<string, AuditRecord>;
   knowledge: KvTable<string, KnowledgeRecord>;
   l1: KvTable<string, L1Turn[]>;
+  /** 关系/情绪上下文存储（A3/A4，按 preset 各存一份）。 */
+  relationship: KvTable<string, RelationshipRecord>;
   profile: { get(): UserProfile; set(v: UserProfile): Promise<void> };
   auditWrite(action: string, memoryId: string | undefined, detail: string): Promise<void>;
   /**
@@ -257,6 +260,30 @@ export class MemoryService extends Service {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
+  }
+
+  // ===== 关系/情绪 context（A3 mood observer + A4 relationship cue，借 Cyrene 想法） =====
+  /**
+   * 读取某 preset（角色/人格）的关系/情绪记录。未写入返回 undefined。
+   * key 缺省 'default'（无 preset 时的兜底键）。
+   */
+  relationshipGet(preset?: string): RelationshipRecord | undefined {
+    const key = preset && preset.trim() ? preset : 'default';
+    return this.deps.relationship.get(key);
+  }
+
+  /** 写入某 preset 的关系/情绪记录。 */
+  async relationshipSet(preset: string, rec: RelationshipRecord): Promise<void> {
+    const key = preset && preset.trim() ? preset : 'default';
+    await this.deps.relationship.put(key, rec);
+  }
+
+  /**
+   * 生成【近期关系线索】注入块文本（A4）。从存储的 mood/signal/preference/
+   * nextCareCue 组块；无内容（或未写入）→ ''。供人格插件经 ctx.memory 读取。
+   */
+  recallRelationshipCue(preset?: string): string {
+    return buildRelationshipCue(this.relationshipGet(preset));
   }
 
   // ===== L1 暂存区（scratch，会话内工作态） =====

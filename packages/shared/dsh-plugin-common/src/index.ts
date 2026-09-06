@@ -268,24 +268,29 @@ function craftDirective(locale: string): string {
 /**
  * 运行时上下文段文本（A1：稳定人格 + 动态尾巴；借 Cyrene prompt 设计的
  * stablePrefix / runtimeContext 分离思路，只取思想不复制文案）。
- * 每次 assembly 重新求值，专门承载"随回合变化"的内容——后续可填关系 /
- * 记忆 / worldbook 线索。稳定人格段（deployment:persona）保留可缓存的
- * 稳定字符串，这里只放动态尾巴，二者分离以保住 prompt-cache 命中率。
+ * 每次 assembly 重新求值，专门承载"随回合变化"的内容——A4 已接入关系线索
+ * （【近期关系线索】块，来自记忆插件 ctx.memory.recallRelationshipCue）。
+ * 稳定人格段（deployment:persona）保留可缓存的稳定字符串，这里只放动态尾巴，
+ * 二者分离以保住 prompt-cache 命中率。
+ * @param cue 可选关系线索块（A4，无则回退原占位文案）
  * locale=en → 英文；其余（含未上报）→ 中文，保证该段始终非空。
  */
-export function runtimeContextDirective(locale: string): string {
-  if (locale === 'en') {
-    return [
-      'Runtime context (rebuilt every turn; filled by relationship / memory / worldbook cues):',
-      '- This block is re-evaluated on each assembly — only this-turn-scoped, ephemeral facts go here.',
-      '- Stable persona traits stay in the cached persona section above, not here.',
-    ].join('\n');
-  }
-  return [
-    '当前上下文（每轮重新求值；由关系 / 记忆 / worldbook 线索填充）：',
-    '- 本段每次组装时重建——只放"本回合才成立"的临时信息。',
-    '- 稳定的人格特征不写在这里，已由上面可缓存的人格段承载。',
-  ].join('\n');
+export function runtimeContextDirective(locale: string, cue = ''): string {
+  const base =
+    locale === 'en'
+      ? [
+          'Runtime context (rebuilt every turn; filled by relationship / memory / worldbook cues):',
+          '- This block is re-evaluated on each assembly — only this-turn-scoped, ephemeral facts go here.',
+          '- Stable persona traits stay in the cached persona section above, not here.',
+        ].join('\n')
+      : [
+          '当前上下文（每轮重新求值；由关系 / 记忆 / worldbook 线索填充）：',
+          '- 本段每次组装时重建——只放"本回合才成立"的临时信息。',
+          '- 稳定的人格特征不写在这里，已由上面可缓存的人格段承载。',
+        ].join('\n');
+  const trimmedCue = (cue || '').trim();
+  if (!trimmedCue) return base;
+  return `${base}\n\n${trimmedCue}`;
 }
 
 /**
@@ -300,6 +305,27 @@ export function executionDirective(): string {
     '- 工具参数保持中性，不带角色语气、不含人格化修辞。',
     '- 调用工具的意图与结果用简短直白的语言说明，不渲染、不卖萌。',
   ].join('\n');
+}
+
+/**
+ * A4 关系线索读取（借 Cyrene"relationship context"想法）：从记忆插件的
+ * ctx.memory 服务懒读取【近期关系线索】块文本。公共插件不 inject memory
+ * （未必存在），所以经 ctx.reflect.get('memory') 懒取，整体 try/catch 兜底：
+ * 记忆插件缺失 / 服务未提供 / 插件抛错时一律返回 ''（调用方回退占位文案），
+ * 绝不抛错、绝不产生断裂提示词。
+ */
+export function relationshipCueFor(agentCtx: unknown, preset: string): string {
+  try {
+    const memory = (agentCtx as { reflect?: { get?: (name: string, strict?: boolean) => unknown } } | undefined)?.reflect?.get?.('memory', false) as
+      | { recallRelationshipCue?: (preset?: string) => string }
+      | undefined;
+    if (!memory || typeof memory.recallRelationshipCue !== 'function') return '';
+    const cue = memory.recallRelationshipCue(preset);
+    return typeof cue === 'string' ? cue : '';
+  } catch (e) {
+    warn(`读取关系线索失败（回退占位文案）: ${(e as Error).message}`);
+    return '';
+  }
 }
 
 // ============================================================
@@ -638,12 +664,16 @@ export function apply(ctx: Context, config: CommonConfig): void {
       // deployment:persona 段的文本来自可缓存（role+locale 键）的稳定字符串，
       // 每次 assembly 只是命中缓存返回同一串，唯一失效是角色切换/locale 变化
       // （cache-miss 重读文件）。aemeath:runtime-context（order=3）则每次
-      // assembly 重新求值，专放随回合变化的动态上下文（关系/记忆/worldbook
-      // 线索，现为占位），与稳定人格分离以保住 prompt-cache 命中率。
+      // assembly 重新求值，专放随回合变化的动态上下文——A4 已接入记忆插件
+      // 的【近期关系线索】块（relationshipCueFor 懒读 ctx.memory；记忆插件
+      // 缺失/异常时回退占位文案），与稳定人格分离以保住 prompt-cache 命中率。
       agent.ctx.systemPrompt.section({
         name: 'aemeath:runtime-context',
         order: 3,
-        text: () => runtimeContextDirective(uiLocale(agent.ctx)),
+        text: () => {
+          const preset = resolveSessionPreset(agent.session as never) ?? config.defaultPreset ?? '';
+          return runtimeContextDirective(uiLocale(agent.ctx), relationshipCueFor(agent.ctx, preset));
+        },
       });
       // A2（借 Cyrene cyrene_harness.md 的 Execution Persona 思路）：紧凑执行人格，
       // 只约束工具调用循环的风格——任务正确 > 清晰 > 人格，不让个性泄漏进工具调用/参数。
