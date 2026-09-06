@@ -16,6 +16,7 @@ import { registerTts } from './tts.tsx';
 import { registerQuickSettings } from './quick-settings.tsx';
 import { registerWorkspaceSelector } from './workspace-selector.tsx';
 import { registerWorkspaceBootstrap } from './bootstrap.ts';
+import { registerCharacterStatus } from './status.tsx';
 import { injectFluentStyles } from './styles/fluent.ts';
 import { injectDeDshStyles } from './styles/de-dsh.ts';
 import { createFaces } from './faces.ts';
@@ -96,6 +97,14 @@ export function apply(ctx: ClientContext): void {
 
   // 2.9.5) 无工作区自动兜底：零工作区时挂项目内空文件夹为工作区，打开即聊
   registerWorkspaceBootstrap(ctx);
+
+  // 2.9.6) 角色状态 pill（会话顶栏：头像+名字+状态徽章）+ 浮动状态簇（右下角）
+  //   状态信号：思考中=useSession.running；朗读中=tts speak；其余=陪伴中（见 status.tsx）
+  registerCharacterStatus(ctx, () => ({
+    role: faces.role,
+    scopes: Object.fromEntries(faces.scopes),
+  }));
+
   // 3) 设置页（P3 瘦身：功能开关 / 记忆管理 / API key；角色已前移主界面）
   registerSettingsSection(ctx, {
     scopes: () => Object.fromEntries(faces.scopes),

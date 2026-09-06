@@ -176,14 +176,16 @@ function notifySpeaking(): void {
   for (const l of speakingListeners) l();
 }
 
-function subscribeSpeaking(l: () => void): () => void {
+/** 订阅朗读状态（status.tsx 复用；朗读中 → 角色状态「朗读中」）。 */
+export function subscribeSpeaking(l: () => void): () => void {
   speakingListeners.add(l);
   return () => {
     speakingListeners.delete(l);
   };
 }
 
-function getSpeaking(): boolean {
+/** 读取当前朗读状态（status.tsx 复用）。 */
+export function getSpeaking(): boolean {
   return speakingFlag;
 }
 

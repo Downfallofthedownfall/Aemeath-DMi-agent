@@ -166,6 +166,11 @@ export const zh = {
   'workspace.title': '工作区：{label}',
   'workspace.error.fallback': '无法启动新对话（兜底工作区不可用）；请选择一个工作区或文件夹。',
 
+  // —— 角色状态（status.tsx）——
+  'status.idle': '陪伴中',
+  'status.thinking': '思考中',
+  'status.speaking': '朗读中',
+
   // —— host API 错误（index.ts 返回、前端 toast 显示）——
   'errors.tts.disabled': '语音朗读已关闭（设置 → 语音朗读）',
   'errors.tts.textTooLong': 'text 过长（{n} 字，上限 500）',
@@ -339,6 +344,11 @@ export const en: Record<AemeathKey, string> = {
   'workspace.title.none': 'No workspace · click to choose one',
   'workspace.title': 'Workspace: {label}',
   'workspace.error.fallback': 'Could not start a new conversation (fallback workspace unavailable); please choose a workspace or folder.',
+
+  // —— Character status (status.tsx)——
+  'status.idle': 'Companion',
+  'status.thinking': 'Thinking',
+  'status.speaking': 'Reading aloud',
 
   'errors.tts.disabled': 'Text-to-speech is disabled (Settings → Text-to-speech)',
   'errors.tts.textTooLong': 'Text too long ({n} chars, limit 500)',
