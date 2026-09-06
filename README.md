@@ -4,7 +4,7 @@
 >
 > **架构 / Architecture**: v2 is rebuilt on the DeepSeek Harness (dsh) plugin system. **The platform is just the engine — the moat is the physics content track**: Worldbook knowledge base, exam benchmark, weekly usage log (see [docs/usage-log.md](docs/usage-log.md) and migration plan `docs/v2-migration-plan.md`).
 >
-> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona); 131 unit tests green.
+> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona); frontend enhanced (Cyrene borrow: tabbed settings+appearance, status pill, mode chips, tiered memory panel, floating plan todo card, in-composer cards); TTS upgraded to IndexTTS-2.5; 131 unit tests green.
 
 ---
 
@@ -32,7 +32,7 @@ Built on [DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.1.0-rc.6`) a
 | Layered memory L1/L2/L3 + gatekeeper (Cyrene-inspired) | ✅ 2026-08 | Rule-first + LLM judge, BM25 dedup, typed conflict (preference_evolution / direct_conflict), user-fact write-gate, activation-scored 3-state lifecycle (Active/Dormant/Archived), mood observer + relationship cue, HTTP admin endpoint |
 | Lecture retrieval + Altklausur benchmark | ✅ M4 | SQLite FTS5 BM25 (Chinese bigram), 6 metrics, headless runner |
 | Solving workflow (SymPy verification) | ✅ M6 | Plan → execute → ✅/❌ verify → conclusion + source; honest degradation on tool failure |
-| Frontend overhaul + desktop shell | ✅ M5 | Forced light theme, brand layer, hero + role cards, quick settings, workspace picker, memory panel, TTS button, Electron shell (`app/`) |
+| Frontend overhaul + desktop shell | ✅ M5→2026-08 | Forced light theme, brand layer, hero + role cards, quick settings, workspace picker, memory panel, TTS button, Electron shell; Cyrene-borrowed: tabbed settings + appearance, character status pill, mode-switch chips, tiered memory panel, floating plan todo card, in-composer interaction cards; TTS IndexTTS-2.5 |
 | i18n (zh/en) | ✅ 2026-08 | UI strings via locale service; personas per locale (`*.en.md`) |
 | Curriculum plugin (Modulhandbuch) | ✅ 2026-08 | Semester module summary injection + `curriculum_query` tool, WiSe/SoSe detection, gatekeeper link |
 | Security hardening | ✅ 2026-08 | S1–S5 (sympy sandbox / clipboard / CORS / memory-http token) + C1–C26 (build / config / frontend / python / electron) |
@@ -102,7 +102,7 @@ cd app && npm install
 | **DeepSeek Harness (dsh) rc.6** | Agent loop, tool pipeline, session event sourcing, approval, plugin system (the engine) |
 | DeepSeek API | Chat model (deepseek-v4-flash) |
 | TypeScript (plugins) · Cordis | dsh plugin monorepo (`packages/`) |
-| Python microservices (MCP) | SymPy compute / YOLO-OCR vision / IndexTTS2 TTS / keyboard-mouse control, wired via dsh `mcp-client` (`packages/py-services/`) |
+| Python microservices (MCP) | SymPy compute / YOLO-OCR vision / IndexTTS-2.5 TTS / keyboard-mouse control, wired via dsh `mcp-client` (`packages/py-services/`) |
 | SQLite FTS5 | Lecture retrieval (BM25) |
 | Curriculum plugin | Modulhandbuch course catalog → semester summary injection + module query (`packages/curriculum/`) |
 | Electron (41) | Desktop pet shell (managed dsh + branded window, packaging via electron-builder) |
@@ -170,7 +170,7 @@ npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary
 | 分层记忆 L1/L2/L3 + 守门员（借 Cyrene 思想） | ✅ 2026-08 | 规则层优先 + LLM 判定，BM25 查重、typed 冲突（偏好演化/直接冲突）、用户事实写入门禁、激活分三态生命周期（Active/Dormant/Archived）、情绪观察器 + 关系线索、HTTP 管理端点 |
 | 讲义检索 + Altklausur 基准 | ✅ M4 | SQLite FTS5 BM25（中文 bigram），六指标，headless 驱动 |
 | 解题工作流（SymPy 验证） | ✅ M6 | 计划→执行→✅/❌ 验证标记→结论+来源；工具故障诚实降级 |
-| 前端改造 + 桌宠壳 | ✅ M5 | 强制亮色、品牌层、hero + 角色卡、快速设置、工作区选择、记忆面板、TTS 按钮、Electron 壳（app/） |
+| 前端改造 + 桌宠壳 | ✅ M5→2026-08 | 强制亮色、品牌层、hero + 角色卡、快速设置、工作区选择、记忆面板、TTS 按钮、Electron 壳；借 Cyrene：设置分区+外观、角色状态 pill、模式切换 chips、分层记忆面板、悬浮计划待办卡、输入框交互卡；TTS 升级 IndexTTS-2.5 |
 | i18n（中/英） | ✅ 2026-08 | UI 文案走 locale 服务；人格按 locale 加载（`*.en.md`） |
 | curriculum 课程插件（Modulhandbuch） | ✅ 2026-08 | 学期模块摘要常驻注入 + curriculum_query 工具，WiSe/SoSe 学期判断，gatekeeper 联动 |
 | 安全加固 | ✅ 2026-08 | S1–S5（sympy 沙箱/剪贴板/CORS/记忆端点 token）+ C1–C26（构建/配置/前端/Python/Electron） |
@@ -240,7 +240,7 @@ cd app && npm install
 | **DeepSeek Harness（dsh）rc.6** | agent loop、工具流水线、会话事件溯源、审批、插件体系（引擎） |
 | DeepSeek API | 对话模型（deepseek-v4-flash） |
 | TypeScript（插件）· Cordis | dsh 插件 monorepo（`packages/`） |
-| Python 微服务（MCP） | SymPy 计算 / YOLO-OCR 视觉 / IndexTTS2 语音 / 键鼠控制，经 dsh `mcp-client` 接入（`packages/py-services/`） |
+| Python 微服务（MCP） | SymPy 计算 / YOLO-OCR 视觉 / IndexTTS-2.5 语音 / 键鼠控制，经 dsh `mcp-client` 接入（`packages/py-services/`） |
 | SQLite FTS5 | 讲义检索（BM25） |
 | curriculum 插件 | Modulhandbuch 课程目录 → 学期摘要注入 + 模块检索（`packages/curriculum/`） |
 | Electron（41） | 桌宠壳（托管 dsh + 品牌窗口，electron-builder 打包） |
