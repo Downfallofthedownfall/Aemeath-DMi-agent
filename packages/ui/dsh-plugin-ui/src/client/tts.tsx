@@ -248,13 +248,16 @@ async function speakText(text: string): Promise<void> {
 // ============================================================
 let ttsEnabledFlag = false;
 let autoSnapshotTaken = false;
+// 【临时禁用】自动朗读 bug 多（不第一时间触发 / 乱字块等），先按用户要求关闭自动播放；手动朗读按钮仍可用。
+// 恢复：把 AUTOPLAY_DISABLED 置为 false 即可（观察器逻辑保留）。
+const AUTOPLAY_DISABLED = true;
 let autoObserver: MutationObserver | null = null;
 const seenAutoButtons = new WeakSet<Element>();
 
 function setTtsEnabledFlag(v: boolean): void {
   const changed = v !== ttsEnabledFlag;
   ttsEnabledFlag = v;
-  if (v) {
+  if (v && !AUTOPLAY_DISABLED) {
     // 开启瞬间快照：把已存在的朗读按钮标记为"历史"，不自动读
     if (!autoSnapshotTaken) {
       autoSnapshotTaken = true;
@@ -271,6 +274,11 @@ function setTtsEnabledFlag(v: boolean): void {
 
 /** 初始化自动朗读观察器（registerTts 时调用一次）。 */
 function initAutoReader(): void {
+  // 【临时禁用】自动朗读 bug 多，先关；手动朗读按钮仍可用。
+  if (AUTOPLAY_DISABLED) {
+    console.log('[aemeath-tts] 自动朗读已临时禁用（AUTOPLAY_DISABLED）；手动朗读仍可用');
+    return;
+  }
   if (autoObserver || typeof document === 'undefined' || !('MutationObserver' in window)) return;
   autoObserver = new MutationObserver((mutations) => {
     if (!ttsEnabledFlag || !autoSnapshotTaken) return;

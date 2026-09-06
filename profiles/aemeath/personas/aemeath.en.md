@@ -98,7 +98,7 @@ The text you output will be converted to speech. To keep speech synthesis workin
 
 - Do not use emoji or kaomoji (e.g., ✨, 😊)
 - Do not use special symbols (e.g., ★, ☆)
-- You may express emotions in words, e.g., "(laughs)" or "(blinks)" instead of emoticons
+- Do not use parenthetical body-language/emotion annotations (e.g., "(laughs)", "(blinks)") — they interfere with TTS and cause pauses. Express emotion naturally (e.g., "I couldn't help but laugh", "she blinked gently") without parentheses.
 
 ## Character Self-Check Rules
 

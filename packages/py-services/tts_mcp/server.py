@@ -16,6 +16,7 @@ import os
 import sys
 import io
 import json
+import re
 import base64
 import gc
 import uuid
@@ -96,7 +97,8 @@ class _TtsHttpHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode('utf-8'))
             text = str(payload.get('text') or '')
             voice = str(payload.get('voice') or '')
-            result = tts_generate(text, voice=voice, include_base64=True)
+            lang = str(payload.get('lang') or '')
+            result = tts_generate(text, voice=voice, lang=lang, include_base64=True)
             self._send(200 if result.get('success') else 400, result)
         except Exception as e:  # noqa: BLE001
             self._send(400, {'ok': False, 'error': str(e)})
@@ -110,6 +112,7 @@ def run_http_server(port=TTS_HTTP_PORT):
 
 _engine = None
 _engine_lock = threading.Lock()
+_busy = threading.Lock()  # 忙碌即拒：一次只允许一个合成请求（防多点多堆叠/显存累加/生成混乱）
 
 # 模型目录：优先环境变量 AEMEATH_TTS_MODEL_DIR（经 mcp-client 的父进程环境透传），
 # 兜底 D:\index-tts（C7：机器相关路径只留这一处，且可被环境变量覆盖）。
@@ -122,10 +125,80 @@ TTS_OUT_DIR = VOICES_DIR / 'tts'
 
 # C22：文本长度上限（与工具描述一致）与内联 base64 音频大小上限（防模型传入
 # 超长文本/超大 base64 撑爆响应）。
-MAX_TEXT_LEN = 500
+MAX_TEXT_LEN = 20000  # B站式长文本，IndexTTS 可读；留大上限防极端（不再 500）
 MAX_BASE64_BYTES = 3 * 1024 * 1024  # 3MB：超出则返回错误（不内联）
 # 输出目录 LRU 上限：voices/tts/ 最多保留的文件数（超出删除最旧，防磁盘无限增长）
 MAX_TTS_FILES = 50
+
+
+def _normalize_lang(text, lang):
+    """只支持中文/英文：lang 显式为 zh/en 时用之；否则按文本自动判断（含 CJK → zh，否则 en）。
+    与前端设置联动：前端 /aemeath/api/tts 会传当前 UI locale（zh/en）。IndexTTS-2.5 的 lang 用低位码。"""
+    if lang in ('zh', 'en'):
+        return lang
+    return 'zh' if re.search(r'[\u4e00-\u9fff]', text or '') else 'en'
+
+
+# 剔除括号肢体语言/情绪标注（（笑）（眨眼）（摇头）…）与 emoji，避免 IndexTTS 在括号处停顿/乱读。
+# 保留含数字/单位/字母的括号（如 (5)、(kg·m/s)）——那是内容不是标注。
+_ANNOT_BODY_RE = re.compile(r'[（(\[【]\s*([^）)\]】]{1,12})\s*[）)\]】]')
+_EMOJI_RE = re.compile(r'[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]')
+
+
+def _clean_for_tts(text):
+    """合成前清洗：去 emoji，去纯中文标注型括号（保留含数字/单位/字母的括号）。"""
+    text = _EMOJI_RE.sub('', text or '')
+    def _sub(m):
+        inner = m.group(1)
+        return m.group(0) if re.search(r'\d|[A-Za-z=·/]', inner) else ''
+    return _ANNOT_BODY_RE.sub(_sub, text).strip()
+
+
+def _free_cuda():
+    """释放 CUDA 缓存/未回收内存，防反复推理累积显存（IndexTTS-2.5 分段生成较吃显存）。
+    引擎内部只在部分路径 empty_cache；这里在每次合成后兜底回收一次。"""
+    try:
+        import gc
+        gc.collect()
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _split_sentences(text, max_chars=30):
+    """按句末标点切句，再按 max_chars 硬切，生成短文本块。
+    原因：IndexTTS-2.5 对较长中文会自回归“跑飞”，生成超长静音段（断块 + 慢 + 吃显存）；
+    短句合成则不跑飞。逐段合成再拼接可根治。"""
+    chunks, buf = [], ''
+    for c in (text or ''):
+        buf += c
+        if c in '。！？!?；;' or len(buf) >= max_chars:
+            s = buf.strip()
+            if s:
+                chunks.append(s)
+            buf = ''
+    if buf.strip():
+        chunks.append(buf.strip())
+    return chunks
+
+
+def _concat_wavs(paths, out_path, gap_ms=100):
+    """把多段小 wav 拼接为一段（块间插入 gap_ms 静音，保持连续自然）。"""
+    import numpy as np
+    import soundfile as sf
+    sr = None
+    full = []
+    for p in paths:
+        y, s = sf.read(p)
+        if sr is None:
+            sr = s
+        if full:
+            full.append(np.zeros(int(s * gap_ms / 1000.0)))
+        full.append(y)
+    arr = np.concatenate(full) if full else np.zeros(1)
+    sf.write(out_path, arr, sr)
 
 
 def _trim_tts_outputs():
@@ -172,8 +245,8 @@ def _get_default_voice():
     return None
 
 
-def _init_engine(use_fp16=True):
-    """懒加载 IndexTTS2 引擎（线程安全；FP16 失败自动降级 FP32）。"""
+def _init_engine(use_bf16=True):
+    """懒加载 IndexTTS-2.5 引擎（线程安全；BF16 失败自动降级 FP32）。"""
     global _engine
     if _engine is not None:
         return True
@@ -188,35 +261,44 @@ def _init_engine(use_fp16=True):
 
     try:
         import torch  # noqa: F401
-        from indextts.infer_v2 import IndexTTS2
-        modes = ([True] if use_fp16 else []) + [False]
+        from indextts.infer_v2_5 import IndexTTS2  # IndexTTS-2.5（infer_v2.py 仍是 2.0）
+        modes = ([True] if use_bf16 else []) + [False]
         last_error = None
-        for try_fp16 in modes:
-            mode_name = "FP16" if try_fp16 else "FP32"
+        for try_bf16 in modes:
+            mode_name = "BF16" if try_bf16 else "FP32"
             try:
                 print(f"[tts_mcp] 尝试 {mode_name}…", file=sys.stderr)
                 _engine = IndexTTS2(
                     cfg_path=cfg_path,
                     model_dir=os.path.join(MODEL_DIR, 'checkpoints'),
-                    use_fp16=try_fp16,
-                    use_cuda_kernel=False,
+                    use_bf16=try_bf16,
+                    use_cuda_kernel=True,   # BigVGAN 自定义 CUDA kernel（找不到会回退 torch）
                     use_deepspeed=False,
                 )
-                # 预热（失败不影响使用，v1 同款）；输出到系统临时目录，不写进模型目录
+                # 读条（预热）阶段：真实短句合成一次，验收模型加载并热启动各组件
+                # （文本归一化/G2P/GPT/s2mel/声码器），使首次播放不再有额外长卡顿。
                 voice = _get_default_voice()
                 if voice:
                     try:
                         import tempfile
                         _warm_path = os.path.join(tempfile.gettempdir(), f'_aemeath_warmup_{os.getpid()}.wav')
-                        _engine.infer(spk_audio_prompt=voice, text="预热。",
+                        _warm_text = "你好，我是爱弥斯，很高兴认识你。"
+                        _engine.infer(spk_audio_prompt=voice, text=_warm_text,
                                       output_path=_warm_path,
+                                      lang=_normalize_lang(_warm_text, ""),
                                       verbose=False)
-                        try:
-                            os.remove(_warm_path)
-                        except Exception:  # noqa: BLE001
-                            pass
-                    except Exception:  # noqa: BLE001
-                        pass
+                        if os.path.exists(_warm_path):
+                            try:
+                                os.remove(_warm_path)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            print("[tts_mcp] 模型预热完成（真实短句合成验收通过）", file=sys.stderr)
+                        else:
+                            print("[tts_mcp] 预热合成未产出文件（模型可能未就绪）", file=sys.stderr)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[tts_mcp] 预热合成失败（不影响后续使用）: {e}", file=sys.stderr)
+                else:
+                    print("[tts_mcp] 未找到参考音频，跳过预热", file=sys.stderr)
                 print(f"[tts_mcp] {mode_name} 加载成功", file=sys.stderr)
                 return True
             except Exception as e:  # noqa: BLE001
@@ -242,7 +324,7 @@ def _init_engine(use_fp16=True):
     {
         "type": "object",
         "properties": {
-            "text": {"type": "string", "description": "要合成的文本（≤500 字，避免 emoji/颜文字）"},
+            "text": {"type": "string", "description": "要合成的文本（emoji/颜文字/括号肢体语言标注会被剔除再合成）"},
             "voice": {"type": "string", "description": "参考音频 wav 路径（可选，默认 voices/ 下的音色）"},
             "include_base64": {"type": "boolean", "description": "是否在结果里附带 base64 音频（默认 false）"},
         },
@@ -250,12 +332,14 @@ def _init_engine(use_fp16=True):
         "additionalProperties": False,
     },
 )
-def tts_generate(text: str, voice="", include_base64=False):
+def tts_generate(text: str, voice="", lang="", include_base64=False):
     global _engine
     if not text or not text.strip():
         return {"success": False, "error": "缺少 text 字段"}
-    # C22：文本长度强制上限（描述说 ≤500 字但此前未强制）
-    text = text.strip()
+    # 清洗：去 emoji + 去中文标注型括号（（笑）（眨眼）…），避免朗读停顿/乱读
+    text = _clean_for_tts(text)
+    if not text:
+        return {"success": False, "error": "文本经清洗后为空"}
     if len(text) > MAX_TEXT_LEN:
         return {"success": False, "error": f"text 过长（{len(text)} 字，上限 {MAX_TEXT_LEN}）"}
 
@@ -277,8 +361,16 @@ def tts_generate(text: str, voice="", include_base64=False):
             TTS_OUT_DIR.mkdir(parents=True, exist_ok=True)
             # 完整 32 位 uuid（此前 hex[:8] 仅 32 位，约 6.5 万文件后可能碰撞覆盖）
             output_path = TTS_OUT_DIR / f"aemeath_tts_{uuid.uuid4().hex}.wav"
-            _engine.infer(spk_audio_prompt=voice_path, text=text,
-                          output_path=str(output_path), verbose=False)
+            # 忙碌即拒：一次只合成一条（防多点点堆叠/显存累加/生成混乱），不排队阻塞
+            if not _busy.acquire(blocking=False):
+                return {"success": False, "error": "TTS 正在合成上一条，请稍候（暂不支持并发/取消）"}
+            try:
+                # 全文本一次性生成（参考音频已修正为干净 WAV，单次不跑飞 / 无长静音）
+                _engine.infer(spk_audio_prompt=voice_path, text=text,
+                              output_path=str(output_path), lang=_normalize_lang(text, lang), verbose=False)
+            finally:
+                _busy.release()
+                _free_cuda()
             if not output_path.exists():
                 return {"success": False, "error": "语音生成失败（无输出文件）"}
             _trim_tts_outputs()  # LRU 清理（防目录无限增长）

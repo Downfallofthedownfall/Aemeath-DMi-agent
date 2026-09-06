@@ -43,6 +43,16 @@ function json(res: ServerResponse, code: number, obj: unknown): void {
   res.end(JSON.stringify(obj));
 }
 
+/** 读取前端上报的 UI locale（zh/en/''）——供 host 侧逻辑（如 TTS lang）使用。 */
+function hostUiLocale(ctx: Context): string {
+  try {
+    const v = ctx.settings?.get?.(settingsNamespace(UI_LOCALE_NAMESPACE)) as { locale?: string } | undefined;
+    return v?.locale === 'en' ? 'en' : v?.locale === 'zh' ? 'zh' : '';
+  } catch {
+    return '';
+  }
+}
+
 /**
  * 用户可见错误响应：返回稳定机器码 `code`（前端按 locale 映射文案）+ 中文 `error` 兜底。
  * 约定：code 是 i18n key `errors.<code>` 的后缀；前端无映射时回退 error 原文。
@@ -363,7 +373,7 @@ export function apply(ctx: Context): void {
       const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
       console.log(`[aemeath-ui] TTS 合成请求收到 text="${text.slice(0, 60)}" enabled=${ttsSettingsEnabled()}`);
       if (!text) return jsonError(res, 400, 'tts.textRequired', 'text required');
-      if (text.length > 500) return jsonError(res, 400, 'tts.textTooLong', `text 过长（${text.length} 字，上限 500）`, { n: text.length });
+      if (text.length > 20000) return jsonError(res, 400, 'tts.textTooLong', `text 过长（${text.length} 字，上限 20000）`, { n: text.length });
       const cfg = ttsConfigStatus();
       if (!cfg.configured) {
         return jsonError(res, 500, 'tts.notConfigured', `未配置 TTS 引擎（python=${cfg.pythonExists} model=${cfg.modelConfigExists} voice=${cfg.voiceCount}）。请安装 IndexTTS2 到 D:\\index-tts 或设置 AEMEATH_TTS_PYTHON / AEMEATH_TTS_MODEL_DIR`);
@@ -372,7 +382,8 @@ export function apply(ctx: Context): void {
       const r = await fetch(`${TTS_HTTP_BASE}/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        // lang 跟随前端 UI 设置（zh/en）；tts_mcp 的 _normalize_lang 会用，否则按文本自动判断
+        body: JSON.stringify({ text, lang: hostUiLocale(ctx) || '' }),
         // 首次调用加载 3.4GB 模型，允许 1-3 分钟
         signal: AbortSignal.timeout(200000),
       });
