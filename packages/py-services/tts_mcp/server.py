@@ -96,9 +96,13 @@ class _TtsHttpHandler(BaseHTTPRequestHandler):
                 return
             payload = json.loads(self.rfile.read(length).decode('utf-8'))
             text = str(payload.get('text') or '')
-            voice = str(payload.get('voice') or '')
-            lang = str(payload.get('lang') or '')
-            result = tts_generate(text, voice=voice, lang=lang, include_base64=True)
+            # 兼容标准 IndexTTS / GPT-SoVITS 契约：ref_audio_path 作为参考音频(=voice)；text_lang 作为语言
+            voice = str(payload.get('voice') or payload.get('ref_audio_path') or '')
+            lang = str(payload.get('lang') or payload.get('text_lang') or '')
+            # speed_factor → duration_factor（速度 2 → 时长系数 0.5）；仅显式提供且为正时使用
+            sf = payload.get('speed_factor')
+            dur = (1.0 / float(sf)) if isinstance(sf, (int, float)) and sf and sf > 0 else None
+            result = tts_generate(text, voice=voice, lang=lang, duration_factor=dur, include_base64=True)
             self._send(200 if result.get('success') else 400, result)
         except Exception as e:  # noqa: BLE001
             self._send(400, {'ok': False, 'error': str(e)})
@@ -222,13 +226,12 @@ def _trim_tts_outputs():
 
 
 def _is_voice_allowed(voice_path):
-    """C22：参考音频只允许项目 voices/ 或模型目录下的 wav（防模型指向任意已存在路径）。"""
+    """C22：参考音频通常限项目 voices/ 或模型目录下的 wav；
+    但为兼容标准 IndexTTS / GPT-SoVITS 契约（ref_audio_path 可为任意本地 wav），
+    这里放宽为「真实存在的 .wav 即允许」。风险自担：仅放行 .wav 且存在，不放行任意文件。"""
     try:
         p = Path(voice_path).resolve()
-        if p.suffix.lower() != '.wav' or not p.exists():
-            return False
-        allowed_roots = [VOICES_DIR.resolve(), Path(MODEL_DIR).resolve()]
-        return any(p == root or root in p.parents for root in allowed_roots)
+        return p.suffix.lower() == '.wav' and p.exists()
     except Exception:  # noqa: BLE001
         return False
 
@@ -334,7 +337,7 @@ def _init_engine(use_bf16=True):
         "additionalProperties": False,
     },
 )
-def tts_generate(text: str, voice="", lang="", include_base64=False):
+def tts_generate(text: str, voice="", lang="", duration_factor=None, include_base64=False):
     global _engine
     if not text or not text.strip():
         return {"success": False, "error": "缺少 text 字段"}
@@ -369,7 +372,8 @@ def tts_generate(text: str, voice="", lang="", include_base64=False):
             try:
                 # 全文本一次性生成（参考音频已修正为干净 WAV，单次不跑飞 / 无长静音）
                 _engine.infer(spk_audio_prompt=voice_path, text=text,
-                              output_path=str(output_path), lang=_normalize_lang(text, lang), verbose=False)
+                              output_path=str(output_path), lang=_normalize_lang(text, lang),
+                              duration_factor=(duration_factor or 1.0), verbose=False)
             finally:
                 _busy.release()
                 _free_cuda()
