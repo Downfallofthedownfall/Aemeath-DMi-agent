@@ -21,6 +21,7 @@ import { settingsNamespace, installSettingsSection } from '@deepseek-ai/dsh-sett
 import z from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-settings';
+import { buildMemoryOverview, buildTimelineView, buildGraphView, type MemoryServiceFace } from './memory-view.js';
 
 export const name = 'aemeath-ui';
 export const inject = ['webServer', 'settings', 'memory'];
@@ -486,113 +487,30 @@ export function apply(ctx: Context): void {
       if (req.method === 'GET') {
         // —— 记忆工作区新增视图（ripples 五页 IA；全走 ctx.memory 服务，不依赖 memory 插件
         //    自己的 token 认证端点，因此前端无需持有任何 token）——
-        const action = new URL(req.url ?? '/', 'http://localhost').searchParams.get('action');
+        // 视图构造抽在 memory-view.ts（纯函数，可用假 service 直接单测；本处理器只做
+        // 参数解析 + json()）。
+        const url = new URL(req.url ?? '/', 'http://localhost');
+        const action = url.searchParams.get('action');
+        const face = memory as unknown as MemoryServiceFace;
         if (action === 'timeline') {
-          const q = new URL(req.url ?? '/', 'http://localhost').searchParams;
-          const entity = (q.get('entity') ?? '用户').slice(0, 40);
-          const attribute = (q.get('attribute') ?? '').slice(0, 40);
+          const entity = (url.searchParams.get('entity') ?? '用户').slice(0, 40);
+          const attribute = (url.searchParams.get('attribute') ?? '').slice(0, 40);
           if (!attribute) {
             jsonError(res, 400, 'memory.timelineAttributeRequired', 'attribute required');
             return;
           }
-          // 时间轴视图：一次返回该实体**全部**属性的区间断言 + 已知属性清单（供筛选下拉）
-          const attrs = Array.isArray(memory.knownAttributes?.()) ? (memory.knownAttributes?.() as string[]) : [];
-          const rows = attrs
-            .map((a) => ({ attribute: a, claims: memory.timeline?.(entity, a) ?? [] }))
-            .filter((r) => r.claims.length > 0);
-          json(res, 200, { ok: true, entity, attributes: rows, current: memory.currentClaim?.(entity, attribute) ?? null });
+          json(res, 200, buildTimelineView(face, entity, attribute));
           return;
         }
         if (action === 'insights') {
-          const insights = memory.currentInsights?.() ?? null;
-          json(res, 200, { ok: true, insights });
+          json(res, 200, { ok: true, insights: memory.currentInsights?.() ?? null });
           return;
         }
         if (action === 'graph') {
-          // 实体共现图：节点=实体（提及次数），边=同记忆共现次数（借 ripples 的 buildEntityGraph 思想）
-          const nodes = new Map<string, { id: string; count: number }>();
-          const edges = new Map<string, { a: string; b: string; weight: number }>();
-          const claimsOf = (rec: Record<string, unknown>): Array<{ entity?: unknown }> =>
-            Array.isArray(rec.entity_claims) ? (rec.entity_claims as Array<{ entity?: unknown }>) : [];
-          for (const { key, rec } of memory.list()) {
-            const entities = Array.from(new Set(claimsOf(rec).map((c) => String(c.entity ?? '').trim()).filter(Boolean)));
-            if (!entities.length) continue;
-            void key;
-            for (const e of entities) nodes.set(e, { id: e, count: (nodes.get(e)?.count ?? 0) + 1 });
-            for (let i = 0; i < entities.length; i++) {
-              for (let j = i + 1; j < entities.length; j++) {
-                const [x, y] = entities[i] < entities[j] ? [entities[i], entities[j]] : [entities[j], entities[i]];
-                const k = `${x}\u0000${y}`;
-                const cur = edges.get(k);
-                edges.set(k, { a: x, b: y, weight: (cur?.weight ?? 0) + 1 });
-              }
-            }
-          }
-          json(res, 200, { ok: true, nodes: [...nodes.values()].sort((a, b) => b.count - a.count).slice(0, 40), edges: [...edges.values()].sort((a, b) => b.weight - a.weight).slice(0, 80) });
+          json(res, 200, buildGraphView(face));
           return;
         }
-        const claimsOfItem = (rec: Record<string, unknown>): Array<{ entity: string; attribute: string; value: string; valid_from: number; valid_until: number | null }> =>
-          Array.isArray(rec.entity_claims)
-            ? (rec.entity_claims as Array<Record<string, unknown>>).map((c) => ({
-                entity: String(c.entity ?? ''),
-                attribute: String(c.attribute ?? ''),
-                value: String(c.value ?? ''),
-                valid_from: typeof c.valid_from === 'number' ? c.valid_from : 0,
-                valid_until: typeof c.valid_until === 'number' ? c.valid_until : null,
-              }))
-            : [];
-        const items = memory.list().map(({ key, rec }) => ({
-          id: key,
-          content: String(rec.content ?? '').slice(0, 200),
-          category: rec.category ?? 'session_summary',
-          importance: typeof rec.importance === 'number' ? rec.importance : 0,
-          scope: rec.scope ?? 'mode',
-          preset: rec.preset ?? '',
-          status: rec.status ?? 'active',
-          activation: typeof rec.activation === 'number' ? rec.activation : 50,
-          created_at: rec.created_at ?? 0,
-          last_access: rec.last_access ?? 0,
-          // 时间轴断言（工作区「记忆」页可直接在卡片上看这条记忆断言了什么）
-          claims: claimsOfItem(rec),
-        }));
-        const stats = memory.stats();
-        // L0 用户画像事实（全局 userProfile.facts）；memory service 旧版无此方法时回退空数组
-        const profile = memory.profileFacts?.() ?? [];
-        // L1 scratch（会话内暂存）+ L2 mode + L3 global 分组
-        const scratch = (memory as unknown as { allScratch?: () => Record<string, Record<string, string>> }).allScratch?.() ?? {};
-        const l1 = Object.entries(scratch).map(([sid, slot]) => ({
-          sessionId: sid,
-          items: Object.entries(slot).map(([k, v]) => ({ key: k, content: String(v).slice(0, 200) })),
-        })).filter((s) => s.items.length > 0);
-        // 解题计划（feature #5：workflow.plan scratch）——按会话解析为步骤字符串数组，未截断
-        // （l1 的 content 只留 200 字符会破坏 plan JSON），供前端浮卡直接读。
-        // 只读已有 scratch 数据，不改 workflow/memory 后端。
-        const plans: Record<string, string[]> = {};
-        for (const [sid, slot] of Object.entries(scratch)) {
-          const raw = slot['workflow.plan'];
-          if (!raw) continue;
-          try {
-            const p = JSON.parse(raw) as unknown;
-            if (Array.isArray(p)) {
-              plans[sid] = p.map((s) => String(s)).map((s) => s.trim()).filter(Boolean);
-            }
-          } catch {
-            /* 坏 JSON：整会话跳过（前端显示空/off） */
-          }
-        }
-        // L1 采集缓冲（滚动对话，待总结）——与 scratch 工作态区分，面板可见"攒批中"的内容
-        const l1Buffer = (memory.l1Sessions?.() ?? []).map((sid) => ({
-          sessionId: sid,
-          turns: (memory.l1Turns?.(sid) ?? []).map((t) => ({
-            query: String(t.query ?? '').slice(0, 200),
-            reply: String(t.reply ?? '').slice(0, 200),
-            kind: t.kind ?? 'fact',
-            ts: t.ts ?? 0,
-          })),
-        })).filter((s) => s.turns.length > 0);
-        const l2 = items.filter((m) => m.scope === 'mode');
-        const l3 = items.filter((m) => m.scope === 'global');
-        json(res, 200, { ok: true, l1, l2, l3, stats, l1Buffer, l1Capacity: memory.l1CapacityOf?.() ?? null, profile, plans });
+        json(res, 200, buildMemoryOverview(face));
         return;
       }
       if (req.method === 'POST') {

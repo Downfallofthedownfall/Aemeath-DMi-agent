@@ -26,7 +26,8 @@
   "scripts": {
     "build": "node build.mjs && tsc -p tsconfig.json && tsc -p tsconfig.client.json",
     "build:client": "node build.mjs",
-    "typecheck": "tsc -p tsconfig.client.json"
+    "typecheck": "tsc -p tsconfig.client.json",
+    "test": "node test/check-memory-view.mjs"
   },
   "license": "MIT",
   "dsh": {
