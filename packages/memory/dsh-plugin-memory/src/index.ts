@@ -34,13 +34,32 @@ import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-credentials';
-import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, writeGate, classifyConflict, type Category, type WriteGateVerdict, type ConflictDecision, type ConflictType } from './gatekeeper.js';
+import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, writeGate, classifyConflict, extractClaims, hasNewClaimValue, type Category, type WriteGateVerdict, type ConflictDecision, type ConflictType, type ExtractedClaim } from './gatekeeper.js';
 import { search as bm25Search, overlapScore } from './bm25.js';
-import { selectEviction, suggestProfileFacts, computeActivation, classifyActivation, afterRecallActivation, ACTIVATION_DEFAULT, ACTIVATION_ACTIVE_THRESHOLD } from './engine.js';
+import { selectEviction, suggestProfileFacts, computeActivation, classifyActivation, activationOf, afterRecallActivation, shouldPersistRecall, ACTIVATION_DEFAULT, ACTIVATION_ACTIVE_THRESHOLD } from './engine.js';
 import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
-import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, relationshipRecordSchema, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn, type RelationshipRecord } from './types.js';
+import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, relationshipRecordSchema, insightsSchema, EMPTY_INSIGHTS, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn, type RelationshipRecord, type Insights } from './types.js';
 import { MemoryService } from './service.js';
 import { classifyMoodStable, majorityLabel, pushMoodWindow, relationshipSignalOf, nextCareCueOf, moodClassifierPrompt, MOOD_WINDOW_CAP } from './mood.js';
+// T1/T2（借 ripples-of-aion）：事实时间轴 + 演进≠矛盾
+import { findClosableClaims, closeClaims, prepareClaims, activeClaimOf, timelineOf, hasClosedTimelineOverlap, type EntityClaim } from './timeline.js';
+// T4（借 ripples-of-aion）：属性归一化
+import { canonicalAttr } from './attributes.js';
+// T3/T6（借 ripples-of-aion）：autoDream 空闲整合 + LLM 抢救解析
+import { Consolidator, type InsightRecordInput } from './insights.js';
+// T7：护栏集中表
+import {
+  CONSOLIDATION_CATCHUP_DELAY_MS,
+  CONSOLIDATION_IDLE_MINUTES,
+  CONSOLIDATION_MAX_RECORDS,
+  CONSOLIDATION_MIN_RECORDS,
+  CONSOLIDATION_TIMEOUT_MS,
+  MEMORY_PERSIST_INTERVAL_MS,
+  OVERLAP_DEDUP_THRESHOLD,
+  CONFLICT_MAX_TOKENS,
+  MOOD_MAX_TOKENS,
+  SUMMARIZE_MAX_TOKENS,
+} from './limits.js';
 
 export const name = 'aemeath-memory';
 export const inject = ['storageDomain', 'commands', 'credentials', 'settings'];
@@ -83,6 +102,17 @@ export const Config = z.object({
   /** 记忆触动词：用户说这些词时立即总结该会话 L1 缓冲（跳过 minBatch 攒批），
    *  让记忆当场落库、跨会话立即可用。默认内建一组，此处可追加/覆盖自定义触发词。 */
   termTriggerPhrases: z.array(z.string()),
+  /** T3 空闲整合（autoDream，借 ripples-of-aion）：空闲时把已有记忆整合成
+   *  「主题簇 + 疑似矛盾」洞察，写入独立存储（绝不改写原记忆）。 */
+  consolidate: z.object({
+    enabled: z.boolean(),
+    /** 空闲多少分钟后触发一次整合。 */
+    idleMinutes: z.number(),
+    /** 单次整合纳入的记忆条数上限。 */
+    maxRecords: z.number(),
+    /** 参与整合的最少记忆条数（低于此不跑）。 */
+    minRecords: z.number(),
+  }),
   adminHttp: z.object({
     enabled: z.boolean(),
     port: z.number(),
@@ -104,6 +134,7 @@ export interface MemoryConfig {
   worldbook?: { enabled?: boolean; libraries?: Record<string, string> };
   decayDays?: number;
   termTriggerPhrases?: string[];
+  consolidate?: { enabled?: boolean; idleMinutes?: number; maxRecords?: number; minRecords?: number };
   adminHttp?: { enabled?: boolean; port?: number; token?: string };
 }
 
@@ -119,6 +150,8 @@ const MEMORY_DOMAIN = defineDomain({
     l1: domainTable<string, L1Turn[]>(l1TurnsSchema),
     // A3/A4（借 Cyrene 想法）：关系/情绪上下文，按 preset（角色）各存一份
     relationship: domainTable<string, RelationshipRecord>(relationshipRecordSchema),
+    // T3（借 ripples-of-aion autoDream）：空闲整合洞察，独立于 memories（单条 key='current'）
+    insights: domainTable<string, Insights>(insightsSchema),
   },
 });
 
@@ -179,6 +212,13 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     libraries: config.worldbook?.libraries ?? worldbookLibrariesFromService ?? { physicist: 'packages/worldbook/data/physicist', aemeath: 'packages/worldbook/data/aemeath' },
   };
   const decayDays = config.decayDays ?? 90;
+  // T3 空闲整合配置（autoDream，借 ripples-of-aion）
+  const consolidateOpts = {
+    enabled: config.consolidate?.enabled ?? true,
+    idleMinutes: Math.max(1, config.consolidate?.idleMinutes ?? CONSOLIDATION_IDLE_MINUTES),
+    maxRecords: Math.max(1, config.consolidate?.maxRecords ?? CONSOLIDATION_MAX_RECORDS),
+    minRecords: Math.max(2, config.consolidate?.minRecords ?? CONSOLIDATION_MIN_RECORDS),
+  };
   const llm = config.llm ?? { enabled: false, apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', batchSize: LLM_BATCH_SIZE_DEFAULT, minBatch: 4 };
   const llmMinBatch = Math.max(2, llm.minBatch ?? 4);
   const adminHttp = config.adminHttp ?? { enabled: true, port: 18895 };
@@ -201,6 +241,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const knowledge = domain.table('knowledge') as unknown as KvTable<string, KnowledgeRecord>;
   const l1 = domain.table('l1') as unknown as KvTable<string, L1Turn[]>;
   const relationship = domain.table('relationship') as unknown as KvTable<string, RelationshipRecord>;
+  // T3：洞察独立存储（单条 key='current'）——整条整合路径只**读** memories、只**写**本表
+  const insightsTable = domain.table('insights') as unknown as KvTable<string, Insights>;
   const profile = domain.global as unknown as { get(): UserProfile; set(v: UserProfile): Promise<void> };
   log(`存储域 aemeath_memory 已打开（memories=${memories.size} 条历史记录, knowledge=${knowledge.size} 条知识, L1 缓冲=${l1.size} 会话, L1 容量=${l1Capacity} 阈值=${l1Threshold} token预算=${l1MaxTokens} minBatch=${llmMinBatch}）`);
 
@@ -214,15 +256,205 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     }
   };
 
+  // ============================================================
+  // T1/T2 · 事实时间轴接线（借 ripples-of-aion 的 entityClaims + valid_until 闭合）
+  // 写入顺序**必须**：① 先落新记录（调用方已完成）→ ② 再闭合旧 claim。
+  // 闭合失败只 warn，**不回滚新记录**（时间轴是增强信息，不能拖垮写入主路径）。
+  // ============================================================
+
+  /** 读某条记忆的现有活跃 claim（写入侧去重/新值判定用）。 */
+  const claimsOfRecord = (id: string): EntityClaim[] => memories.get(id)?.entity_claims ?? [];
+
+  /** 全部记录的 (id, entity_claims) 快照（找闭合目标用；跳过 deleted）。 */
+  const claimSourceRecords = (): Array<{ id: string; entity_claims?: EntityClaim[] | null; deleted?: boolean | null }> =>
+    [...memories.entries()].map(([key, rec]) => ({ id: key, entity_claims: rec.entity_claims ?? [], deleted: rec.deleted }));
+
+  /**
+   * 抽 claim + T1 写入侧去重（借参考对象）：完全相同的重述丢弃、规范化、同批 valid_from 错峰。
+   * @param texts 抽取源文本（content 及可选的原始 query）
+   * @returns 过滤后的新 claim；空数组 → 调用方不写 entity_claims 字段
+   */
+  const prepareEntityClaims = (texts: readonly string[], existing: readonly EntityClaim[], baseTs: number): EntityClaim[] => {
+    try {
+      const raw: ExtractedClaim[] = [];
+      for (const t of texts) raw.push(...extractClaims(t, '用户'));
+      if (!raw.length) return [];
+      const asClaims: EntityClaim[] = raw.map((c) => ({ entity: c.entity, attribute: c.attribute, value: c.value, valid_from: baseTs, valid_until: null }));
+      return prepareClaims(asClaims, existing, baseTs);
+    } catch (e) {
+      warn(`claim 抽取失败（已忽略）: ${(e as Error).message}`);
+      return [];
+    }
+  };
+
+  /**
+   * T1 核心：新记录落库**之后**，把同 (entity, canonicalAttr) 的旧活跃断言闭合到新断言的
+   * valid_from。幂等（已闭合的不再动）、跳过 deleted 与自身、失败只 warn。
+   * @param newId 新记录 id（跳过自闭合）
+   * @param newClaims 本次写入的 claim（已规范化；空则不做事）
+   * @param at 闭合时间戳（取新记录的 created_at）
+   * @returns 本次闭合的记录数（供日志/测试）
+   */
+  const closeSupersededClaims = async (newId: string, newClaims: readonly EntityClaim[], at: number): Promise<number> => {
+    if (!newClaims.length) return 0;
+    let closedCount = 0;
+    try {
+      const targets = findClosableClaims(claimSourceRecords(), newClaims, newId);
+      for (const target of targets) {
+        const rec = memories.get(target.recordId);
+        if (!rec?.entity_claims?.length) continue;
+        try {
+          const closed = closeClaims(rec.entity_claims, target.indexes, at);
+          await memories.put(target.recordId, { ...rec, entity_claims: closed });
+          closedCount++;
+          const detail = target.indexes
+            .map((i) => rec.entity_claims?.[i])
+            .filter((c): c is EntityClaim => !!c)
+            .map((c) => `${c.entity}·${c.attribute}=${c.value}（→ ${new Date(at).toISOString()} 失效）`)
+            .join('；');
+          await auditWrite('claim_closed', target.recordId, `时间轴闭合 ${target.indexes.length} 条断言：${detail}（被 ${newId.slice(0, 8)} 取代）`);
+          log(`时间轴闭合：${target.recordId.slice(0, 8)} 的 ${target.indexes.length} 条 claim 失效（${detail}）`);
+        } catch (e) {
+          // 闭合失败不回滚新记录（文档 §6.3 明确要求）
+          warn(`claim 闭合失败（已忽略）: ${(e as Error).message}`);
+        }
+      }
+    } catch (e) {
+      warn(`时间轴闭合流程失败（已忽略）: ${(e as Error).message}`);
+    }
+    return closedCount;
+  };
+
+  /** 时间轴查询（实体+属性 → 按 valid_from 升序的全部断言），供面板/工具。 */
+  const timelineQuery = (entity: string, attribute: string): EntityClaim[] => {
+    const all: EntityClaim[] = [];
+    for (const [, rec] of memories.entries()) {
+      if (rec.deleted) continue;
+      for (const c of rec.entity_claims ?? []) all.push(c as EntityClaim);
+    }
+    return timelineOf(all, entity, attribute) as EntityClaim[];
+  };
+
+  /** 当前值查询（多条活跃取 valid_from 最大者）。 */
+  const currentClaim = (entity: string, attribute: string): EntityClaim | undefined => {
+    const all: EntityClaim[] = [];
+    for (const [, rec] of memories.entries()) {
+      if (rec.deleted) continue;
+      for (const c of rec.entity_claims ?? []) all.push(c as EntityClaim);
+    }
+    return activeClaimOf(all, entity, attribute) as EntityClaim | undefined;
+  };
+
+  // ============================================================
+  // T3 · autoDream 空闲整合（借 ripples-of-aion 的 createConsolidator 思想）
+  // 硬不变量：只**读** memories、只**写** insights 表；洞察只存 recordIds；
+  // 失败/输出不合法 → 保留旧洞察；inFlight 与写入互斥。
+  // ============================================================
+
+  /** 整合用记忆快照（只读；按激活值降序取前 N 条，把"最该被整理"的放前面）。 */
+  const actNow = (rec: MemoryRecord, now: number): number => activationOf({ importance: rec.importance, lastAccess: rec.last_access, activation: rec.activation }, now);
+  const consolidationRecords = (): InsightRecordInput[] => {
+    const now = Date.now();
+    return memoryService
+      .list()
+      .map(({ key, rec }) => ({ key, rec }))
+      .sort((a, b) => actNow(b.rec, now) - actNow(a.rec, now))
+      .slice(0, consolidateOpts.maxRecords)
+      .map(({ key, rec }) => ({ id: key, content: rec.content, entity_claims: rec.entity_claims ?? [], deleted: rec.deleted }));
+  };
+
+  /** 整合 LLM 通道（复用 dsh 的 provider HTTP 通道；失败/无 key → null → 保留旧洞察）。 */
+  const askConsolidationLlm = async (prompt: string, opts: { maxTokens: number; purpose: string }): Promise<string | null> => {
+    const apiKey = await resolveLlmKey();
+    if (!llm.enabled || !apiKey) return null;
+    try {
+      const resp = await fetch(`${llm.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: llm.model,
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' },
+          max_tokens: opts.maxTokens,
+          temperature: 0.2,
+        }),
+        signal: AbortSignal.timeout(CONSOLIDATION_TIMEOUT_MS),
+      });
+      if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
+      const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
+      return data.choices?.[0]?.message?.content ?? null;
+    } catch (e) {
+      warn(`整合 LLM 调用失败（保留旧洞察）: ${(e as Error).message}`);
+      return null;
+    }
+  };
+
+  let disposed = false;
+  const consolidator = new Consolidator({
+    insights: insightsTable,
+    listRecords: consolidationRecords,
+    askLlm: askConsolidationLlm,
+    // 候选对排序用热度：直接用激活值（Aemeath 的复合 activation 比参考对象的单一 heat 更强）
+    heatOf: (id) => {
+      const rec = memories.get(id);
+      return rec ? actNow(rec, Date.now()) : 0;
+    },
+    isDisposed: () => disposed,
+    log,
+    warn,
+    minRecords: consolidateOpts.minRecords,
+    maxRecords: consolidateOpts.maxRecords,
+  });
+
+  /** 三重闸门：配置关闭 / 已在跑 / 已 dispose → 直接 null。 */
+  const runConsolidation = async (): Promise<Insights | null> => {
+    if (!runtime.enabled || !consolidateOpts.enabled) return null;
+    if (disposed) return null;
+    if (consolidator.running) return null;
+    const result = await consolidator.run();
+    if (result) await auditWrite('consolidate', undefined, `空闲整合：簇 ${result.clusters.length} / 矛盾 ${result.conflicts.length}`);
+    return result;
+  };
+
+  // 空闲调度：每次会话活动重置计时器，静默 idleMinutes 后跑一次
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const armIdleConsolidation = (): void => {
+    if (!consolidateOpts.enabled) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      void runConsolidation().catch((e) => warn(`空闲整合失败: ${(e as Error).message}`));
+    }, consolidateOpts.idleMinutes * 60 * 1000);
+    if (idleTimer.unref) idleTimer.unref();
+  };
+  ctx.effect(() => () => {
+    disposed = true;
+    if (idleTimer) clearTimeout(idleTimer);
+  });
+
   // ---- ctx.memory 服务 ----
   // writeWorldbook 依赖为延迟闭包：writeWorldbookEntry 在下方定义，closure 在调用时才解析，
   // 既避免了 undefined 引用，也让 service 的 toWorldbook（纯手动桥接）复用同一份写入逻辑。
   const memoryService = new MemoryService(
     ctx,
-    { memories, audit, knowledge, l1, relationship, profile, auditWrite, writeWorldbook: (input) => writeWorldbookEntry(input.preset, input.content, input.topic, input.source) },
+    {
+      memories,
+      audit,
+      knowledge,
+      l1,
+      relationship,
+      profile,
+      auditWrite,
+      writeWorldbook: (input) => writeWorldbookEntry(input.preset, input.content, input.topic, input.source),
+      // T1：时间轴只读查询（走本文件的闭合数据源，保证与写入侧同源）
+      timeline: (entity, attribute) => timelineQuery(entity, attribute),
+      currentClaim: (entity, attribute) => currentClaim(entity, attribute),
+      // T3：手动整合入口（面板「立即整合」）；consolidator 在下方创建，闭包延迟解析
+      dreamNow: () => runConsolidation(),
+      insights: () => consolidator.current(),
+    },
     { capacity: l1Capacity, threshold: l1Threshold },
   );
-  log('ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch/l1/knowledge/toWorldbook/relationshipCue）');
+  log('ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch/l1/knowledge/toWorldbook/relationshipCue/timeline/dreamNow）');
 
   // ---- 事实采集：缓冲每轮 (query, reply)，配对后进入 L1 分层 ----
   interface CollectedTurn { query: string; reply: string; preset: string; ts: number }
@@ -323,20 +555,55 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     }
   };
 
-  const saveMemory = async (preset: string, content: string, category: Category, importance: number, confidence: number, sid: string, scope: 'mode' | 'global'): Promise<string> => {
-    const id = await memoryService.save({ content, category, importance, confidence, scope, preset, source_mode: preset });
+  /**
+   * @param texts claim 抽取源文本（缺省 [content]）
+   * @param preparedClaims 已备好的 claim（supersede 路径需要"先比旧记录去重再闭合"，
+   *        故由调用方先 prepare 一次再传进来，避免重复抽取与双重去重）
+   */
+  const saveMemory = async (preset: string, content: string, category: Category, importance: number, confidence: number, sid: string, scope: 'mode' | 'global', texts: readonly string[] = [], preparedClaims?: readonly EntityClaim[]): Promise<string> => {
+    // T1：抽取 claim（无活跃断言参与去重——旧记录的去重由调用方按需先做）并错峰 valid_from
+    const newClaims = preparedClaims ?? prepareEntityClaims(texts.length ? texts : [content], [], Date.now());
+    const id = await memoryService.save({ content, category, importance, confidence, scope, preset, source_mode: preset, entityClaims: [...newClaims] });
     await enforceCapacity(scope, scope === 'global' ? l3Capacity : l2Capacity);
-    log(`记忆已写入 preset=${preset} cat=${category} imp=${importance} scope=${scope}（${content.slice(0, 30)}…）`);
+    log(`记忆已写入 preset=${preset} cat=${category} imp=${importance} scope=${scope}（${content.slice(0, 30)}…）${newClaims.length ? ` claim=${newClaims.length}` : ''}`);
+    // T1：**先落新记录**（上一步）→ **再闭合**同 (entity, attr) 的旧活跃断言；失败只 warn
+    if (newClaims.length) {
+      const rec = memories.get(id);
+      await closeSupersededClaims(id, newClaims, (rec?.created_at ?? Date.now()) + newClaims.length);
+    }
     return id;
   };
 
-  const supersedeMemory = async (oldKey: string, preset: string, content: string, category: Category, sid: string, clash: ConflictDecision): Promise<void> => {
+  const supersedeMemory = async (oldKey: string, preset: string, content: string, category: Category, sid: string, clash: ConflictDecision, texts: readonly string[] = []): Promise<void> => {
     const old = memories.get(oldKey);
     if (!old) return;
-    const newId = await saveMemory(preset, content, category, Math.max(60, old.importance), 0.8, sid, old.scope);
+    // T1：闭合目标要看到"旧记录最新的 claim 状态"，因此在写入新记录**之前**取快照，
+    // 但闭合动作仍在新记录落库**之后**执行（写入顺序不变量）。
+    const beforeSnapshot = claimSourceRecords();
+    // supersede 路径：先按"旧记录的活跃断言"去重（重述不产生新 claim），再交给 saveMemory
+    const newClaims = prepareEntityClaims(texts.length ? texts : [content], old.entity_claims ?? [], Date.now());
+    const newId = await saveMemory(preset, content, category, Math.max(60, old.importance), 0.8, sid, old.scope, texts, newClaims);
     await memories.put(oldKey, { ...old, superseded_by: newId, status: 'dormant', confidence: Math.max(0, old.confidence - 0.2) });
     await auditWrite('supersede', oldKey, `被 ${newId.slice(0, 8)} 取代（${clash.type}${clash.viaLlm ? '·LLM' : '·规则'}：${clash.reason}）`);
     log(`冲突 supersede（${clash.type}${clash.viaLlm ? '·LLM' : '·规则'}）：${oldKey.slice(0, 8)} → ${newId.slice(0, 8)}（${content.slice(0, 30)}…）`);
+    // T1：supersede 是"整体取代"，其时间轴语义由 claim 闭合承载（saveMemory 内已按
+    // 全表快照闭合一遍；这里用写入前快照再兜一次，幂等无害——覆盖"旧记录在 saveMemory
+    // 中被容量淘汰/改写"的边角情况）。
+    if (newClaims.length) {
+      const targets = findClosableClaims(beforeSnapshot, newClaims, newId);
+      const hit = targets.find((t) => t.recordId === oldKey);
+      if (hit) {
+        const cur = memories.get(oldKey);
+        if (cur?.entity_claims?.length) {
+          try {
+            await memories.put(oldKey, { ...cur, entity_claims: closeClaims(cur.entity_claims, hit.indexes, Date.now()) });
+            await auditWrite('claim_closed', oldKey, `时间轴闭合 ${hit.indexes.length} 条断言（supersede 路径）`);
+          } catch (e) {
+            warn(`claim 闭合失败（已忽略）: ${(e as Error).message}`);
+          }
+        }
+      }
+    }
   };
 
   /**
@@ -384,10 +651,14 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         const importance = wg.action === 'demote' ? Math.max(0, decision.importance - 20) : decision.importance;
         if (conflictHit && hitRec) {
           // B6 类型化冲突：先分类（preference_evolution / direct_conflict）再 supersede，类型记入审计
-          const clash = await resolveConflictTyped(hitRec.content, decision.content, hitRec.category, decision.category);
-          await supersedeMemory(hits[0].id, turn.preset, decision.content, decision.category, sid, clash);
+          // T2：把两侧 claim 一起送进去——同一属性取值变化 → 上游短路判为「演进」而非矛盾
+          const clash = await resolveConflictTyped(hitRec.content, decision.content, hitRec.category, decision.category, {
+            oldClaims: hitRec.entity_claims ?? [],
+            newClaims: extractClaims(decision.content, '用户') as ExtractedClaim[],
+          });
+          await supersedeMemory(hits[0].id, turn.preset, decision.content, decision.category, sid, clash, [decision.content, turn.query]);
         } else {
-          await saveMemory(turn.preset, decision.content, decision.category, importance, confidence, sid, scope);
+          await saveMemory(turn.preset, decision.content, decision.category, importance, confidence, sid, scope, [decision.content, turn.query]);
         }
         // 规则初筛扩展：显式命令 + 内容是知识型（如"记住 F=ma"）→ 也直达知识层/worldbook（不经 LLM）
         if (knowledgeEnabled && isStrongKnowledge(decision.content)) {
@@ -410,6 +681,9 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       log(`记忆触动词「${turn.query.slice(0, 20)}」→ 触发 ${sid.slice(0, 8)} 的 L1 即时总结（跨会话可读）`);
       await summarizeL1(sid, false, true);
     }
+
+    // T3 空闲整合：每轮结束重置空闲计时器（静默 idleMinutes 后跑一次 autoDream）
+    armIdleConsolidation();
   };
 
   /** 规则初筛直达：知识层（accepted，不经 LLM/评审门）+ worldbook 桥接（physicist 馆，生成文件热重载）。 */
@@ -516,8 +790,12 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       const old = memories.get(target.targetId);
       if (old) {
         // B6 类型化冲突：分类后再 supersede，类型记入审计
-        const clash = await resolveConflictTyped(old.content, m.content, old.category, m.category);
-        await supersedeMemory(target.targetId, old?.preset ?? preset, m.content, m.category, sid, clash);
+        // T2：带 claim 进上游短路（同一属性取值变化 → 演进）
+        const clash = await resolveConflictTyped(old.content, m.content, old.category, m.category, {
+          oldClaims: old.entity_claims ?? [],
+          newClaims: extractClaims(m.content, '用户') as ExtractedClaim[],
+        });
+        await supersedeMemory(target.targetId, old?.preset ?? preset, m.content, m.category, sid, clash, [m.content]);
       }
       return;
     }
@@ -652,7 +930,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           model: llm.model,
           messages: [{ role: 'user', content: prompt }],
           response_format: { type: 'json_object' },
-          max_tokens: 1536,
+          max_tokens: SUMMARIZE_MAX_TOKENS,
           temperature: 0.2,
         }),
         signal: AbortSignal.timeout(60000),
@@ -671,8 +949,29 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   /**
    * B6 类型化冲突判定：LLM 启用且有 key 时可选经由 LLM 分类（preference_evolution /
    * direct_conflict）；否则/失败时退回 deterministic classifyConflict（规则兜底，测试稳定）。
+   *
+   * T2（借 ripples-of-aion 的 hasClosedTimelineOverlap）：**上游短路**——本次抽到的 claim
+   * 与旧记忆的活跃 claim 存在**同一 (entity, canonicalAttr) 但值不同**的项时，说明这是
+   * "同一属性的取值变化"（旧值将被时间轴记成"当时"，新值此后生效）→ 直接按
+   * preference_evolution 处理并标注原因，不再白花一次 LLM 判定。
+   * 若旧断言此前已被闭合（hasClosedTimelineOverlap），同样直接判演进。
+   * 注意 classifyConflict（确定性规则）**保留**（T2 只加这道短路，不替换它）。
    */
-  const resolveConflictTyped = async (oldContent: string, newContent: string, oldCategory: Category, newCategory: Category): Promise<ConflictDecision> => {
+  const resolveConflictTyped = async (
+    oldContent: string,
+    newContent: string,
+    oldCategory: Category,
+    newCategory: Category,
+    claims?: { oldClaims?: readonly EntityClaim[]; newClaims?: readonly ExtractedClaim[] },
+  ): Promise<ConflictDecision> => {
+    const oldClaims = claims?.oldClaims ?? [];
+    const newClaims = claims?.newClaims ?? [];
+    if (newClaims.length && hasNewClaimValue(oldClaims, newClaims)) {
+      return { type: 'preference_evolution', reason: '时间轴演进：同一属性的取值发生变化（旧值保留为“当时”，新值此后生效）', viaLlm: false };
+    }
+    if (hasClosedTimelineOverlap(oldClaims, newClaims)) {
+      return { type: 'preference_evolution', reason: '时间轴已闭合：同一属性先后取值的变化属演进，不是矛盾', viaLlm: false };
+    }
     const apiKey = await resolveLlmKey();
     if (llm.enabled && apiKey) {
       const label = await callConflictLlm(oldContent, newContent, oldCategory, newCategory, apiKey);
@@ -692,7 +991,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           model: llm.model,
           messages: [{ role: 'user', content: prompt }],
           response_format: { type: 'json_object' },
-          max_tokens: 200,
+          max_tokens: CONFLICT_MAX_TOKENS,
           temperature: 0.0,
         }),
         signal: AbortSignal.timeout(20000),
@@ -720,7 +1019,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         body: JSON.stringify({
           model: llm.model,
           messages: [{ role: 'user', content: moodClassifierPrompt(query, reply, personaHint) }],
-          max_tokens: 16,
+          max_tokens: MOOD_MAX_TOKENS,
           temperature: 0.0,
         }),
         signal: AbortSignal.timeout(15000),
@@ -790,16 +1089,28 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     const top = memoryService.recallForPreset(preset, topK);
     if (!top.length) return decision;
 
+    /** T5 节流抑制计数（仅用于日志可观测量）。 */
+    let recallWriteSuppressed = 0;
+
     for (const { key, rec } of top) {
       // 借 Cyrene wake-on-recall：召回即把 last_access 推到 now（近因变满），
-      // 叠满命中加成抬高激活值（衰减抵抗），并把 archived 唤醒回 active。
+      // 并按 T5 的**渐近饱和**抬高激活值（衰减抵抗），把 archived 唤醒回 active。
+      // T5 落盘节流（借 ripples-of-aion 的 30 分钟节流）：内存值/近因照常推进，
+      // 但只在距上次落盘 ≥ MEMORY_PERSIST_INTERVAL_MS 时才真正写库——高频召回不再放大写入。
+      // 节流锚点用 last_persist_at（不能用 last_access：后者每次召回都推进，差值恒为 0）。
+      const shouldPersist = shouldPersistRecall(rec.last_persist_at, now);
+      if (!shouldPersist) {
+        recallWriteSuppressed++;
+        continue;
+      }
       void memories
         .update(key, (cur) => {
           const wake = afterRecallActivation({ importance: cur.importance, activation: cur.activation ?? ACTIVATION_DEFAULT }, now);
-          return { ...cur, last_access: now, activation: wake.activation, status: wake.status };
+          return { ...cur, last_access: now, activation: wake.activation, status: wake.status, last_persist_at: now };
         })
         .catch(() => undefined);
     }
+    if (recallWriteSuppressed > 0) log(`召回回写节流：抑制 ${recallWriteSuppressed} 次落盘（${top.length} 条命中，仅落盘 ${top.length - recallWriteSuppressed} 次）`);
 
     const block = ['## 关于用户的记忆（第一人称）', ...top.map(({ rec }) => `- [${rec.category}|imp=${rec.importance}|${rec.scope}] ${rec.content}`)].join('\n');
     log(`preset=${preset} 召回 ${top.length} 条记忆注入`);
@@ -822,6 +1133,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       log(`session/flush：${sid.slice(0, 8)} 有 ${memoryService.l1Count(sid)} 轮 L1 缓冲，触发总结卸载`);
       await summarizeL1(sid);
     }
+    // T3：会话落盘检查点也重置空闲计时（空闲判定以"最后活动"为准）
+    armIdleConsolidation();
   });
   // ---- session/disposed：真正会话结束 → 强制总结 L1 + 清理缓冲/scratch ----
   // 会话结束才做强制总结（force=true 跳过 minBatch）：会话是独立 sessionId，轮次不跨会话
@@ -895,11 +1208,29 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   if (decayTimer.unref) decayTimer.unref();
   log(`衰减已启用（${decayDays} 天未访问：高激活抵抗衰减，其余 -10 importance + 按激活值落三态，每 6h 检查）`);
 
+  // ---- T3 启动补跑：上次整合距今超过一个空闲周期 → 延迟补跑一次 ----
+  if (consolidateOpts.enabled) {
+    const lastRun = consolidator.current().last_run_at;
+    const stale = !lastRun || Date.now() - lastRun > consolidateOpts.idleMinutes * 60 * 1000;
+    if (stale) {
+      const catchup = setTimeout(() => {
+        void runConsolidation().catch((e) => warn(`启动补跑整合失败: ${(e as Error).message}`));
+      }, CONSOLIDATION_CATCHUP_DELAY_MS);
+      if (catchup.unref) catchup.unref();
+      ctx.effect(() => () => clearTimeout(catchup));
+      log(`空闲整合已启用（空闲 ${consolidateOpts.idleMinutes} 分钟触发；启动补跑 ${CONSOLIDATION_CATCHUP_DELAY_MS / 1000}s 后，上次整合=${lastRun ? new Date(lastRun).toISOString() : '从未'}）`);
+    } else {
+      log(`空闲整合已启用（空闲 ${consolidateOpts.idleMinutes} 分钟触发；上次整合 ${new Date(lastRun).toISOString()} 尚新，跳过启动补跑）`);
+    }
+  } else {
+    log('空闲整合已关闭（config.consolidate.enabled=false）');
+  }
+
   // ---- /memory 命令 ----
   ctx.commands.register({
     name: 'memory',
-    description: '记忆管理：list / stats / delete <id> / profile / scratch / l1 / knowledge',
-    input: { hint: 'list | stats | delete <id> | profile | scratch <sessionId> | l1 | knowledge [pending|accept <id>|reject <id>]' },
+    description: '记忆管理：list / stats / delete <id> / profile / scratch / l1 / knowledge / timeline / dream',
+    input: { hint: 'list | stats | delete <id> | profile | scratch <sessionId> | l1 | knowledge [pending|accept <id>|reject <id>] | timeline <实体> <属性> | dream' },
     handler: async ({ rawInput }) => {
       const args = (rawInput || '').trim().split(/\s+/);
       const cmd = args[0] || 'stats';
@@ -947,16 +1278,41 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         const lines = filtered.map(({ key, rec }) => `- ${key.slice(0, 8)} [${rec.preset}|${rec.status}|${rec.source_kind}] ${rec.topic ? `〈${rec.topic}〉` : ''}${rec.content.slice(0, 60)}`);
         return ok(`知识层（${filtered.length}/${items.length} 条${byPreset ? `，馆=${sub}` : ''}）:\n${lines.join('\n') || '（空）'}`);
       }
+      if (cmd === 'dream') {
+        // T3：手动立即整合（面板/命令入口）
+        const r = await runConsolidation();
+        if (!r) return ok('记忆整合未执行（已关闭 / 记忆条数不足 / LLM 不可用 / 正在整合中）——旧洞察保持不变');
+        return ok(
+          `记忆整合完成（${new Date(r.last_run_at).toISOString()}）：主题簇 ${r.clusters.length} 个、疑似矛盾 ${r.conflicts.length} 对\n` +
+            r.clusters.map((c) => `- 〈${c.label}〉${c.recordIds.length} 条：${c.recordIds.map((i) => i.slice(0, 8)).join(', ')}`).join('\n') +
+            (r.conflicts.length ? `\n${r.conflicts.map((c) => `- ${c.recordIds.map((i) => i.slice(0, 8)).join(' ←→ ')}：${c.note}`).join('\n')}` : ''),
+        );
+      }
+      if (cmd === 'timeline') {
+        // T1：时间轴查询（/memory timeline <实体> <属性>）
+        const entity = args[1] ?? '用户';
+        const attribute = args[2];
+        if (!attribute) return err('用法: /memory timeline <实体> <属性>（例：/memory timeline 用户 所在地）');
+        const items = timelineQuery(entity, attribute);
+        if (!items.length) return ok(`时间轴（${entity}·${canonicalAttr(attribute)}）为空`);
+        const fmt = (t: number): string => new Date(t).toISOString().slice(0, 19).replace('T', ' ');
+        return ok(
+          `时间轴（${entity}·${canonicalAttr(attribute)}，${items.length} 段）：\n` +
+            items
+              .map((c) => `- ${c.value}　${fmt(c.valid_from)} → ${c.valid_until === null ? '至今' : fmt(c.valid_until)}`)
+              .join('\n'),
+        );
+      }
       if (cmd === 'stats') {
         const s = memoryService.stats();
         return ok(
           `记忆统计：active=${s.active} dormant=${s.dormant} archived=${s.archived} 按角色=${Object.entries(s.byPreset).map(([k, v]) => `${k}:${v}`).join(' ')} 按层=${Object.entries(s.byScope).map(([k, v]) => `${k}:${v}`).join(' ')} L1缓冲=${s.l1} 知识层=${Object.entries(s.knowledge).map(([k, v]) => `${k}:${v}`).join(' ')}`,
         );
       }
-      return ok('用法: /memory list | stats | delete <id> | profile | scratch <sessionId> | l1 | knowledge [pending|accept <id>|reject <id>]');
+      return ok('用法: /memory list | stats | delete <id> | profile | scratch <sessionId> | l1 | knowledge [pending|accept <id>|reject <id>] | timeline <实体> <属性> | dream');
     },
   });
-  log('/memory 命令已注册（list/stats/delete/profile/scratch/l1/knowledge）');
+  log('/memory 命令已注册（list/stats/delete/profile/scratch/l1/knowledge/timeline/dream）');
 
   // ---- HTTP 管理端点（可选，仅回环 + token 认证；S5 加固）----
   if (adminHttp.enabled) {
@@ -1030,6 +1386,24 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
               if (req.method !== 'GET') return send(405, { ok: false, error: 'method not allowed: GET' });
               return send(200, { ok: true, stats: memoryService.stats(), capacity: memoryService.l1CapacityOf(), sessions: Object.fromEntries(memoryService.l1Sessions().map((sid) => [sid, memoryService.l1Turns(sid).map((t) => ({ ...t }))])) });
             }
+            if (url === '/memory/insights') {
+              if (req.method !== 'GET') return send(405, { ok: false, error: 'method not allowed: GET' });
+              return send(200, { ok: true, insights: consolidator.current() });
+            }
+            if (url === '/memory/timeline') {
+              if (req.method !== 'GET') return send(405, { ok: false, error: 'method not allowed: GET' });
+              const q = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+              const entity = q.get('entity') ?? '用户';
+              const attribute = q.get('attribute') ?? '';
+              if (!attribute) return send(400, { ok: false, error: 'attribute required' });
+              return send(200, { ok: true, entity, attribute: canonicalAttr(attribute), current: currentClaim(entity, attribute) ?? null, timeline: timelineQuery(entity, attribute) });
+            }
+            if (url === '/memory/dream') {
+              // T3 手动整合（面板「立即整合」）：POST，无需 body
+              if (req.method !== 'POST') return send(405, { ok: false, error: 'method not allowed: POST' });
+              const r = await runConsolidation();
+              return send(200, { ok: true, ran: !!r, insights: r ?? consolidator.current() });
+            }
             if (url === '/memory/delete') {
               if (req.method !== 'POST') return send(405, { ok: false, error: 'method not allowed: POST' });
               const payload = await readJsonLimited(req);
@@ -1058,7 +1432,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
               if (!r.ok) return send(400, { ok: false, error: r.error });
               return send(200, { ok: true, id: r.id, title: r.title });
             }
-            return send(404, { ok: false, error: 'not found: use /memory/list | /memory/stats | /memory/delete | /memory/knowledge | /memory/knowledge/status | /memory/toWorldbook | /memory/l1' });
+            return send(404, { ok: false, error: 'not found: use /memory/list | /memory/stats | /memory/delete | /memory/knowledge | /memory/knowledge/status | /memory/toWorldbook | /memory/l1 | /memory/insights | /memory/timeline | /memory/dream' });
           } catch (e) {
             const err = e as Error & { status?: number };
             send(err.status ?? 400, { ok: false, error: err.message });

@@ -14,6 +14,8 @@ import { search as bm25Search } from './bm25.js';
 import { appendL1, removeL1Turns, shouldTriggerL1 } from './layers.js';
 import { buildRelationshipCue } from './mood.js';
 import { computeActivation, activationOf, ACTIVATION_DEFAULT, type LifecycleStatus } from './engine.js';
+import type { EntityClaim } from './timeline.js';
+import { EMPTY_INSIGHTS, type Insights } from './types.js';
 import type { MemoryRecord, AuditRecord, KnowledgeRecord, UserProfile, RelationshipRecord, Category, L1Turn } from './types.js';
 
 export interface MemoryServiceDeps {
@@ -31,6 +33,14 @@ export interface MemoryServiceDeps {
    * 返回 null 表示该馆不可写/目标不存在（跳过）；返回 { id, title } 表示成功（含"已存在"幂等）。
    */
   writeWorldbook?: (input: { preset: string; content: string; topic: string; source: string }) => Promise<{ id: string; title: string } | null>;
+  /** T1：时间轴只读查询（实体+属性 → 区间断言序列）。由 index.ts 注入，与写入侧同源。 */
+  timeline?: (entity: string, attribute: string) => EntityClaim[];
+  /** T1：当前值查询（多条活跃取 valid_from 最大者）。 */
+  currentClaim?: (entity: string, attribute: string) => EntityClaim | undefined;
+  /** T3：手动触发一次空闲整合（面板「立即整合」）；返回 null = 被闸门拦下/失败（旧洞察不变）。 */
+  dreamNow?: () => Promise<Insights | null>;
+  /** T3：读取当前洞察（结构校验过的）。 */
+  insights?: () => Insights;
 }
 
 export interface MemorySearchResult {
@@ -52,6 +62,8 @@ export interface MemorySaveInput {
   scope?: 'mode' | 'global';
   preset: string;
   source_mode?: string;
+  /** T1（借 ripples-of-aion）：本次写入携带的事实时间轴断言（规范化后；空/缺省不写该字段）。 */
+  entityClaims?: EntityClaim[];
 }
 
 export class MemoryService extends Service {
@@ -139,8 +151,10 @@ export class MemoryService extends Service {
       activation,
       status: 'active',
     };
+    // T1：只有真的抽到 claim 才写该字段（否则旧记录形态不变，向后兼容）
+    if (input.entityClaims?.length) rec.entity_claims = input.entityClaims.map((c) => ({ ...c }));
     await this.deps.memories.put(id, rec);
-    await this.deps.auditWrite('save', id, `importance=${rec.importance} category=${rec.category} scope=${rec.scope}`);
+    await this.deps.auditWrite('save', id, `importance=${rec.importance} category=${rec.category} scope=${rec.scope}${rec.entity_claims?.length ? ` claims=${rec.entity_claims.length}` : ''}`);
     return id;
   }
 
@@ -303,6 +317,41 @@ export class MemoryService extends Service {
    */
   recallRelationshipCue(preset?: string): string {
     return buildRelationshipCue(this.relationshipGet(preset));
+  }
+
+  // ===== T1 事实时间轴（借 ripples-of-aion 的 entityClaims/valid_until） =====
+  /**
+   * 查询某实体某属性的**全部**断言（按 valid_from 升序）——能回答"当时是什么"，
+   * 而不只是"现在是什么"。未注入数据源 → []。
+   */
+  timeline(entity: string, attribute: string): EntityClaim[] {
+    return this.deps.timeline?.(entity, attribute) ?? [];
+  }
+
+  /** 当前有效值（多条活跃取 valid_from 最大者）；无活跃断言 → undefined。 */
+  currentClaim(entity: string, attribute: string): EntityClaim | undefined {
+    return this.deps.currentClaim?.(entity, attribute);
+  }
+
+  /** 面板/工具便捷：某实体全部属性的当前值（遍历已知规范词表）。 */
+  currentClaimsOf(entity: string, attributes: readonly string[]): EntityClaim[] {
+    const out: EntityClaim[] = [];
+    for (const attr of attributes) {
+      const c = this.currentClaim(entity, attr);
+      if (c) out.push(c);
+    }
+    return out;
+  }
+
+  // ===== T3 空闲整合洞察（借 ripples-of-aion autoDream） =====
+  /** 当前洞察（结构校验过的）；未注入 → 空洞察。 */
+  currentInsights(): Insights {
+    return this.deps.insights?.() ?? { ...EMPTY_INSIGHTS, clusters: [], conflicts: [] };
+  }
+
+  /** 手动触发一次整合（面板「立即整合」）。返回 null = 闸门拦下/失败（旧洞察不变）。 */
+  async dreamNow(): Promise<Insights | null> {
+    return (await this.deps.dreamNow?.()) ?? null;
   }
 
   // ===== L1 暂存区（scratch，会话内工作态） =====

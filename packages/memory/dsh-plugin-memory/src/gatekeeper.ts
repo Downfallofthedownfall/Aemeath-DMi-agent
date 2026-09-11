@@ -10,6 +10,7 @@
 // ============================================================
 
 import { overlapScore } from './bm25.js';
+import { canonicalAttr } from './attributes.js';
 
 export type MemoryAction =
   | { kind: 'blocked'; reason: string }
@@ -344,4 +345,105 @@ export function decide(query: string, reply: string): MemoryAction {
 
   // 5) 其余 → pending（进 L1 采集缓冲，交 LLM 总结审核）
   return { kind: 'pending', reason: '待 L1 采集（滚动捕获）' };
+}
+
+// ============================================================
+// T1/T4 — 轻量 claim 抽取（纯函数，规则层）
+//
+// 借了什么思想：ripples-of-aion 每轮用 LLM 抽出 facts + claims（entity/attribute/
+// value 三元组）喂给时间轴。Aemeath 的规则层已有身份/偏好特征，够抽出**用户自身**
+// 的关键属性——这里只做「确定性、封闭词表、可单测」的轻量抽取：
+//   - 属性必须落在 attributes.ts 的规范词表（或别名）上，否则不抽（宁缺勿错）；
+//   - 实体固定为传入的 entity（user_fact 场景即"用户"）；
+//   - 抽取到的旧值不在这里判断——值的新旧由时间轴闭合决定（T1）。
+// 抽取不到就返回空数组：调用方不写 entity_claims 字段（机制照常完好）。
+// ============================================================
+
+/** 属性 → 值 的抽取模式（`值` 捕获组；属性一侧允许"我的/我"前缀）。 */
+const CLAIM_PATTERNS: ReadonlyArray<{ attr: string; re: RegExp }> = [
+  { attr: '姓名', re: /(?:我叫|我的名字(?:是|叫)?|名字(?:是|叫)?|全名(?:是)?)[\s:：]*([^，,。；;！!？?\n]{1,24})/ },
+  { attr: '称呼', re: /(?:以后叫我|叫我|可以叫我|昵称(?:是|叫)?)[\s:：]*([^，,。；;！!？?\n]{1,16})/ },
+  { attr: '学校', re: /(?:我(?:在|就读于|读|上)|就读(?:于)?|毕业于)[\s:：]*([^，,。；;！!？?\n]{1,24}?(?:大学|学院|高中|中学|学校|Uni|Universität))/ },
+  { attr: '学校', re: /(?:我的)?(?:学校|大学|院校)(?:是|叫|在)[\s:：]*([^，,。；;！!？?\n]{2,24})/ },
+  { attr: '专业', re: /(?:我的)?专业(?:是|为|叫)[\s:：]*([^，,。；;！!？?\n]{1,24})/ },
+  { attr: '专业', re: /我(?:学的是|学的是|主修|读的是)[\s:：]*([^，,。；;！!？?\n]{1,24})/ },
+  { attr: '年级', re: /(?:我是|我读|我上)[\s:：]*(大一|大二|大三|大四|研一|研二|研三|博一|博二|准大一|[0-9一二三四五六七八九十]+年级|[0-9]+\.\s?Semester|第[0-9一二三四五六七八九十]+学期)/ },
+  { attr: '所在地', re: /我(?:住在|在|搬到|搬去|居住在|定居在)[\s:：]*([^，,。；;！!？?\n]{1,24}(?:市|区|州|省|国|镇|城)?)/ },
+  { attr: '学习目标', re: /我的(?:学习)?目标(?:是|为)?[\s:：]*([^，,。；;！!？?\n]{2,40})/ },
+  { attr: '薄弱环节', re: /我(?:的)?(?:薄弱(?:环节|点)?|弱项|短板)(?:是|在|为)?[\s:：]*([^，,。；;！!？?\n]{2,30})/ },
+  { attr: '偏好', re: /我(?:最|很|比较)?(?:喜欢|爱|偏好|讨厌|不喜欢)[\s:：]*([^，,。；;！!？?\n]{1,30})/ },
+  { attr: '作息', re: /我(?:一般|通常|习惯)?[\s:：]*(?:在)?[\s:：]*([0-9一二三四五六七八九十]{1,2}\s*点[^，,。；;！!？?\n]{0,20}(?:睡|起|学习|起床))/ },
+  { attr: '联系方式', re: /我(?:的)?(?:邮箱|邮件|手机号?|电话|微信|联系方式)(?:是|为)[\s:：]*([^，,。；;！!？?\n]{3,32})/ },
+  { attr: '健康状况', re: /我(?:的)?(?:健康状况|身体(?:状况|状态)|健康)(?:是|为|不太好|不好)?[\s:：]*([^，,。；;！!？?\n]{1,24})/ },
+  { attr: '成绩', re: /我(?:的)?(?:成绩|分数|绩点|得分)(?:是|为|考了|拿了)[\s:：]*([^，,。；;！!？?\n]{1,20})/ },
+  { attr: '考试', re: /我(?:的)?(?:考试|考期|Klausur)(?:是|在|定在|安排(?:在)?)[\s:：]*([^，,。；;！!？?\n]{2,24})/ },
+  { attr: '课程', re: /我(?:在)?(?:上|选修|报了|选了)(?:这门)?课?[\s:：]*([^，,。；;！!？?\n]{2,24})/ },
+];
+
+/** claim 抽取用的宽松结构（valid_from 由写入侧补）。 */
+export interface ExtractedClaim {
+  entity: string;
+  attribute: string;
+  value: string;
+}
+
+/** 单条记忆最多挂的 claim 数（护栏；参考对象每轮最多 8 条）。 */
+export const MAX_CLAIMS_PER_RECORD = 8;
+
+/** 值清洗：去首尾标点/空白、压内部空白、去掉尾随句末虚词。 */
+function cleanClaimValue(raw: string): string {
+  let v = (raw ?? '').trim().replace(/^[，,、：:\s"'「【]+/, '').replace(/[，,、：:\s"'」】]+$/, '');
+  v = v.replace(/\s+/g, ' ');
+  v = v.replace(/(?:了|啦|吧|呀|啊|哦|呢|的)$/u, '');
+  return v.trim();
+}
+
+/**
+ * 从文本抽 claim（确定性规则；抽不到返回 []）。
+ * @param text 待抽取文本（一般取写入门禁后的 content）
+ * @param entity 实体名（user_fact 场景传 '用户'）
+ */
+export function extractClaims(text: string, entity = '用户'): ExtractedClaim[] {
+  const src = (text ?? '').trim();
+  const ent = (entity ?? '').trim();
+  if (!src || !ent) return [];
+  const out: ExtractedClaim[] = [];
+  const seen = new Set<string>();
+  for (const { attr, re } of CLAIM_PATTERNS) {
+    const m = re.exec(src);
+    if (!m) continue;
+    const value = cleanClaimValue(m[1] ?? '');
+    if (!value || value.length < 1) continue;
+    // 值不能就是属性名本身（"我的专业是专业"这类脏数据）
+    if (value === attr) continue;
+    const key = `${attr}\u0000${value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ entity: ent, attribute: attr, value });
+    if (out.length >= MAX_CLAIMS_PER_RECORD) break;
+  }
+  return out;
+}
+
+/**
+ * 新值判定（T2 用）：本次抽到的 claim 与旧记忆的活跃 claim 相比，是否存在
+ * **同一 (entity, canonicalAttr) 但值不同**的项 → 属"同一属性取值变化"（演进）。
+ * 两侧属性都过 canonicalAttr（老数据里的非规范字面量也能命中）。
+ * 值完全相同的重述由写入侧去重（hasActiveClaim），此处只看"变了没有"。
+ */
+export function hasNewClaimValue(
+  oldClaims: ReadonlyArray<{ entity: string; attribute: string; value: string; valid_until: number | null }> | undefined,
+  newClaims: ReadonlyArray<{ entity: string; attribute: string; value: string }>,
+): boolean {
+  if (!oldClaims?.length || !newClaims.length) return false;
+  const norm = (s: unknown): string => String(s ?? '').trim().replace(/\s+/g, '').toLowerCase();
+  for (const nc of newClaims) {
+    const key = `${norm(nc.entity)}\u0000${canonicalAttr(nc.attribute)}`;
+    for (const oc of oldClaims) {
+      if (oc.valid_until !== null) continue; // 只比活跃断言
+      if (`${norm(oc.entity)}\u0000${canonicalAttr(oc.attribute)}` !== key) continue;
+      if (norm(oc.value) !== norm(nc.value)) return true;
+    }
+  }
+  return false;
 }

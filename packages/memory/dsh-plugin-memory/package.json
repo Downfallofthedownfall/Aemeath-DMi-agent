@@ -30,6 +30,22 @@
       "types": "./lib/types.d.ts",
       "default": "./lib/types.js"
     },
+    "./timeline": {
+      "types": "./lib/timeline.d.ts",
+      "default": "./lib/timeline.js"
+    },
+    "./attributes": {
+      "types": "./lib/attributes.d.ts",
+      "default": "./lib/attributes.js"
+    },
+    "./insights": {
+      "types": "./lib/insights.d.ts",
+      "default": "./lib/insights.js"
+    },
+    "./limits": {
+      "types": "./lib/limits.d.ts",
+      "default": "./lib/limits.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
@@ -42,12 +58,16 @@
     "lib/types.js",
     "lib/service.js",
     "lib/mood.js",
+    "lib/timeline.js",
+    "lib/attributes.js",
+    "lib/insights.js",
+    "lib/limits.js",
     "lib/*.d.ts",
     "src"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs"
+    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs && node test/check7.mjs && node test/check8.mjs && node test/check9.mjs"
   },
   "license": "MIT",
   "peerDependencies": {

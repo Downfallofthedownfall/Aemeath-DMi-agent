@@ -4,6 +4,15 @@
 import { z } from 'zod';
 import type { Category } from './gatekeeper.js';
 
+export const entityClaimSchema = z.object({
+  entity: z.string(),
+  attribute: z.string(),
+  value: z.string(),
+  valid_from: z.number(),
+  valid_until: z.number().nullable(),
+});
+export type EntityClaimRecord = z.infer<typeof entityClaimSchema>;
+
 export const memoryRecordSchema = z.object({
   id: z.string(),
   scope: z.enum(['mode', 'global']),
@@ -23,6 +32,12 @@ export const memoryRecordSchema = z.object({
   status: z.enum(['active', 'dormant', 'archived']),
   superseded_by: z.string().nullable().optional(),
   deleted: z.boolean().nullable().optional(),
+  // T1（借 ripples-of-aion 的 entityClaims/valid_until 思想）：事实时间轴断言。
+  // 缺省 = 无属性化断言（旧数据不受影响，只增不改既有字段）。
+  entity_claims: z.array(entityClaimSchema).optional(),
+  // T5：上次**落盘**召回回写的时间戳（节流锚点，与 last_access 区分：
+  // last_access 表示"逻辑上最近访问"，每次召回都推进；last_persist_at 只在真正落盘时推进）。
+  last_persist_at: z.number().optional(),
 });
 export type MemoryRecord = z.infer<typeof memoryRecordSchema>;
 
@@ -89,5 +104,34 @@ export const relationshipRecordSchema = z.object({
   updatedTs: z.number(),
 });
 export type RelationshipRecord = z.infer<typeof relationshipRecordSchema>;
+
+/**
+ * T3（借 ripples-of-aion autoDream）：空闲整合洞察记录。
+ * 独立存储、单条（key='current'）；**只存 recordIds + label/note，绝不复制 content**，
+ * 也绝不改写 memories 表——洞察层是"只读视角"，不是第二份记忆。
+ */
+export const insightClusterSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  recordIds: z.array(z.string()),
+  created_at: z.number(),
+});
+export const insightConflictSchema = z.object({
+  id: z.string(),
+  note: z.string(),
+  recordIds: z.tuple([z.string(), z.string()]),
+  created_at: z.number(),
+});
+export const insightsSchema = z.object({
+  version: z.literal(1),
+  last_run_at: z.number(),
+  clusters: z.array(insightClusterSchema),
+  conflicts: z.array(insightConflictSchema),
+});
+export type InsightCluster = z.infer<typeof insightClusterSchema>;
+export type InsightConflict = z.infer<typeof insightConflictSchema>;
+export type Insights = z.infer<typeof insightsSchema>;
+/** 空洞察（首次运行/结构不合法时的回落值）。 */
+export const EMPTY_INSIGHTS: Insights = { version: 1, last_run_at: 0, clusters: [], conflicts: [] };
 
 export type { Category };

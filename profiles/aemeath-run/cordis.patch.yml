@@ -92,6 +92,10 @@
         l1Capacity: 40
         l1Threshold: 0.8
         decayDays: 90
+        # T3 空闲整合：headless/基准 profile 关闭（llm.enabled=false，整合需 LLM 通道；
+        # 且基准跑分不该被后台整合的 token 消耗干扰）
+        consolidate:
+          enabled: false
         llm:
           enabled: false
           apiKey: ''

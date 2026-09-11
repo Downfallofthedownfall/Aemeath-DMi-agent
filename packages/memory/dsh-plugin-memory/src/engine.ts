@@ -3,7 +3,22 @@
 // ① 淘汰选择：L3 超容量时选激活值（importance×recency×命中抵抗）最低的 active 记忆
 // ② 画像沉淀：从 user_fact 记忆提取跨角色稳定事实 → userProfile
 // ③ partial DMAE 激活得分 + 三态分类（借 Cyrene L2 激活缓存思想）
+// T7：数值护栏集中到 limits.ts（本文件只保留公式；常量再导出让老调用方无感）。
 // ============================================================
+
+import {
+  ACTIVATION_ACTIVE_THRESHOLD,
+  ACTIVATION_ARCHIVED_THRESHOLD,
+  ACTIVATION_DEFAULT,
+  ACTIVATION_HIT_GAIN,
+  MEMORY_PERSIST_INTERVAL_MS,
+  RECENCY_HALF_LIFE_DAYS,
+} from './limits.js';
+
+export { ACTIVATION_ACTIVE_THRESHOLD, ACTIVATION_ARCHIVED_THRESHOLD, ACTIVATION_DEFAULT, RECENCY_HALF_LIFE_DAYS };
+
+/** 每次召回/命中对激活值的加成（T5 起改为**渐近饱和**增量；沿用原 HIT_BONUS=12 的量级）。 */
+export const ACTIVATION_HIT_BONUS = ACTIVATION_HIT_GAIN;
 
 export interface EvictionCandidate {
   id: string;
@@ -14,9 +29,6 @@ export interface EvictionCandidate {
   /** 已算好的激活值（可选；缺省时由 importance+recency 现算）。 */
   activation?: number;
 }
-
-/** 时间衰减半衰期（天数）：importance 影响力随时间减半的尺度。 */
-export const RECENCY_HALF_LIFE_DAYS = 45;
 
 /** 归一化活性得分 0..1：越近访问越接近 1。 */
 export function recencyScore(lastAccess: number, now: number): number {
@@ -36,12 +48,6 @@ export function evictionValue(rec: EvictionCandidate, now: number): number {
 // 分三态：active（≥60）/ dormant（30–59）/ archived（<30）。高频回访的记忆靠命中
 // 加成抵抗衰减（不易被遗忘/归档），归档记忆被召回时"唤醒"回 active。
 // ============================================================
-
-export const ACTIVATION_DEFAULT = 50;
-export const ACTIVATION_ACTIVE_THRESHOLD = 60;
-export const ACTIVATION_ARCHIVED_THRESHOLD = 30;
-/** 每次召回/命中对激活值的加成（衰减抵抗——越常用越不易被遗忘/归档）。 */
-export const ACTIVATION_HIT_BONUS = 12;
 
 export type LifecycleStatus = 'active' | 'dormant' | 'archived';
 
@@ -83,13 +89,31 @@ export function activationOf(rec: { importance: number; lastAccess: number; acti
 }
 
 /**
- * 召回后的激活/状态（wake-on-recall）：命中改判为 active（把 last_access 推到 now，使
- * 近因变满），并叠满命中加成（衰减抵抗）——归档记忆被召回即唤醒回 active。
- * 返回应写入记录的 { activation, status }。
+ * 召回后的激活/状态（wake-on-recall）：命中改判为 active，并按**渐近饱和**叠加命中
+ * 加成——`base + GAIN × (1 − base/100)`，base → 100 时增量 → 0，不再一次顶满
+ * （T5 借 ripples-of-aion 的 heat bump 渐近饱和思想；参考对象是 `h + 0.15(1−h)`）。
+ * 返回值再夹到 [ACTIVE_THRESHOLD, 100]：保留 wake 语义（归档记忆被召回即唤醒回 active）。
+ * @param rec 现记录的 { importance, activation }
+ * @param now 当前时间戳（保留参数以兼容既有调用；本公式不再依赖近因）
  */
 export function afterRecallActivation(rec: { importance: number; activation: number }, now: number): { activation: number; status: LifecycleStatus } {
-  const act = computeActivation({ importance: rec.importance, lastAccess: now, now, hitBonus: 1 });
-  return { activation: Math.max(act, ACTIVATION_ACTIVE_THRESHOLD), status: 'active' };
+  void now; // 渐近饱和需要的是"上次的激活值"，近因已在 activation 里混合过，不再二次计入
+  const base = clamp(rec.activation ?? ACTIVATION_DEFAULT, 0, 100);
+  const grown = base + ACTIVATION_HIT_GAIN * (1 - base / 100);
+  const activation = clamp(Math.round(grown), ACTIVATION_ACTIVE_THRESHOLD, 100);
+  return { activation, status: 'active' };
+}
+
+/**
+ * 召回回写的**落盘节流**判据（T5，借参考对象的 30 分钟落盘节流）：
+ * 内存值/last_access 照常推进，只抑制落盘——高频召回不再每次都写库。
+ * 锚点用 last_persist_at（**不能**用 last_access：后者每次召回都推进，
+ * `now − last_access` 恒为 0 → 永远不落盘，与节流意图相反）。
+ * @param lastPersistAt 上次落盘时间戳（缺失/0 → 视为从未落盘，应落盘）
+ */
+export function shouldPersistRecall(lastPersistAt: number | undefined | null, now: number, intervalMs = MEMORY_PERSIST_INTERVAL_MS): boolean {
+  if (!lastPersistAt || !Number.isFinite(lastPersistAt) || lastPersistAt <= 0) return true;
+  return now - lastPersistAt >= intervalMs;
 }
 
 /**
