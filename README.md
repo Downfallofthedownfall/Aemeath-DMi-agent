@@ -4,7 +4,7 @@
 >
 > **架构 / Architecture**: v2 is rebuilt on the DeepSeek Harness (dsh) plugin system. **The platform is just the engine — the moat is the physics content track**: Worldbook knowledge base, exam benchmark, weekly usage log (see [docs/usage-log.md](docs/usage-log.md) and migration plan `docs/v2-migration-plan.md`).
 >
-> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona; borrowing ripples-of-aion ideas: fact timeline with valid_from/valid_until, evolution-vs-conflict, autoDream idle consolidation into a separate insights store, canonical attribute normalization, recall write throttle, LLM salvage parsing); frontend enhanced (Cyrene borrow: tabbed settings+appearance, status pill, mode chips, tiered memory panel, floating plan todo card, in-composer cards); TTS upgraded to IndexTTS-2.5; 247 unit tests green.
+> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona; borrowing ripples-of-aion ideas: fact timeline with valid_from/valid_until, evolution-vs-conflict, autoDream idle consolidation into a separate insights store, canonical attribute normalization, recall write throttle, LLM salvage parsing); frontend enhanced (Cyrene borrow: tabbed settings+appearance, status pill, mode chips, tiered memory panel, floating plan todo card, in-composer cards); TTS upgraded to IndexTTS-2.5; 264 unit tests green.
 
 ---
 
@@ -30,7 +30,8 @@ Built on [DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.1.0-rc.6`) a
 | Smoke tool `aemeath/version` | ✅ M0 | Tool registration + session log verification |
 | Worldbook physics knowledge base (59+8 entries) | ✅ M2 | Physik I + Math I entries, dual-library isolation, hot reload, `retrieve_worldbook` tool |
 | Layered memory L1/L2/L3 + gatekeeper (Cyrene-inspired) | ✅ 2026-08 | Rule-first + LLM judge, BM25 dedup, typed conflict (preference_evolution / direct_conflict), user-fact write-gate, activation-scored 3-state lifecycle (Active/Dormant/Archived), mood observer + relationship cue, HTTP admin endpoint |
-| Fact timeline + idle consolidation (ripples-of-aion-inspired) | ✅ 2026-09 | `entityClaims` with valid_from/valid_until intervals → answers "what was true *then*"; attribute-change is evolution, not conflict; autoDream idle consolidation into a separate insights store (topic clusters + suspected conflicts, recordIds only, never rewrites memories); canonical attribute normalization; recall write throttle + asymptotic saturation; LLM output salvage parsing |
+| Fact timeline + idle consolidation (ripples-of-aion-inspired) | ✅ 2026-09 | `entityClaims` with valid_from/valid_until intervals → answers "what was true *then*"; attribute-change is evolution, not conflict; autoDream idle consolidation into a separate insights store (topic clusters + suspected conflicts, recordIds only, never rewrites memories); canonical attribute normalization; recall write throttle + asymptotic saturation; LLM output salvage parsing; claims produced inside the existing summarizer call (no extra LLM calls) |
+| Memory workspace (5 pages, ripples panel IA) | ✅ 2026-09 | Full-screen layer on the host's `shell.overlay` seat (opened from the sidebar quick settings): Memories (three-column browse + collapsible entity-attribute timeline) / Graph (entity co-occurrence force layout) / Console (read-only retrieval debug) / Insights (autoDream clusters + suspected conflicts + "dream now") / Status. Design language borrowed from the reference panel (soft pink, 14px cards) but theme-aware; data via the `/aemeath/api/memory` proxy |
 | Lecture retrieval + Altklausur benchmark | ✅ M4 | SQLite FTS5 BM25 (Chinese bigram), 6 metrics, headless runner |
 | Solving workflow (SymPy verification) | ✅ M6 | Plan → execute → ✅/❌ verify → conclusion + source; honest degradation on tool failure |
 | Frontend overhaul + desktop shell | ✅ M5→2026-08 | Forced light theme, brand layer, hero + role cards, quick settings, workspace picker, memory panel, TTS button, Electron shell; Cyrene-borrowed: tabbed settings + appearance, character status pill, mode-switch chips, tiered memory panel, floating plan todo card, in-composer interaction cards; TTS IndexTTS-2.5 |
@@ -132,19 +133,21 @@ electron-app/        # v1 (frozen, tag v1.0; migrated files removed, shell refer
 ```bash
 npm test -w @aemeath/dsh-plugin-common       # 15 (OOC rule layer + persona craft/runtime/execution)
 npm test -w @aemeath/dsh-plugin-worldbook    # 10 (trigger/order/chain/token budget)
-npm test -w @aemeath/dsh-plugin-memory       # 196 (gatekeeper/BM25-conflict/engine/L1 buffer + write-gate/typed-conflict/mood/relationship/DMAE-activation + fact-timeline/evolution-vs-conflict/autoDream consolidation/recall-throttle + real-plugin e2e)
+npm test -w @aemeath/dsh-plugin-memory       # 196 assertions (gatekeeper/BM25-conflict/engine/L1 buffer + write-gate/typed-conflict/mood/relationship/DMAE-activation + fact-timeline/evolution-vs-conflict/autoDream consolidation/recall-throttle + real-plugin e2e)
 npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
-# Total: 247 unit tests (all green)
+npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views: list/timeline/graph)
+# Total: 264 unit tests (all green)
+# (memory 196 + ui 12 + common 15 + worldbook 10 + retriever 4 + workflow 13 + curriculum 9)
 ```
 
 ### Roadmap (next)
 
-1. Frontend polish: P4 inline tool UIs, P5 shell light-theme polish; wire the ready-made memory endpoints into the panel (memory timeline view, insights / status page with "consolidate now" via `POST /memory/dream`).
+1. Frontend polish: P4 inline tool UIs, P5 shell light-theme polish; memory workspace follow-ups (retrieval-console source badges, inline memory edit).
 2. Content track: real lecture notes + Altklausur exams + complete Modulhandbuch → full 6-metric benchmark.
 3. M6 v2 / M3 leftovers: codeMode enablement, knowledge-layer → retriever bridge, v1 memory.db migration run-through.
-4. Memory follow-ups (ripples-of-aion P3 track, see `docs/RIPPLES_OF_AION_ADOPTION.md` §13): entity-weighted retrieval, memory graph, retrieval debug view.
+4. Memory follow-ups (ripples-of-aion P3 track, see `docs/RIPPLES_OF_AION_ADOPTION.md` §13): entity-weighted retrieval, memory graph refinements, retrieval debug view badges.
 
 ---
 
@@ -276,15 +279,15 @@ npm test -w @aemeath/dsh-plugin-memory       # 196 （守门员/BM25 冲突/引�
 npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
-# 合计：247 项单测（全绿）
+# 合计：264 项单测（全绿，含 ui-memory-view 12）
 ```
 
 ### 下一步
 
-1. 前端打磨收尾：P4 工具内联 UI、P5 桌宠壳亮色打磨；把已就绪的记忆端点接进面板（时间轴视图、洞察/状态页 + 「立即整合」走 `POST /memory/dream`）。
+1. 前端打磨收尾：P4 工具内联 UI、P5 桌宠壳亮色打磨；记忆工作区后续（检索台来源徽章、记忆内联编辑）。
 2. 内容轨：真实讲义 + Altklausur 真题 + Modulhandbuch 数据完善 → 完整六指标基准。
 3. M6 v2 / M3 遗留：codeMode 启用、知识层 → retriever 桥接、v1 memory.db 迁移跑通。
-4. 记忆层后续（ripples-of-aion P3 轨，见 `docs/RIPPLES_OF_AION_ADOPTION.md` §13）：实体提及加权、记忆图谱、检索台调试视图。
+4. 记忆层后续（ripples-of-aion P3 轨，见 `docs/RIPPLES_OF_AION_ADOPTION.md` §13）：实体提及加权、记忆图谱细化、检索台来源徽章。
 
 ---
 
