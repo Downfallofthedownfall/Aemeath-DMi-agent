@@ -233,7 +233,16 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
   // ---- 打开存储域 ----
   const domain = await ctx.storageDomain.open(MEMORY_DOMAIN);
+  /**
+   * 存储域是否已关闭（进程退出/插件卸载）。
+   * 关闭后任何对 domain 表的读写都会抛 "domain '…' is closed"；而写入路径有一部分是
+   * fire-and-forget（session/disposed 的强制总结），这类异常会**逃出**并让进程 fatal 退出
+   * （真机跑一次性会话时踩到过）。因此关闭后：闭合/容量淘汰等收尾动作直接跳过，只留下
+   * 已经落盘的主记录。
+   */
+  let domainClosed = false;
   ctx.effect(() => () => {
+    domainClosed = true;
     void domain.close();
   });
   const memories = domain.table('memories') as unknown as KvTable<string, MemoryRecord>;
@@ -600,10 +609,16 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     await enforceCapacity(scope, scope === 'global' ? l3Capacity : l2Capacity);
     log(`记忆已写入 preset=${preset} cat=${category} imp=${importance} scope=${scope}（${content.slice(0, 30)}…）${newClaims.length ? ` claim=${newClaims.length}` : ''}`);
     // T1：**先落新记录**（上一步）→ **再闭合**同 (entity, attr) 的旧活跃断言；失败只 warn。
-    // 闭合时刻由 closureTimeOf 保证严格晚于新断言的起点（见该函数注释）。
-    if (newClaims.length) {
-      const rec = memories.get(id);
-      await closeSupersededClaims(id, newClaims, closureTimeOf(rec?.created_at ?? Date.now(), newClaims), preWriteSnapshot);
+    // 存储域可能已关闭（进程退出时 session/disposed 的总结还会写一次）：此时 `memories.get`
+    // 会抛 "domain is closed"，而这发生在 fire-and-forget 的调用链里，**异常会逃出并让进程
+    // fatal 退出**（真机跑一次性会话时踩到过）。故整段包 try/catch，且 dispose 后不再读表。
+    if (newClaims.length && !domainClosed) {
+      try {
+        const rec = memories.get(id);
+        await closeSupersededClaims(id, newClaims, closureTimeOf(rec?.created_at ?? Date.now(), newClaims), preWriteSnapshot);
+      } catch (e) {
+        warn(`时间轴闭合跳过（存储域可能已关闭）: ${(e as Error).message}`);
+      }
     }
     return id;
   };

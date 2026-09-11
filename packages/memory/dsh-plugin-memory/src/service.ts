@@ -14,6 +14,7 @@ import { search as bm25Search } from './bm25.js';
 import { appendL1, removeL1Turns, shouldTriggerL1 } from './layers.js';
 import { buildRelationshipCue } from './mood.js';
 import { computeActivation, activationOf, ACTIVATION_DEFAULT, type LifecycleStatus } from './engine.js';
+import { CANONICAL_ATTRS } from './attributes.js';
 import type { EntityClaim } from './timeline.js';
 import { EMPTY_INSIGHTS, type Insights } from './types.js';
 import type { MemoryRecord, AuditRecord, KnowledgeRecord, UserProfile, RelationshipRecord, Category, L1Turn } from './types.js';
@@ -331,6 +332,15 @@ export class MemoryService extends Service {
   /** 当前有效值（多条活跃取 valid_from 最大者）；无活跃断言 → undefined。 */
   currentClaim(entity: string, attribute: string): EntityClaim | undefined {
     return this.deps.currentClaim?.(entity, attribute);
+  }
+
+  /**
+   * 时间轴筛选/分组用的规范属性词表。
+   * 面板要画"这个实体有哪些属性"，只能遍历已知属性（域表没有属性二级索引）；
+   * 没有这个方法时上层只能退化到"查一个指定属性"，多属性时间轴就看不全（真机验证时踩到过）。
+   */
+  knownAttributes(): string[] {
+    return [...CANONICAL_ATTRS];
   }
 
   /** 面板/工具便捷：某实体全部属性的当前值（遍历已知规范词表）。 */

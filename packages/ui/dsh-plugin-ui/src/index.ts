@@ -518,8 +518,12 @@ export function apply(ctx: Context): void {
         const raw = await readBody(req);
         const parsed = JSON.parse(raw || '{}') as { idPrefix?: string; action?: string; id?: string; library?: string; topic?: string };
         // 记忆工作区「洞察」页：立即整合（autoDream，T3）。绝不在空闲之外自动触发。
+        // 这是唯一会**花 token** 的写动作，故追加一条服务器日志（含 Origin 是否缺失）：
+        // checkWriteOrigin 对无 Origin 的请求是有意放行的（非浏览器客户端；DNS rebinding 由
+        // "Origin 必须是 loopback" 挡住），这里只做留痕便于事后审计是谁触发的整合。
         if (parsed.action === 'dream') {
           if (!memory.dreamNow) return jsonError(res, 500, 'memory.dreamUnavailable', 'consolidation unavailable');
+          console.log(`[aemeath-ui] 记忆整合被触发（POST /aemeath/api/memory action=dream，Origin=${String(req.headers.origin ?? '(无)')}）`);
           const result = await memory.dreamNow();
           json(res, 200, { ok: true, ran: !!result, insights: result ?? memory.currentInsights?.() ?? null });
           return;
