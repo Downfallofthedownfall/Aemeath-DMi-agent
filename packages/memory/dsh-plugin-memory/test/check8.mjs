@@ -24,6 +24,8 @@ import {
   CONSOLIDATION_MAX_CLUSTERS,
   CONSOLIDATION_MAX_CONFLICTS,
 } from '../lib/limits.js';
+import { sanitizeCandidateClaims, MAX_CLAIMS_PER_CANDIDATE, buildSummarizePrompt } from '../lib/layers.js';
+import { CANONICAL_ATTRS } from '../lib/attributes.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -276,6 +278,50 @@ t('Consolidator.run()：LLM 返回 null（通道不可用）→ 保留旧洞察�
   assert.equal(await c.run(), null);
   assert.equal(puts, 0);
   assert.deepEqual(c.current(), old); // 旧洞察原样
+});
+
+// ——————————————————————————————————————————————
+// 总结层 claims 清洗（2026-09 LLM claims 层）
+// ——————————————————————————————————————————————
+t('sanitizeCandidateClaims：白名单外的属性名一律丢弃（LLM 编造不进时间轴）', () => {
+  const out = sanitizeCandidateClaims(
+    [
+      { attribute: '考试', value: '下周三' },
+      { attribute: '编造属性', value: 'x' },
+      { attribute: '所在地', value: '上海' },
+    ],
+    CANONICAL_ATTRS,
+  );
+  assert.deepEqual(out, [
+    { entity: '用户', attribute: '考试', value: '下周三' },
+    { entity: '用户', attribute: '所在地', value: '上海' },
+  ]);
+});
+
+t('sanitizeCandidateClaims：非数组/非对象/缺字段 → 安全丢弃（不抛）', () => {
+  assert.deepEqual(sanitizeCandidateClaims(null, CANONICAL_ATTRS), []);
+  assert.deepEqual(sanitizeCandidateClaims('坏输出', CANONICAL_ATTRS), []);
+  assert.deepEqual(sanitizeCandidateClaims([null, 42, {}, { attribute: '考试' }, { value: '下周三' }], CANONICAL_ATTRS), []);
+});
+
+t('sanitizeCandidateClaims：逐候选上限 + 去重 + 截断 + entity 缺省', () => {
+  const many = [];
+  for (let i = 0; i < 10; i++) many.push({ attribute: '课程', value: `课${i}` });
+  many.push({ attribute: '课程', value: '课0' }); // 重复
+  const out = sanitizeCandidateClaims(many, CANONICAL_ATTRS);
+  assert.equal(out.length, MAX_CLAIMS_PER_CANDIDATE);
+  assert.equal(out.every((c) => c.entity === '用户'), true);
+  const long = sanitizeCandidateClaims([{ attribute: '偏好', value: 'x'.repeat(200), entity: '  我  ' }], CANONICAL_ATTRS);
+  assert.ok(long[0].value.length <= 60);
+  assert.equal(long[0].entity, '我');
+});
+
+t('buildSummarizePrompt：把 claims 协议与属性白名单写进提示词', () => {
+  const turns = [{ sessionId: 's1', query: '我下周三有物理考试', reply: '记下了', preset: 'aemeath', ts: 1, kind: 'fact' }];
+  const prompt = buildSummarizePrompt(turns, []);
+  assert.match(prompt, /"claims"/);
+  assert.match(prompt, /考试/); // 白名单出现
+  assert.match(prompt, /无明确属性则省略 claims/);
 });
 
 console.log(`\n[memory-insights] ${passed} 项断言全部通过`);

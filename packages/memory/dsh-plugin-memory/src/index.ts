@@ -37,16 +37,16 @@ import type {} from '@deepseek-ai/dsh-credentials';
 import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, writeGate, classifyConflict, extractClaims, hasNewClaimValue, type Category, type WriteGateVerdict, type ConflictDecision, type ConflictType, type ExtractedClaim } from './gatekeeper.js';
 import { search as bm25Search, overlapScore } from './bm25.js';
 import { selectEviction, suggestProfileFacts, computeActivation, classifyActivation, activationOf, afterRecallActivation, shouldPersistRecall, ACTIVATION_DEFAULT, ACTIVATION_ACTIVE_THRESHOLD } from './engine.js';
-import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
+import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, sanitizeCandidateClaims, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
 import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, relationshipRecordSchema, insightsSchema, EMPTY_INSIGHTS, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn, type RelationshipRecord, type Insights } from './types.js';
 import { MemoryService } from './service.js';
 import { classifyMoodStable, majorityLabel, pushMoodWindow, relationshipSignalOf, nextCareCueOf, moodClassifierPrompt, MOOD_WINDOW_CAP } from './mood.js';
 // T1/T2（借 ripples-of-aion）：事实时间轴 + 演进≠矛盾
 import { findClosableClaims, closeClaims, prepareClaims, activeClaimOf, timelineOf, hasClosedTimelineOverlap, type EntityClaim } from './timeline.js';
 // T4（借 ripples-of-aion）：属性归一化
-import { canonicalAttr } from './attributes.js';
+import { canonicalAttr, CANONICAL_ATTRS } from './attributes.js';
 // T3/T6（借 ripples-of-aion）：autoDream 空闲整合 + LLM 抢救解析
-import { Consolidator, type InsightRecordInput } from './insights.js';
+import { Consolidator, parseLlmJson, type InsightRecordInput } from './insights.js';
 // T7：护栏集中表
 import {
   CONSOLIDATION_CATCHUP_DELAY_MS,
@@ -275,12 +275,19 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
    * @param batchExisting 仅放"同一批次内已见过的断言"（一般传 []）。**不要传全表活跃断言**：
    *        否则第二次写入同一事实时返回空数组，会连带丢掉本该发生的旧断言闭合
    *        （值相同的重述由记录层 consolidateTarget 的内容去重吸收）。
+   * @param presets 已备好的断言（LLM claims 层）；给定时**跳过正则抽取**，直接用它们
    * @returns 过滤后的新 claim；空数组 → 调用方不写 entity_claims 字段
    */
-  const prepareEntityClaims = (texts: readonly string[], batchExisting: readonly EntityClaim[], baseTs: number): EntityClaim[] => {
+  const prepareEntityClaims = (
+    texts: readonly string[],
+    batchExisting: readonly EntityClaim[],
+    baseTs: number,
+    presets?: readonly ExtractedClaim[],
+  ): EntityClaim[] => {
     try {
       const raw: ExtractedClaim[] = [];
-      for (const t of texts) raw.push(...extractClaims(t, '用户'));
+      if (presets) raw.push(...presets);
+      else for (const t of texts) raw.push(...extractClaims(t, '用户'));
       if (!raw.length) return [];
       const asClaims: EntityClaim[] = raw.map((c) => ({ entity: c.entity, attribute: c.attribute, value: c.value, valid_from: baseTs, valid_until: null }));
       return prepareClaims(asClaims, batchExisting, baseTs);
@@ -818,7 +825,16 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     // T1：claim 在**写入前一次性备好**（真实 valid_from），随后 save/supersede 两条分支复用
     // 同一批——merge 分支若重新生成 claim，会得到"更晚的 valid_from"，被新一轮写入闭合时
     // 就会出现 valid_until < valid_from 的脏区间（真机管线验证时踩到过）。
-    const preparedClaims = prepareEntityClaims([m.content], [], Date.now());
+    //
+    // 2026-09（LLM claims 层）：优先级 = 总结层 LLM 产出的 claims > 规则层正则抽取。
+    // LLM 抽得到的表述（作息/偏好/多事实句/考试日程）是规则层的主要漏抽来源；两者都空时
+    // 就不写 entity_claims（机制完好，只是这条事实没有属性化）。规则层抽取同时兜底
+    // "LLM 没给 claims / 规则兜底总结"的场景。
+    const llmClaims = m.claims ?? [];
+    const ruleClaims = llmClaims.length ? [] : extractClaims(m.content, '用户');
+    const claimSource: ExtractedClaim[] = llmClaims.length ? llmClaims.map((c) => ({ entity: c.entity ?? '用户', attribute: c.attribute, value: c.value })) : ruleClaims;
+    const preparedClaims = prepareEntityClaims([m.content], [], Date.now(), claimSource);
+    if (llmClaims.length) auditWrite('claim_llm', undefined, `总结层产出 ${llmClaims.length} 条断言（${llmClaims.map((c) => `${c.attribute}=${c.value}`).join('；')}）`);
     // 2026-09 修复（真机管线验证暴露）：**同一轮**的"即时总结"会把刚写入的记忆再总结一次，
     // 而调用方传入的记忆快照是过程开始时的旧状态 → consolidateTarget 看不到刚写的记录，
     // 于是新旧两条内容在候选里并存。此处用**实时表状态**复检一次：若该事实已在表里
@@ -1000,8 +1016,22 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
       const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
       const text = data.choices?.[0]?.message?.content ?? '{}';
-      const parsed = JSON.parse(text) as { memories?: L1MemoryCandidate[]; knowledge?: L1KnowledgeCandidate[] };
-      return { memories: parsed.memories ?? [], knowledge: parsed.knowledge ?? [] };
+      // 2026-09：解析走**抢救层**（围栏剥离 → JSON.parse → 首个 {} → 首个 []），
+      // 不再直接 JSON.parse——模型偶尔会在 JSON 外包一层说明文字，旧实现会整批走规则兜底。
+      const parsed = parseLlmJson(text);
+      const obj = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as {
+        memories?: Array<Record<string, unknown>>;
+        knowledge?: L1KnowledgeCandidate[];
+      };
+      const memories: L1MemoryCandidate[] = (Array.isArray(obj.memories) ? obj.memories : []).map((m) => ({
+        content: String(m?.content ?? ''),
+        category: (m?.category as Category) ?? 'session_summary',
+        importance: typeof m?.importance === 'number' ? m.importance : 50,
+        scope: m?.scope === 'global' ? 'global' : 'mode',
+        // claims 白名单清洗（编造属性名不进时间轴；类型错误安全丢弃）
+        claims: sanitizeCandidateClaims(m?.claims, CANONICAL_ATTRS),
+      }));
+      return { memories, knowledge: Array.isArray(obj.knowledge) ? obj.knowledge : [] };
     } catch (e) {
       warn(`总结层 LLM 调用失败: ${(e as Error).message}`);
       return null;

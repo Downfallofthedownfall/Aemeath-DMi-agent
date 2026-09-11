@@ -166,6 +166,36 @@ const baseConfig = (extra = {}) => ({
 });
 
 /**
+ * 装配一个假 LLM 通道（总结层断言测试用）：替换 globalThis.fetch，按 prompt 内容返回
+ * 预设的 summarize JSON。返回还原函数与调用计数。
+ */
+const installFakeLlm = (summarizePayload) => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: init?.body });
+    if (String(url).includes('/chat/completions')) {
+      const body = typeof init?.body === 'string' ? init.body : '{}';
+      // 总结层：payload 里含"分层记忆的总结层"；其余（冲突/情绪）返回通用 JSON
+      const isSummarize = body.includes('总结层');
+      const content = isSummarize ? JSON.stringify(summarizePayload) : '{"type":"direct_conflict","reason":"fake"}';
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content } }] }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
+};
+
+/**
  * 造一个 dsh 形状的 session（resolveSessionPreset 读 session.events / header.agentPreset）。
  * 真宿主的 session 还带更多字段，但插件只用这两处，故按契约最小化。
  */
@@ -467,6 +497,105 @@ await t('真管线：/memory stats 与 /memory list 正常（既有命令无回�
   assert.match(stats.text, /active=1/);
   const list = await h.registeredCommands[0].handler({ rawInput: 'list' });
   assert.match(list.text, /林澈/);
+});
+
+// ——————————————————————————————————————————————
+// 6) 总结层 claims（LLM 层）：claims 作为第三个输出字段 → 时间轴
+// ——————————————————————————————————————————————
+await t('真管线 LLM claims：总结层产出的 claims 直接成为 entity_claims（规则层抽不到的表述）', async () => {
+  const fake = installFakeLlm({
+    memories: [
+      {
+        content: '我下周三有物理考试',
+        category: 'study_log',
+        importance: 70,
+        scope: 'mode',
+        // 规则层正则抽不到这句（没有 考试=… 的句式），只能靠 LLM claims
+        claims: [{ attribute: '考试', value: '下周三' }],
+      },
+    ],
+    knowledge: [],
+  });
+  try {
+    const h = makeHarness();
+    await h.start(baseConfig({ llm: { enabled: true, apiKey: 'test-key', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', batchSize: 8, minBatch: 4 } }));
+    // 一轮 pending（"我下周三有物理考试" 不命中身份/命令分支）→ 进 L1 → 触发动词 → 总结层 LLM
+    await runTurn(h, 's1', '我下周三有物理考试', '好的，加油');
+    await runTurn(h, 's2', '总结一下', '好的');
+
+    const row = h.tables.memories.all().find((r) => r.content.includes('物理考试'));
+    assert.ok(row, `应写入该记忆，实际行：${JSON.stringify(h.tables.memories.all().map((r) => r.content))}`);
+    assert.equal(row.entity_claims?.[0]?.attribute, '考试');
+    assert.equal(row.entity_claims?.[0]?.value, '下周三');
+    assert.equal(row.entity_claims?.[0]?.valid_until, null);
+    // 审计留痕（LLM claim 来源可追溯）
+    const llmAudit = h.tables.audit.all().filter((a) => a.action === 'claim_llm');
+    assert.equal(llmAudit.length, 1);
+    assert.match(llmAudit[0].detail, /考试=下周三/);
+    // 时间轴可查
+    const out = await h.registeredCommands[0].handler({ rawInput: 'timeline 用户 考试' });
+    assert.match(out.text, /下周三/);
+  } finally {
+    fake.restore();
+  }
+});
+
+await t('真管线 LLM claims：白名单外的编造属性不进时间轴', async () => {
+  const fake = installFakeLlm({
+    memories: [
+      {
+        content: '用户喜欢在图书馆学习',
+        category: 'preference',
+        importance: 60,
+        scope: 'mode',
+        claims: [
+          { attribute: '编造的属性', value: '图书馆' },
+          { attribute: '偏好', value: '在图书馆学习' },
+        ],
+      },
+    ],
+    knowledge: [],
+  });
+  try {
+    const h = makeHarness();
+    await h.start(baseConfig({ llm: { enabled: true, apiKey: 'test-key', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', batchSize: 8, minBatch: 4 } }));
+    await runTurn(h, 's1', '我平时都在图书馆学习', '好的');
+    await runTurn(h, 's2', '整理一下', '好的');
+    const row = h.tables.memories.all().find((r) => (r.entity_claims ?? []).length > 0);
+    assert.ok(row, '应有带 claim 的记忆');
+    assert.deepEqual((row.entity_claims ?? []).map((c) => c.attribute), ['偏好']);
+    assert.deepEqual((row.entity_claims ?? []).map((c) => c.value), ['在图书馆学习']);
+  } finally {
+    fake.restore();
+  }
+});
+
+await t('真管线 LLM claims：LLM 输出被说明文字包裹时经抢救解析仍生效（旧实现会整批降级）', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      choices: [
+        {
+          message: {
+            content: '好的，这是结果：\n```json\n{"memories":[{"content":"我搬到柏林了","category":"user_fact","importance":80,"scope":"global","claims":[{"attribute":"所在地","value":"柏林"}]}],"knowledge":[]}\n```\n以上。',
+          },
+        },
+      ],
+    }),
+  });
+  try {
+    const h = makeHarness();
+    await h.start(baseConfig({ llm: { enabled: true, apiKey: 'test-key', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', batchSize: 8, minBatch: 4 } }));
+    await runTurn(h, 's1', '我去年搬到了柏林', '好的');
+    await runTurn(h, 's2', '总结一下', '好的');
+    const row = h.tables.memories.all().find((r) => r.content.includes('柏林'));
+    assert.ok(row, `应写入柏林记忆，实际：${JSON.stringify(h.tables.memories.all().map((r) => r.content))}`);
+    assert.equal(row.entity_claims?.[0]?.value, '柏林');
+  } finally {
+    globalThis.fetch = original;
+  }
 });
 
 console.log(`\n[memory-plugin-e2e] ${passed} 项断言全部通过`);

@@ -11,6 +11,7 @@
 // ============================================================
 
 import { search as bm25Search, overlapScore } from './bm25.js';
+import { CANONICAL_ATTRS } from './attributes.js';
 import type { Category } from './gatekeeper.js';
 import { decide, extractMemory, hasTimeEvidence, classifyKnowledgeTopic } from './gatekeeper.js';
 import type { L1Turn } from './types.js';
@@ -21,6 +22,53 @@ export interface L1MemoryCandidate {
   category: Category;
   importance: number;
   scope: 'mode' | 'global';
+  /**
+   * 2026-09（借 ripples-of-aion 的 claims 输出）：总结层**在同一次 LLM 调用里**顺带产出的
+   * 事实断言三元组。规则层正则抽不到的表述（作息/偏好/多事实句/考试日程）由它补上，
+   * 且不增加 LLM 调用次数（增量只是输出 JSON 里多几个 token）。
+   * 缺省 = 该候选没有属性化断言（时间轴只保留记录本身）。
+   */
+  claims?: Array<{ entity?: string; attribute: string; value: string }>;
+}
+
+/** 一条候选携带的 claim 数上限（护栏：LLM 可能给一大堆）。 */
+export const MAX_CLAIMS_PER_CANDIDATE = 4;
+
+/** 属性名最大字符数（与 attributes/lite 护栏同量级；LLM 可能给出超长脏属性）。 */
+const CLAIM_ATTR_MAX_CHARS = 24;
+/** 值最大字符数。 */
+const CLAIM_VALUE_MAX_CHARS = 60;
+
+/**
+ * 总结层 claims 字段的清洗（纯函数，可单测）：
+ *   - 非数组 → []；单条非对象/缺 attribute/value → 丢弃；
+ *   - attribute 必须在给定词表内（`knownAttrs`），否则丢弃——**白名单**是这里的关键护栏：
+ *     LLM 编造的属性名会让时间轴出现永远查不到的键；
+ *   - 每候选最多 MAX_CLAIMS_PER_CANDIDATE 条，按 (attribute, value) 去重；
+ *   - entity 缺省 '用户'（与规则层抽取口径一致）。
+ * @param raw LLM 输出的 claims 数组（未知类型一律安全丢弃）
+ * @param knownAttrs 允许的属性名集合（调用方传 attributes.ts 的规范词表）
+ */
+export function sanitizeCandidateClaims(raw: unknown, knownAttrs: readonly string[]): Array<{ entity: string; attribute: string; value: string }> {
+  if (!Array.isArray(raw)) return [];
+  const known = new Set(knownAttrs);
+  const out: Array<{ entity: string; attribute: string; value: string }> = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const attribute = typeof o.attribute === 'string' ? o.attribute.trim().slice(0, CLAIM_ATTR_MAX_CHARS) : '';
+    const value = typeof o.value === 'string' ? o.value.trim().replace(/\s+/g, ' ').slice(0, CLAIM_VALUE_MAX_CHARS) : '';
+    const entity = typeof o.entity === 'string' && o.entity.trim() ? o.entity.trim() : '用户';
+    if (!attribute || !value) continue;
+    if (!known.has(attribute)) continue; // 白名单：编造的属性名不进时间轴
+    const key = `${entity}\u0000${attribute}\u0000${value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ entity, attribute, value });
+    if (out.length >= MAX_CLAIMS_PER_CANDIDATE) break;
+  }
+  return out;
 }
 
 /** 总结层产出的"知识"候选（落知识层 pending 评审门）。 */
@@ -94,19 +142,26 @@ function truncate(text: string, max: number): string {
  * JSON { memories: [{content, category, importance, scope}], knowledge: [{content, topic}] }。
  * @param turns  缓冲轮次
  * @param similar 每条缓冲轮的相似记忆（BM25 top-k，喂给 LLM 做合并/冲突参考）
+ * @param knownAttrs claims 的 attribute 白名单（缺省取 attributes.ts 的规范词表）
  */
-export function buildSummarizePrompt(turns: L1Turn[], similar: Array<{ id: string; content: string }>): string {
+export function buildSummarizePrompt(
+  turns: L1Turn[],
+  similar: Array<{ id: string; content: string }>,
+  knownAttrs: readonly string[] = CANONICAL_ATTRS,
+): string {
   const lines = turns.map((t) => `- [${t.kind}] ${t.preset}｜用户：${truncate(t.query, TRUNC_QUERY_CHARS)}｜physicist：${truncate(t.reply || '', TRUNC_REPLY_CHARS)}`);
   const similarBlock = similar.length ? similar.map((s) => `  - ${s.id}：${s.content}`).join('\n') : '  （无相似记忆）';
   return [
     '你是分层记忆的总结层。下面是一段 L1 工作区缓冲的对话轮次（每轮含用户提问与回复；kind=fact 是用户事实，kind=knowledge 是物理/数学知识）。',
     '请总结为 JSON（不要输出其他内容）：',
-    '{"memories":[{"content":"第一人称记忆内容","category":"user_fact|study_log|preference|relationship|session_summary","importance":0-100,"scope":"mode|global"}],"knowledge":[{"content":"知识条目","topic":"主题标签"}]}',
+    '{"memories":[{"content":"第一人称记忆内容","category":"user_fact|study_log|preference|relationship|session_summary","importance":0-100,"scope":"mode|global","claims":[{"attribute":"属性名","value":"值"}]}],"knowledge":[{"content":"知识条目","topic":"主题标签"}]}',
     '规则：',
     '1. memories 只记关于用户的稳定事实：身份、学习计划、进度、偏好、关系；重复信息合并为一条；闲聊/情绪/一次性的不记；',
     '2. scope 判定：跨角色稳定事实（身份/长期偏好/基本习惯）→ global；角色相关（学习计划/进度/课程/日程）→ mode；',
     '3. knowledge 记可复用的物理/数学知识点（公式、定律、方法），每次提问一条，去重；',
     '4. 不确定的 memories 宁缺毋滥（skip），不要编造。',
+    `5. claims=该记忆的属性断言（可选，≤${MAX_CLAIMS_PER_CANDIDATE} 条）；attribute 只能取：${knownAttrs.join('/')}；value ≤20 字。`,
+    '   例：考试=下周三、作息=早上做数学题。无明确属性则省略 claims。',
     '现有记忆相似候选（供合并/更新参考，不强制使用）：',
     similarBlock,
     '对话轮次：',
