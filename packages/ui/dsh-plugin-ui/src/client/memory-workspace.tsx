@@ -351,7 +351,7 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
           </div>
           <div className="mw-browser">
             <div className="mw-col mw-col-filters">
-              <div className="mw-col-title">{t('memws.search.placeholder')}</div>
+              <div className="mw-col-title">{t('memws.search')}</div>
               <div className="mw-search" style={{ marginBottom: 10 }}>
                 <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('memws.search.placeholder')} aria-label={t('memws.search.placeholder')} />
               </div>
@@ -383,8 +383,7 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
             <div className="mw-col mw-col-main">
               <div className="mw-list">
                 {filtered.length === 0 && <div className="mw-empty">{t('memws.empty.memories')}</div>}
-                {filtered.map((m) => (
-                  <div className="mw-row" key={m.id}>
+                {filtered.map((m) => (                  <div className="mw-row" key={m.id}>
                     <div className="mw-row-head">
                       <span className="mw-pill">{t(`memory.category.${m.category}`) === `memory.category.${m.category}` ? m.category : t(`memory.category.${m.category}`)}</span>
                       <span className="mw-pill" data-tone="muted">{m.scope === 'global' ? t('memws.badge.scope.global') : t('memws.badge.scope.mode')}</span>
@@ -456,16 +455,17 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
           </div>
           <div className="mw-graph-wrap">
             <div className="mw-note">{t('memws.graph.hint')}</div>
-            {graph ? (
+            {(graph?.nodes.length ?? 0) > 0 && (graph?.edges.length ?? 0) > 0 ? (
               <EntityGraph
-                data={graph}
+                data={graph as GraphData}
                 onPick={(entity) => {
                   setEntityFilter(entity);
                   setPage('memory');
                 }}
               />
             ) : (
-              <div className="mw-empty">{t('memws.loading')}</div>
+              // 只有孤立实体（或干脆没有 claim）时画不出图：给明确文案，别留一片空白像坏了
+              <div className="mw-empty">{t('memws.graph.empty')}</div>
             )}
           </div>
         </div>
@@ -602,6 +602,7 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
           ))}
         </div>
         <div className="mw-actions">
+          <span className="mw-note" style={{ marginRight: 4, whiteSpace: 'nowrap' }}>{t('memws.escHint')}</span>
           <button type="button" className="mw-icon-btn" title={t('memws.refresh')} onClick={() => { void refresh(); }} aria-label={t('memws.refresh')}>⟳</button>
           <button type="button" className="mw-icon-btn" title={t('memws.close')} onClick={onClose} aria-label={t('memws.close')}>✕</button>
         </div>

@@ -240,7 +240,9 @@ export const zh = {
   'memws.nav.status': '状态',
 
   'memws.memory.desc': '浏览爱弥斯记住的事实：按热度、层级与属性过滤；换行可见实体属性时间轴。',
+  'memws.search': '搜索',
   'memws.search.placeholder': '搜记忆关键词…',
+  'memws.escHint': '按 Esc 或右上角 ✕ 关闭',
   'memws.search.limit': '最多',
   'memws.filter.heat': '热度',
   'memws.filter.heat.all': '全部热度',
@@ -521,7 +523,9 @@ export const en: Record<AemeathKey, string> = {
   'memws.nav.status': 'Status',
 
   'memws.memory.desc': 'Browse what Aemeath remembers: filter by heat, layer and attribute; the entity-attribute timeline unfolds below.',
+  'memws.search': 'Search',
   'memws.search.placeholder': 'Search memories…',
+  'memws.escHint': 'Press Esc or ✕ at the top right to close',
   'memws.search.limit': 'Max',
   'memws.filter.heat': 'Heat',
   'memws.filter.heat.all': 'All heat levels',

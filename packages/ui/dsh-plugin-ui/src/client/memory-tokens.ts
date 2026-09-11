@@ -63,7 +63,12 @@ const CSS = `
 @keyframes aem-memws-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .${MEMORY_WORKSPACE_CLASS} * { box-sizing: border-box; }
 
-/* —— 顶栏：标题 + 居中页签 + 右侧动作 —— */
+/* —— 顶栏：标题 + 居中页签 + 右侧动作 ——
+   重要（Electron 壳兼容，真机截图暴露）：宿主窗口用 titleBarStyle:'hidden' +
+   titleBarOverlay（高 40px，原生最小化/最大化/关闭按钮占右上 right:0..96px，且壳给 body
+   注入了 z-index 2147483647 的拖拽层）。因此本层的顶栏必须**从这 40px 之下开始**——
+   否则我的 ⟳/✕ 会被原生窗口按钮盖住、点了没反应（我在浏览器里验不出来，只有桌宠壳有这个）。
+   顶栏自身做成拖拽区（-webkit-app-region: drag）好让用户拖窗口，按钮显式 no-drag 才可点。 */
 .${MEMORY_WORKSPACE_CLASS} .mw-top {
   flex: none;
   position: relative;
@@ -71,11 +76,13 @@ const CSS = `
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  height: 52px;
-  padding: 0 16px;
+  min-height: 48px;
+  height: auto;
+  padding: 40px 16px 8px; /* 顶部 40px 让位给原生窗口按钮/拖拽条 */
   border-bottom: 1px solid var(--aem-line);
   background: light-dark(rgba(255, 255, 255, 0.72), var(--dsw-alias-bg-layer-2));
   backdrop-filter: blur(8px);
+  -webkit-app-region: drag;
 }
 .${MEMORY_WORKSPACE_CLASS} .mw-title { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
 .${MEMORY_WORKSPACE_CLASS} .mw-title h1 {
@@ -111,6 +118,7 @@ const CSS = `
   font-family: inherit;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  -webkit-app-region: no-drag; /* 顶栏是拖拽区：交互控件必须显式豁免，否则点不动 */
 }
 .${MEMORY_WORKSPACE_CLASS} .mw-tab:hover { background: light-dark(rgba(255, 255, 255, 0.9), var(--dsw-alias-interactive-bg-hover)); color: var(--aem-accent); }
 .${MEMORY_WORKSPACE_CLASS} .mw-tab[data-active="true"] {
@@ -119,7 +127,7 @@ const CSS = `
   font-weight: 600;
   box-shadow: 0 3px 10px light-dark(rgba(224, 90, 133, 0.28), rgba(0, 0, 0, 0.4));
 }
-.${MEMORY_WORKSPACE_CLASS} .mw-actions { display: flex; align-items: center; gap: 6px; }
+.${MEMORY_WORKSPACE_CLASS} .mw-actions { display: flex; align-items: center; gap: 6px; -webkit-app-region: no-drag; }
 .${MEMORY_WORKSPACE_CLASS} .mw-icon-btn {
   width: 30px; height: 30px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -127,15 +135,16 @@ const CSS = `
   background: transparent; color: var(--aem-ink-soft);
   cursor: pointer; font-size: 14px; font-family: inherit;
   transition: background 0.15s, color 0.15s;
+  -webkit-app-region: no-drag;
 }
 .${MEMORY_WORKSPACE_CLASS} .mw-icon-btn:hover { background: var(--aem-accent-soft); color: var(--aem-accent); }
 
 /* —— 页面与通用块 —— */
 .${MEMORY_WORKSPACE_CLASS} .mw-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.${MEMORY_WORKSPACE_CLASS} .mw-page { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 18px 16px; overflow: hidden; }
-.${MEMORY_WORKSPACE_CLASS} .mw-page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 4px 0 10px; }
+.${MEMORY_WORKSPACE_CLASS} .mw-page { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6px 16px 12px; overflow: hidden; }
+.${MEMORY_WORKSPACE_CLASS} .mw-page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 0 0 6px; }
 .${MEMORY_WORKSPACE_CLASS} .mw-page-title { font-size: 13px; font-weight: 600; color: var(--aem-ink); letter-spacing: 0.5px; }
-.${MEMORY_WORKSPACE_CLASS} .mw-page-desc { margin: 3px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--aem-ink-dim); }
+.${MEMORY_WORKSPACE_CLASS} .mw-page-desc { margin: 2px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--aem-ink-dim); }
 .${MEMORY_WORKSPACE_CLASS} h2 {
   display: flex; align-items: center; gap: 6px;
   margin: 14px 0 8px;
@@ -165,9 +174,17 @@ const CSS = `
 /* —— 三栏浏览（记忆页） —— */
 .${MEMORY_WORKSPACE_CLASS} .mw-browser { flex: 1; min-height: 0; display: flex; gap: 14px; }
 .${MEMORY_WORKSPACE_CLASS} .mw-col { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.${MEMORY_WORKSPACE_CLASS} .mw-col-filters { flex: none; width: 190px; overflow-y: auto; }
-.${MEMORY_WORKSPACE_CLASS} .mw-col-main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-.${MEMORY_WORKSPACE_CLASS} .mw-col-title { font-size: 11px; letter-spacing: 1px; color: var(--aem-ink-dim); margin: 4px 0 6px; }
+.${MEMORY_WORKSPACE_CLASS} .mw-col-filters { flex: none; width: 186px; overflow-y: auto; }
+.${MEMORY_WORKSPACE_CLASS} .mw-col-main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.${MEMORY_WORKSPACE_CLASS} .mw-col-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--aem-ink-soft);
+  margin: 2px 0 6px;
+}
+.${MEMORY_WORKSPACE_CLASS} .mw-col-title::before {
+  content: ""; width: 5px; height: 5px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--aem-accent), var(--aem-accent-2));
+}
 .${MEMORY_WORKSPACE_CLASS} .mw-search { position: relative; }
 .${MEMORY_WORKSPACE_CLASS} .mw-search input,
 .${MEMORY_WORKSPACE_CLASS} .mw-field {
@@ -191,8 +208,8 @@ const CSS = `
   border: 1px solid var(--aem-line);
   border-radius: var(--aem-radius-card);
   box-shadow: var(--aem-shadow-card);
-  padding: 10px 13px;
-  margin-bottom: 8px;
+  padding: 9px 13px;
+  margin-bottom: 7px;
 }
 .${MEMORY_WORKSPACE_CLASS} .mw-row-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 5px; }
 .${MEMORY_WORKSPACE_CLASS} .mw-row-text { font-size: 13px; line-height: 1.65; color: var(--aem-ink); word-break: break-word; }
