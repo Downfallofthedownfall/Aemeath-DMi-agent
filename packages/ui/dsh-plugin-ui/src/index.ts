@@ -153,6 +153,21 @@ export function apply(ctx: Context): void {
     l1CapacityOf?(): { capacity: number; threshold: number };
     /** 纯手动桥接：把一条 L2/L3 记忆写入世界书生成文件（生成条目哈希去重，热重载生效）。 */
     toWorldbook?(id: string, opts?: { library?: string; topic?: string }): Promise<{ ok: boolean; id?: string; title?: string; error?: string }>;
+    /** T1 事实时间轴：某实体某属性的区间断言（借 ripples-of-aion 的 entityClaims）。 */
+    timeline?(entity: string, attribute: string): Array<{ entity: string; attribute: string; value: string; valid_from: number; valid_until: number | null }>;
+    /** T1：某实体某属性的当前有效断言（多条活跃取 valid_from 最大者）。 */
+    currentClaim?(entity: string, attribute: string): { entity: string; attribute: string; value: string; valid_from: number; valid_until: number | null } | undefined;
+    /** 时间轴筛选用的规范属性词表（attributes.ts 的 CANONICAL_ATTRS）。 */
+    knownAttributes?(): string[];
+    /** T3 洞察：最近一次自动整合的主题簇 + 疑似矛盾（只含 recordIds，不含原文）。 */
+    currentInsights?(): {
+      version: number;
+      last_run_at: number;
+      clusters: Array<{ id: string; label: string; recordIds: string[]; created_at: number }>;
+      conflicts: Array<{ id: string; note: string; recordIds: [string, string]; created_at: number }>;
+    };
+    /** T3 手动触发一次空闲整合（autoDream）；null = 被闸门拦下或失败（旧洞察不变）。 */
+    dreamNow?(): Promise<{ version: number; last_run_at: number; clusters: unknown[]; conflicts: unknown[] } | null>;
   } | undefined;
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -469,6 +484,63 @@ export function apply(ctx: Context): void {
     }
     try {
       if (req.method === 'GET') {
+        // —— 记忆工作区新增视图（ripples 五页 IA；全走 ctx.memory 服务，不依赖 memory 插件
+        //    自己的 token 认证端点，因此前端无需持有任何 token）——
+        const action = new URL(req.url ?? '/', 'http://localhost').searchParams.get('action');
+        if (action === 'timeline') {
+          const q = new URL(req.url ?? '/', 'http://localhost').searchParams;
+          const entity = (q.get('entity') ?? '用户').slice(0, 40);
+          const attribute = (q.get('attribute') ?? '').slice(0, 40);
+          if (!attribute) {
+            jsonError(res, 400, 'memory.timelineAttributeRequired', 'attribute required');
+            return;
+          }
+          // 时间轴视图：一次返回该实体**全部**属性的区间断言 + 已知属性清单（供筛选下拉）
+          const attrs = Array.isArray(memory.knownAttributes?.()) ? (memory.knownAttributes?.() as string[]) : [];
+          const rows = attrs
+            .map((a) => ({ attribute: a, claims: memory.timeline?.(entity, a) ?? [] }))
+            .filter((r) => r.claims.length > 0);
+          json(res, 200, { ok: true, entity, attributes: rows, current: memory.currentClaim?.(entity, attribute) ?? null });
+          return;
+        }
+        if (action === 'insights') {
+          const insights = memory.currentInsights?.() ?? null;
+          json(res, 200, { ok: true, insights });
+          return;
+        }
+        if (action === 'graph') {
+          // 实体共现图：节点=实体（提及次数），边=同记忆共现次数（借 ripples 的 buildEntityGraph 思想）
+          const nodes = new Map<string, { id: string; count: number }>();
+          const edges = new Map<string, { a: string; b: string; weight: number }>();
+          const claimsOf = (rec: Record<string, unknown>): Array<{ entity?: unknown }> =>
+            Array.isArray(rec.entity_claims) ? (rec.entity_claims as Array<{ entity?: unknown }>) : [];
+          for (const { key, rec } of memory.list()) {
+            const entities = Array.from(new Set(claimsOf(rec).map((c) => String(c.entity ?? '').trim()).filter(Boolean)));
+            if (!entities.length) continue;
+            void key;
+            for (const e of entities) nodes.set(e, { id: e, count: (nodes.get(e)?.count ?? 0) + 1 });
+            for (let i = 0; i < entities.length; i++) {
+              for (let j = i + 1; j < entities.length; j++) {
+                const [x, y] = entities[i] < entities[j] ? [entities[i], entities[j]] : [entities[j], entities[i]];
+                const k = `${x}\u0000${y}`;
+                const cur = edges.get(k);
+                edges.set(k, { a: x, b: y, weight: (cur?.weight ?? 0) + 1 });
+              }
+            }
+          }
+          json(res, 200, { ok: true, nodes: [...nodes.values()].sort((a, b) => b.count - a.count).slice(0, 40), edges: [...edges.values()].sort((a, b) => b.weight - a.weight).slice(0, 80) });
+          return;
+        }
+        const claimsOfItem = (rec: Record<string, unknown>): Array<{ entity: string; attribute: string; value: string; valid_from: number; valid_until: number | null }> =>
+          Array.isArray(rec.entity_claims)
+            ? (rec.entity_claims as Array<Record<string, unknown>>).map((c) => ({
+                entity: String(c.entity ?? ''),
+                attribute: String(c.attribute ?? ''),
+                value: String(c.value ?? ''),
+                valid_from: typeof c.valid_from === 'number' ? c.valid_from : 0,
+                valid_until: typeof c.valid_until === 'number' ? c.valid_until : null,
+              }))
+            : [];
         const items = memory.list().map(({ key, rec }) => ({
           id: key,
           content: String(rec.content ?? '').slice(0, 200),
@@ -477,8 +549,11 @@ export function apply(ctx: Context): void {
           scope: rec.scope ?? 'mode',
           preset: rec.preset ?? '',
           status: rec.status ?? 'active',
+          activation: typeof rec.activation === 'number' ? rec.activation : 50,
           created_at: rec.created_at ?? 0,
           last_access: rec.last_access ?? 0,
+          // 时间轴断言（工作区「记忆」页可直接在卡片上看这条记忆断言了什么）
+          claims: claimsOfItem(rec),
         }));
         const stats = memory.stats();
         // L0 用户画像事实（全局 userProfile.facts）；memory service 旧版无此方法时回退空数组
@@ -524,6 +599,13 @@ export function apply(ctx: Context): void {
         if (!checkWriteOrigin(req)) return jsonError(res, 403, 'memory.crossOrigin', 'cross-origin write denied');
         const raw = await readBody(req);
         const parsed = JSON.parse(raw || '{}') as { idPrefix?: string; action?: string; id?: string; library?: string; topic?: string };
+        // 记忆工作区「洞察」页：立即整合（autoDream，T3）。绝不在空闲之外自动触发。
+        if (parsed.action === 'dream') {
+          if (!memory.dreamNow) return jsonError(res, 500, 'memory.dreamUnavailable', 'consolidation unavailable');
+          const result = await memory.dreamNow();
+          json(res, 200, { ok: true, ran: !!result, insights: result ?? memory.currentInsights?.() ?? null });
+          return;
+        }
         // 纯手动桥接：把一条 L2/L3 记忆写入世界书生成文件（前端确认后调用；绝不自动触发）
         if (parsed.action === 'toWorldbook') {
           if (!memory.toWorldbook) return jsonError(res, 500, 'memory.toWorldbookUnavailable', 'worldbook bridge unavailable');

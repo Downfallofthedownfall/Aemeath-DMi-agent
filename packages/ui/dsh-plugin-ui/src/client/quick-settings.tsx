@@ -184,6 +184,34 @@ function QuickSettingsLoaded({
         </span>
       </div>
 
+      {/* —— 记忆工作区入口（五页全屏层：时间轴/图谱/检索台/洞察/状态）—— */}
+      <button
+        type="button"
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent('aemeath:open-memory-workspace'));
+          onClose();
+        }}
+        title={t('memws.launcherHint')}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          margin: '8px 2px 0',
+          padding: '8px 10px',
+          border: '1px solid var(--dsw-alias-border-l1)',
+          borderRadius: 10,
+          background: 'var(--dsw-alias-bg-layer-1)',
+          color: 'var(--dsw-alias-label-primary)',
+          fontFamily: 'inherit',
+          fontSize: 12.5,
+          cursor: 'pointer',
+        }}
+      >
+        <span>✦ {t('memws.launcher')}</span>
+        <span style={{ fontSize: 10.5, color: 'var(--dsw-alias-label-tertiary)' }}>{t('memws.launcherHint')}</span>
+      </button>
+
       <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', padding: '6px 6px 0' }}>
         {t('quick.note')}
       </div>
