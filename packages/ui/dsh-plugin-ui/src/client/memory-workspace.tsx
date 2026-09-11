@@ -243,6 +243,11 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
   const [dreamSkipped, setDreamSkipped] = useState(false);
   const [cq, setCq] = useState('');
   const [hits, setHits] = useState<Array<{ id: string; content: string; score: number; category: string }> | null>(null);
+  // worldbook 桥接（从被删掉的旧设置面板迁移过来）：确认弹窗 + 进行中 + 已完成集合
+  const [wbTarget, setWbTarget] = useState<MemoryItem | null>(null);
+  const [wbBusy, setWbBusy] = useState(false);
+  const [wbDone, setWbDone] = useState<Record<string, true>>({});
+  const [wbError, setWbError] = useState('');
 
   const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -314,6 +319,29 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
     if (res?.insights) setInsights(res.insights);
     if (res && !res.ran) setDreamSkipped(true);
   }, []);
+
+  /**
+   * worldbook 桥接（纯手动）：把一条 L2/L3 记忆写入该馆的 generated_knowledge.json。
+   * 绝不自动触发——只在用户在确认弹窗里点「加入世界书」后调用（语义与旧的设置面板一致，
+   * 那是旧面板被删掉后我唯一保留搬过来的写操作）。
+   */
+  const addToWorldbook = useCallback(async (): Promise<void> => {
+    if (!wbTarget) return;
+    setWbBusy(true);
+    setWbError('');
+    const res = await jsonOrNull<{ ok: boolean; error?: string }>('/aemeath/api/memory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'toWorldbook', id: wbTarget.id }),
+    });
+    setWbBusy(false);
+    if (res?.ok) {
+      setWbDone((prev) => ({ ...prev, [wbTarget.id]: true }));
+      setWbTarget(null);
+      return;
+    }
+    setWbError(res?.error ?? t('memws.wb.failed'));
+  }, [wbTarget]);
 
   const runSearch = useCallback(async (): Promise<void> => {
     const query = cq.trim();
@@ -401,6 +429,17 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
                       <span>{m.activation}</span>
                       <span>· {t('memory.preset.' + m.preset) === 'memory.preset.' + m.preset ? m.preset : t('memory.preset.' + m.preset)}</span>
                       <span>· {fmtTime(m.last_access || m.created_at)}</span>
+                      {/* worldbook 桥接（纯手动；旧设置面板删掉后迁移到这里） */}
+                      <button
+                        type="button"
+                        className="mw-link"
+                        style={{ marginLeft: 'auto' }}
+                        title={t('memory.wb.add.title')}
+                        disabled={!!wbDone[m.id]}
+                        onClick={() => { setWbError(''); setWbTarget(m); }}
+                      >
+                        {wbDone[m.id] ? `✓ ${t('memory.wb.added')}` : `📖 ${t('memory.wb.add')}`}
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -608,6 +647,31 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
         </div>
       </div>
       <div className="mw-body">{body}</div>
+      {wbTarget && (
+        <div className="mw-overlay" onClick={() => { if (!wbBusy) setWbTarget(null); }}>
+          <div className="mw-modal" role="dialog" aria-modal="true" aria-label={t('memory.wb.modal.title')} onClick={(e) => e.stopPropagation()}>
+            <div className="mw-modal-title">{t('memory.wb.modal.title')}</div>
+            <div className="mw-modal-desc">{t('memory.wb.modal.desc')}</div>
+            <div className="mw-modal-card">
+              <div className="mw-row-head">
+                <span className="mw-pill">{t(`memory.category.${wbTarget.category}`) === `memory.category.${wbTarget.category}` ? wbTarget.category : t(`memory.category.${wbTarget.category}`)}</span>
+                <span className="mw-pill" data-tone="muted">{wbTarget.scope === 'global' ? 'L3' : 'L2'}</span>
+                <span className="mw-score">{wbTarget.importance}</span>
+              </div>
+              <div className="mw-row-text" style={{ marginTop: 4 }}>{wbTarget.content}</div>
+            </div>
+            {wbError && <div className="mw-note" style={{ color: 'var(--dsw-alias-state-error-primary)', marginTop: 8 }}>{t('memory.wb.addFailed', { message: wbError })}</div>}
+            <div className="mw-modal-actions">
+              <button type="button" className="mw-btn" disabled={wbBusy} onClick={() => void addToWorldbook()}>
+                {wbBusy ? t('memory.wb.adding') : t('memory.wb.modal.confirm')}
+              </button>
+              <button type="button" className="mw-btn-ghost" disabled={wbBusy} onClick={() => setWbTarget(null)}>
+                {t('memory.wb.modal.dismiss')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -651,5 +715,60 @@ export function registerMemoryWorkspace(ctx: ClientContext): void {
   }
   ctx.slots.inject('shell.overlay', () =>
     ctx.slots.register({ name: 'shell.overlay', id: 'aemeath-memory-workspace' }, Host as never),
+  );
+}
+
+/**
+ * 注册侧边栏启动器按钮（sidebar.footer.action 列表槽，与快速设置的齿轮同排）。
+ *
+ * 为什么不复用快速设置里的那一行：用户反馈那样"太不显眼"——要先把齿轮点开、再在一堆开关里
+ * 找到一行文字，等于藏起来。改成常驻的胶囊按钮（粉点 + 文字），一眼可见、一键打开。
+ */
+export function registerMemoryLauncher(ctx: ClientContext): void {
+  function Launcher(): JSX.Element {
+    return (
+      <button
+        type="button"
+        title={t('memws.launcherHint')}
+        aria-label={t('memws.launcher')}
+        onClick={() => window.dispatchEvent(new CustomEvent(MEMORY_WORKSPACE_EVENT))}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          height: 30,
+          padding: '0 12px 0 10px',
+          borderRadius: 999,
+          border: '1px solid var(--dsw-alias-brand-primary)',
+          background: 'var(--dsw-alias-state-business-tertiary)',
+          color: 'var(--dsw-alias-brand-text)',
+          fontFamily: 'inherit',
+          fontSize: 12.5,
+          fontWeight: 600,
+          cursor: 'pointer',
+          whiteSpace: 'nowrap',
+          // 侧边栏收起/变窄时不被撕成两行或挤出可视区（宿主底栏是 flex 容器）
+          flex: 'none',
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: 'linear-gradient(135deg, #ff8cbd, #f25e9e)',
+            boxShadow: '0 0 0 3px var(--dsw-alias-state-business-tertiary)',
+          }}
+        />
+        {t('memws.launcher')}
+      </button>
+    );
+  }
+  ctx.slots.inject('sidebar.footer.action', () =>
+    ctx.slots.register({ name: 'sidebar.footer.action', id: 'aemeath-memory-launcher', order: -110 }, Launcher as never),
   );
 }

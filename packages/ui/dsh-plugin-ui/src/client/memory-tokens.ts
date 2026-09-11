@@ -268,6 +268,35 @@ const CSS = `
 .${MEMORY_WORKSPACE_CLASS} .mw-kv > span:first-child { color: var(--aem-ink-soft); min-width: 84px; }
 .${MEMORY_WORKSPACE_CLASS} .mw-kv > span:last-child { color: var(--aem-ink); font-variant-numeric: tabular-nums; }
 
+/* —— 确认弹窗（worldbook 桥接等在写入前的确认） —— */
+.${MEMORY_WORKSPACE_CLASS} .mw-overlay {
+  position: fixed; inset: 0; z-index: 2147483000;
+  display: flex; align-items: center; justify-content: center;
+  background: light-dark(rgba(92, 70, 80, 0.28), rgba(0, 0, 0, 0.55));
+}
+.${MEMORY_WORKSPACE_CLASS} .mw-modal {
+  width: min(440px, calc(100vw - 48px));
+  background: var(--aem-surface);
+  border: 1px solid var(--aem-line);
+  border-radius: var(--aem-radius-card);
+  box-shadow: var(--aem-shadow-pop);
+  padding: 16px 18px;
+}
+.${MEMORY_WORKSPACE_CLASS} .mw-modal-title { font-size: 14px; font-weight: 700; color: var(--aem-ink); margin-bottom: 4px; }
+.${MEMORY_WORKSPACE_CLASS} .mw-modal-desc { font-size: 12px; line-height: 1.6; color: var(--aem-ink-soft); margin-bottom: 10px; }
+.${MEMORY_WORKSPACE_CLASS} .mw-modal-card {
+  padding: 10px 12px; border-radius: var(--aem-radius-ctl);
+  background: light-dark(#fff8fb, var(--dsw-alias-bg-layer-2));
+  border: 1px solid var(--aem-line);
+}
+.${MEMORY_WORKSPACE_CLASS} .mw-modal-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+.${MEMORY_WORKSPACE_CLASS} .mw-btn-ghost {
+  padding: 8px 14px; border-radius: var(--aem-radius-ctl);
+  border: 1px solid var(--aem-line); background: transparent;
+  color: var(--aem-ink-soft); font-family: inherit; font-size: 12.5px; cursor: pointer;
+}
+.${MEMORY_WORKSPACE_CLASS} .mw-btn-ghost:hover { border-color: var(--aem-accent-2); color: var(--aem-accent); }
+
 /* —— 滚动条：粉底上默认细条几乎不可见，给一条能看见的 —— */
 .${MEMORY_WORKSPACE_CLASS} ::-webkit-scrollbar { width: 9px; height: 9px; }
 .${MEMORY_WORKSPACE_CLASS} ::-webkit-scrollbar-track { background: transparent; }

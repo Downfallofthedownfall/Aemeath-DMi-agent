@@ -7,7 +7,7 @@
 //   1. 顶部 tab 栏：常规 / 外观 / 记忆（useState 切换，默认"常规"）。
 //   2. 常规 tab：原有功能开关组 + API key 配置（原逻辑 verbatim 保留）。
 //   3. 外观 tab：新增个人化面板（助手气泡 / 行高 / 段落间距 / 自定义字体）。
-//   4. 记忆 tab：原有 <MemoryPanel>。
+//   4. 记忆 tab：指路文案（旧 MemoryPanel 已删除，能力由记忆工作区承载）。
 // 角色模式已前移：hero 欢迎屏 + 快速设置面板（quick-settings.tsx）
 // ============================================================
 import { useState, useSyncExternalStore, useEffect } from 'react';
@@ -15,7 +15,6 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
 import type { CredentialView } from '@deepseek-ai/dsh-client-connection/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
-import { MemoryPanel } from './memory.tsx';
 import { t, useLocale } from './i18n.ts';
 
 // ===== 功能开关清单（label/hint 存 key，渲染时 t() 解析） =====
@@ -746,7 +745,11 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
       {/* —— 外观 tab —— */}
       {activeTab === 'appearance' && <AppearanceSection scope={appearanceScope} value={appearanceValue} />}
 
-      {/* —— 记忆 tab —— */}
+      {/* —— 记忆 tab ——
+          旧的分层记忆面板（memory.tsx 的 MemoryPanel）已删除：能力被上层工作区取代——
+          浏览/过滤/时间轴 → 记忆工作区「记忆」页；洞察 → 「洞察」页；「加入世界书」→
+          工作区记忆卡片上的动作；L1 缓冲/scratch/profile 计数 → 「状态」页。
+          这里只留一段指路文案（避免用户以为记忆面板"不见了"）。 */}
       {activeTab === 'memory' && (
         <section>
           <h3 style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }}>
@@ -758,9 +761,12 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
               borderRadius: 12,
               padding: '12px 14px',
               background: 'var(--dsw-alias-bg-layer-1)',
+              fontSize: 12.5,
+              lineHeight: 1.7,
+              color: 'var(--dsw-alias-label-secondary)',
             }}
           >
-            <MemoryPanel />
+            {t('settings.memory.moved')}
           </div>
         </section>
       )}

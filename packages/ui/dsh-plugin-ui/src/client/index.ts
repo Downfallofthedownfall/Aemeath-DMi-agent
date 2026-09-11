@@ -20,7 +20,7 @@ import { registerCharacterStatus } from './status.tsx';
 import { registerWorkflowTodo } from './workflow-todo.tsx';
 import { registerComposerCards } from './composer-cards.tsx';
 import { registerModeSwitch } from './mode-switch.tsx';
-import { registerMemoryWorkspace } from './memory-workspace.tsx';
+import { registerMemoryWorkspace, registerMemoryLauncher } from './memory-workspace.tsx';
 import { injectFluentStyles } from './styles/fluent.ts';
 import { injectDeDshStyles } from './styles/de-dsh.ts';
 import { createFaces } from './faces.ts';
@@ -124,9 +124,11 @@ export function apply(ctx: ClientContext): void {
   }));
 
   // 2.9.8) 记忆工作区（五页全屏层，借 ripples-of-aion 面板的信息架构）：
-  //   挂在 shell.overlay 加法座位；入口在侧边栏「快速设置」里（派发自定义事件打开）。
+  //   挂在 shell.overlay 加法座位；入口是侧边栏底部**常驻的粉点胶囊按钮**（派发自定义事件打开；
+  //   原先只在快速设置弹层里放一行文字，用户反馈"太不显眼"）。
   //   数据全部走 /aemeath/api/memory 代理，前端不持有 memory 插件的 admin token。
   registerMemoryWorkspace(ctx);
+  registerMemoryLauncher(ctx);
 
   // 3) 设置页（P3 瘦身：功能开关 / 记忆管理 / API key；角色已前移主界面）
   registerSettingsSection(ctx, {
