@@ -135,6 +135,19 @@ await t('T1：闭合幂等——同一批 claim 重复执行闭合，旧断言 v
   assert.equal(table.get('m1').entity_claims[0].valid_until, first);
 });
 
+await t('T1：表中残留同键重复活跃断言时，只闭最旧那条（真管线暴露过的脏区间场景）', async () => {
+  const table = new FakeTable();
+  // 手工造"重复活跃断言"（历史数据/合并路径可能留下的形态）：两条记录同键
+  table.map.set('dup1', { id: 'dup1', entity_claims: [{ entity: '用户', attribute: '所在地', value: '北京', valid_from: 1000, valid_until: null }] });
+  table.map.set('dup2', { id: 'dup2', entity_claims: [{ entity: '用户', attribute: '所在地', value: '北京', valid_from: 2000, valid_until: null }] });
+  const c = [{ entity: '用户', attribute: '所在地', value: '上海', valid_from: 9000, valid_until: null }];
+  table.map.set('new', { id: 'new', entity_claims: c });
+  const targets = await closeFor(table, 'new', c, 9000);
+  assert.deepEqual(targets, [{ recordId: 'dup1', indexes: [0] }]); // 只有最旧者被闭
+  assert.equal(table.get('dup1').entity_claims[0].valid_until, 9000);
+  assert.equal(table.get('dup2').entity_claims[0].valid_until, null); // 重复者保持活跃，不产生脏区间
+});
+
 await t('T1：同批多事实 valid_from 互不相同（附录 D-7 防零长区间）', async () => {
   const claims = entityClaimsOf('我叫林澈，我是大二学生，我住在北京', 7000);
   assert.ok(claims.length >= 2);

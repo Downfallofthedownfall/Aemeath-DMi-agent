@@ -128,10 +128,20 @@ t('findClosableClaims：selfId 自身跳过 / deleted 记录跳过 / 无 claim �
   ]);
 });
 
-t('findClosableClaims：一条记录多条同键断言 → 下标全收且升序', () => {
+t('findClosableClaims：一条记录多条同键断言 → 只闭最旧那条（防脏区间）', () => {
   const existing = [{ id: 'old1', entity_claims: [claim('用户', '所在地', '北京', 1000), claim('用户', '居住地', '上海', 1500)] }];
   const targets = findClosableClaims(existing, [claim('用户', '所在地', '广州', 5000)], 'new1');
-  assert.deepEqual(targets, [{ recordId: 'old1', indexes: [0, 1] }]);
+  // 同一键有两条活跃断言（历史数据/合并路径的重复）→ 只闭最旧的北京那条，
+  // 否则会出现「闭合时刻晚于某条新断言 valid_from」的脏区间
+  assert.deepEqual(targets, [{ recordId: 'old1', indexes: [0] }]);
+});
+
+t('findClosableClaims：跨记录同键重复 → 只有最旧者被闭合', () => {
+  const existing = [
+    { id: 'r1', entity_claims: [claim('用户', '所在地', '北京', 1000)] },
+    { id: 'r2', entity_claims: [claim('用户', '所在地', '北京', 2000)] }, // 重复（旧数据）
+  ];
+  assert.deepEqual(findClosableClaims(existing, [claim('用户', '所在地', '上海', 9000)], 'new'), [{ recordId: 'r1', indexes: [0] }]);
 });
 
 t('closeClaims：只改目标下标、valid_until = at、不修改入参（常量性）', () => {

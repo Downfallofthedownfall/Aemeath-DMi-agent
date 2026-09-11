@@ -97,14 +97,24 @@ export interface ClosableRecord {
  * 找出「被新断言取代」的旧断言位置。
  * 冲突判定只比 (entity, canonicalAttr) 归一后相等，**不比 value**（与去重相反）；
  * 已闭合（valid_until != null）的跳过（幂等）；deleted 与 selfId 跳过。
+ *
+ * **每个键只闭最旧的那条活跃断言**（valid_from 最小者）：正常写入下每个键至多一条活跃断言，
+ * 但历史数据/合并路径可能留下重复的活跃断言，此时若把同键的多条一起闭合，会出现「闭合时刻
+ * 晚于某条新断言的 valid_from」的脏区间。取最旧者与「oldest active claim 被新值取代」的语义一致。
+ *
+ * **时间单调性护栏**：只闭 `valid_from < at` 的断言（at = 新记录 created_at）——同一轮的
+ * 规则层直存与总结层卸载可能在同一毫秒先后写入同一三元组，此时"先写的那条"不应被"后写的
+ * 闭合时刻"倒挂成 valid_until < valid_from（真机管线验证时实测到过 1–2ms 的负区间）。
  * @param existing 现有记忆（含 id 与 entity_claims）
  * @param newClaims 本次新写入的 claim（已规范化）
  * @param selfId 新记录自身的 id（跳过自闭合）
+ * @param at 闭合时刻（缺省不启用单调性护栏，兼容既有调用）
  */
 export function findClosableClaims(
   existing: readonly ClosableRecord[],
   newClaims: readonly ClaimLike[],
   selfId: string,
+  at?: number,
 ): CloseTarget[] {
   if (!newClaims.length) return [];
   const newKeys = new Set<string>();
@@ -113,16 +123,41 @@ export function findClosableClaims(
     newKeys.add(keyOf(c.entity, c.attribute));
   }
   if (!newKeys.size) return [];
+
+  const closableFrom = (claim: ClaimLike): number => Number(claim.valid_from ?? 0);
+  const passesMonotonic = (claim: ClaimLike): boolean => at === undefined || closableFrom(claim) < at;
+
+  // 第一遍：每个待闭键的「最旧活跃且可闭断言」的 valid_from
+  const oldestFrom = new Map<string, number>();
+  for (const rec of existing) {
+    if (!rec || rec.deleted || rec.id === selfId) continue;
+    const claims = rec.entity_claims;
+    if (!claims?.length) continue;
+    for (const claim of claims) {
+      if (!isActiveClaim(claim)) continue; // 已闭合 → 跳过（幂等）
+      if (!passesMonotonic(claim)) continue; // 时间单调性：起点不早于闭合时刻 → 不闭
+      const key = keyOf(claim.entity, claim.attribute);
+      if (!newKeys.has(key)) continue;
+      const from = closableFrom(claim);
+      const cur = oldestFrom.get(key);
+      if (cur === undefined || from < cur) oldestFrom.set(key, from);
+    }
+  }
+  if (!oldestFrom.size) return [];
+
+  // 第二遍：只收「valid_from == 该键最旧值」的活跃断言
   const targets = new Map<string, Set<number>>();
   for (const rec of existing) {
-    if (!rec || rec.deleted) continue;
-    if (rec.id === selfId) continue;
+    if (!rec || rec.deleted || rec.id === selfId) continue;
     const claims = rec.entity_claims;
-    if (!claims || !claims.length) continue;
+    if (!claims?.length) continue;
     for (let i = 0; i < claims.length; i++) {
       const claim = claims[i];
-      if (!isActiveClaim(claim)) continue; // 已闭合 → 跳过（幂等）
-      if (!newKeys.has(keyOf(claim.entity, claim.attribute))) continue;
+      if (!isActiveClaim(claim)) continue;
+      if (!passesMonotonic(claim)) continue;
+      const key = keyOf(claim.entity, claim.attribute);
+      if (!newKeys.has(key)) continue;
+      if (closableFrom(claim) !== oldestFrom.get(key)) continue;
       const set = targets.get(rec.id) ?? new Set<number>();
       set.add(i);
       targets.set(rec.id, set);
@@ -192,6 +227,11 @@ export function hasClosedTimelineOverlap(a: readonly ClaimLike[] | undefined, b:
  * ② 保证同批 claim 的 valid_from **互不相同**（附录 D-7：参考对象同轮多事实共享
  * 毫秒级 createdAt，同一 (entity,attr) 会互相闭合成**零长区间**）——
  * 同批第 i 条按 i 毫秒递增。
+ *
+ * **重要（写入侧调用约定）**：真实写入路径应传 `existing = []`（batch 内去重），
+ * 而**不要**传全表活跃断言——否则第二次写入相同事实时 prepareClaims 会返回空数组，
+ * 把本该发生的「闭合旧断言」一起丢掉（值相同的重述应在**记录层**（consolidateTarget
+ * / 内容去重）被吸收，两侧混用会互相抵消）。
  * @returns 过滤+错峰后的新 claim 数组（可能为空 → 调用方不写 entity_claims 字段）
  */
 export function prepareClaims(

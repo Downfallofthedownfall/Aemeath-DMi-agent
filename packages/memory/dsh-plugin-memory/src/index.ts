@@ -270,17 +270,20 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     [...memories.entries()].map(([key, rec]) => ({ id: key, entity_claims: rec.entity_claims ?? [], deleted: rec.deleted }));
 
   /**
-   * 抽 claim + T1 写入侧去重（借参考对象）：完全相同的重述丢弃、规范化、同批 valid_from 错峰。
+   * 抽 claim + T1 写入侧后处理：规范化、同批三元组去重、同批 valid_from 错峰。
    * @param texts 抽取源文本（content 及可选的原始 query）
+   * @param batchExisting 仅放"同一批次内已见过的断言"（一般传 []）。**不要传全表活跃断言**：
+   *        否则第二次写入同一事实时返回空数组，会连带丢掉本该发生的旧断言闭合
+   *        （值相同的重述由记录层 consolidateTarget 的内容去重吸收）。
    * @returns 过滤后的新 claim；空数组 → 调用方不写 entity_claims 字段
    */
-  const prepareEntityClaims = (texts: readonly string[], existing: readonly EntityClaim[], baseTs: number): EntityClaim[] => {
+  const prepareEntityClaims = (texts: readonly string[], batchExisting: readonly EntityClaim[], baseTs: number): EntityClaim[] => {
     try {
       const raw: ExtractedClaim[] = [];
       for (const t of texts) raw.push(...extractClaims(t, '用户'));
       if (!raw.length) return [];
       const asClaims: EntityClaim[] = raw.map((c) => ({ entity: c.entity, attribute: c.attribute, value: c.value, valid_from: baseTs, valid_until: null }));
-      return prepareClaims(asClaims, existing, baseTs);
+      return prepareClaims(asClaims, batchExisting, baseTs);
     } catch (e) {
       warn(`claim 抽取失败（已忽略）: ${(e as Error).message}`);
       return [];
@@ -288,18 +291,37 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   };
 
   /**
-   * T1 核心：新记录落库**之后**，把同 (entity, canonicalAttr) 的旧活跃断言闭合到新断言的
-   * valid_from。幂等（已闭合的不再动）、跳过 deleted 与自身、失败只 warn。
+   * 闭合时刻 = max(新记录 created_at, 新 claim 的 valid_from + 1)。
+   *
+   * 为什么不是直接取 created_at：同一轮的"规则层直存"与"总结层卸载"可能在同一毫秒先后写入
+   * 同一三元组，而 claim 的 valid_from 取自过程更早的时刻——直接拿 created_at 去闭合会得到
+   * `valid_until < valid_from` 的**负区间**（真机管线实测过 1–2ms）。取 max 保证被闭断言
+   * 获得严格正长度；正常时序下 created_at 更大，结果与"闭合时间 == 新记录 created_at"一致。
+   */
+  const closureTimeOf = (createdAt: number, newClaims: readonly EntityClaim[]): number => {
+    const maxFrom = newClaims.reduce((m, c) => (c.valid_from > m ? c.valid_from : m), 0);
+    return Math.max(createdAt, maxFrom + 1);
+  };
+
+  /**
+   * T1 核心：新记录落库**之后**，把同 (entity, canonicalAttr) 的旧活跃断言闭合到闭合时刻。
+   * 幂等（已闭合的不再动）、跳过 deleted 与自身、失败只 warn。
    * @param newId 新记录 id（跳过自闭合）
    * @param newClaims 本次写入的 claim（已规范化；空则不做事）
-   * @param at 闭合时间戳（取新记录的 created_at）
+   * @param at 闭合并刻（用 closureTimeOf 计算）
+   * @param snapshot **写入前**的记录快照（缺省取实时表状态；并发写入场景必须传写入前快照）
    * @returns 本次闭合的记录数（供日志/测试）
    */
-  const closeSupersededClaims = async (newId: string, newClaims: readonly EntityClaim[], at: number): Promise<number> => {
+  const closeSupersededClaims = async (
+    newId: string,
+    newClaims: readonly EntityClaim[],
+    at: number,
+    snapshot?: readonly { id: string; entity_claims?: EntityClaim[] | null; deleted?: boolean | null }[],
+  ): Promise<number> => {
     if (!newClaims.length) return 0;
     let closedCount = 0;
     try {
-      const targets = findClosableClaims(claimSourceRecords(), newClaims, newId);
+      const targets = findClosableClaims(snapshot ?? claimSourceRecords(), newClaims, newId, at);
       for (const target of targets) {
         const rec = memories.get(target.recordId);
         if (!rec?.entity_claims?.length) continue;
@@ -557,47 +579,55 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
   /**
    * @param texts claim 抽取源文本（缺省 [content]）
-   * @param preparedClaims 已备好的 claim（supersede 路径需要"先比旧记录去重再闭合"，
-   *        故由调用方先 prepare 一次再传进来，避免重复抽取与双重去重）
+   * @param preparedClaims 已备好的 claim（supersede 路径复用同一批 claim，避免重复抽取；
+   *        传 undefined 则按 texts 现场抽取）
    */
   const saveMemory = async (preset: string, content: string, category: Category, importance: number, confidence: number, sid: string, scope: 'mode' | 'global', texts: readonly string[] = [], preparedClaims?: readonly EntityClaim[]): Promise<string> => {
-    // T1：抽取 claim（无活跃断言参与去重——旧记录的去重由调用方按需先做）并错峰 valid_from
+    // T1：抽取 claim（同批去重 + valid_from 错峰）；重述的记录级去重由 consolidateTarget 负责
     const newClaims = preparedClaims ?? prepareEntityClaims(texts.length ? texts : [content], [], Date.now());
+    // T1 关键：闭合必须针对**写入前**的快照。若用写入后的实时快照，同一轮并发写入
+    //（规则层直存 + 总结层卸载在同一 tick 交错）会把"同批刚写入的同键断言"误当成旧值闭合，
+    // 出现 valid_until < valid_from 的负区间（真机管线实测到过）。
+    const preWriteSnapshot = claimSourceRecords();
     const id = await memoryService.save({ content, category, importance, confidence, scope, preset, source_mode: preset, entityClaims: [...newClaims] });
     await enforceCapacity(scope, scope === 'global' ? l3Capacity : l2Capacity);
     log(`记忆已写入 preset=${preset} cat=${category} imp=${importance} scope=${scope}（${content.slice(0, 30)}…）${newClaims.length ? ` claim=${newClaims.length}` : ''}`);
-    // T1：**先落新记录**（上一步）→ **再闭合**同 (entity, attr) 的旧活跃断言；失败只 warn
+    // T1：**先落新记录**（上一步）→ **再闭合**同 (entity, attr) 的旧活跃断言；失败只 warn。
+    // 闭合时刻由 closureTimeOf 保证严格晚于新断言的起点（见该函数注释）。
     if (newClaims.length) {
       const rec = memories.get(id);
-      await closeSupersededClaims(id, newClaims, (rec?.created_at ?? Date.now()) + newClaims.length);
+      await closeSupersededClaims(id, newClaims, closureTimeOf(rec?.created_at ?? Date.now(), newClaims), preWriteSnapshot);
     }
     return id;
   };
 
-  const supersedeMemory = async (oldKey: string, preset: string, content: string, category: Category, sid: string, clash: ConflictDecision, texts: readonly string[] = []): Promise<void> => {
+  const supersedeMemory = async (oldKey: string, preset: string, content: string, category: Category, sid: string, clash: ConflictDecision, texts: readonly string[] = [], preparedClaims?: readonly EntityClaim[]): Promise<void> => {
     const old = memories.get(oldKey);
     if (!old) return;
     // T1：闭合目标要看到"旧记录最新的 claim 状态"，因此在写入新记录**之前**取快照，
     // 但闭合动作仍在新记录落库**之后**执行（写入顺序不变量）。
     const beforeSnapshot = claimSourceRecords();
-    // supersede 路径：先按"旧记录的活跃断言"去重（重述不产生新 claim），再交给 saveMemory
-    const newClaims = prepareEntityClaims(texts.length ? texts : [content], old.entity_claims ?? [], Date.now());
+    // supersede 路径：复用调用方备好的 claim（没有则现场抽一次）
+    const newClaims = preparedClaims ?? prepareEntityClaims(texts.length ? texts : [content], [], Date.now());
     const newId = await saveMemory(preset, content, category, Math.max(60, old.importance), 0.8, sid, old.scope, texts, newClaims);
     await memories.put(oldKey, { ...old, superseded_by: newId, status: 'dormant', confidence: Math.max(0, old.confidence - 0.2) });
     await auditWrite('supersede', oldKey, `被 ${newId.slice(0, 8)} 取代（${clash.type}${clash.viaLlm ? '·LLM' : '·规则'}：${clash.reason}）`);
     log(`冲突 supersede（${clash.type}${clash.viaLlm ? '·LLM' : '·规则'}）：${oldKey.slice(0, 8)} → ${newId.slice(0, 8)}（${content.slice(0, 30)}…）`);
-    // T1：supersede 是"整体取代"，其时间轴语义由 claim 闭合承载（saveMemory 内已按
-    // 全表快照闭合一遍；这里用写入前快照再兜一次，幂等无害——覆盖"旧记录在 saveMemory
-    // 中被容量淘汰/改写"的边角情况）。
+    // T1：supersede 是"整体取代"，其时间轴语义由 claim 闭合承载。
+    // saveMemory 内已按写入后的实时快照闭合过一遍；这里用**写入前快照 + 幂等谓词**再兜一次，
+    // 只为覆盖"旧记录在 saveMemory 中被容量淘汰/改写"的边角情况：
+    // 谓词与 saveMemory 完全一致（同一 at + 同一时间单调性护栏）→ 已闭合的不会重复闭合，
+    // 且不会产生把新断言倒挂成负区间的闭合。
     if (newClaims.length) {
-      const targets = findClosableClaims(beforeSnapshot, newClaims, newId);
-      const hit = targets.find((t) => t.recordId === oldKey);
+      const createdAt = memories.get(newId)?.created_at ?? Date.now();
+      const at = closureTimeOf(createdAt, newClaims);
+      const hit = findClosableClaims(beforeSnapshot, newClaims, newId, at).find((t) => t.recordId === oldKey);
       if (hit) {
         const cur = memories.get(oldKey);
         if (cur?.entity_claims?.length) {
           try {
-            await memories.put(oldKey, { ...cur, entity_claims: closeClaims(cur.entity_claims, hit.indexes, Date.now()) });
-            await auditWrite('claim_closed', oldKey, `时间轴闭合 ${hit.indexes.length} 条断言（supersede 路径）`);
+            await memories.put(oldKey, { ...cur, entity_claims: closeClaims(cur.entity_claims, hit.indexes, at) });
+            await auditWrite('claim_closed', oldKey, `时间轴闭合 ${hit.indexes.length} 条断言（supersede 路径兜底）`);
           } catch (e) {
             warn(`claim 闭合失败（已忽略）: ${(e as Error).message}`);
           }
@@ -785,7 +815,25 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       return;
     }
     const confidence = wg.action === 'demote' ? (wg.confidence ?? 0.55) : 0.7;
-    const target = consolidateTarget(m.content, allMemories());
+    // T1：claim 在**写入前一次性备好**（真实 valid_from），随后 save/supersede 两条分支复用
+    // 同一批——merge 分支若重新生成 claim，会得到"更晚的 valid_from"，被新一轮写入闭合时
+    // 就会出现 valid_until < valid_from 的脏区间（真机管线验证时踩到过）。
+    const preparedClaims = prepareEntityClaims([m.content], [], Date.now());
+    // 2026-09 修复（真机管线验证暴露）：**同一轮**的"即时总结"会把刚写入的记忆再总结一次，
+    // 而调用方传入的记忆快照是过程开始时的旧状态 → consolidateTarget 看不到刚写的记录，
+    // 于是新旧两条内容在候选里并存。此处用**实时表状态**复检一次：若该事实已在表里
+    //（内容相同或高度相似），直接跳过——否则会写出 "X；X" 的重复内容，并让记录"合并到自己"，
+    // 使新断言的 valid_from 晚于随后闭合产生的 valid_until（负区间）。
+    const liveTarget = consolidateTarget(m.content, allMemories());
+    if (liveTarget.action !== 'save' && liveTarget.targetId) {
+      const existingRec = memories.get(liveTarget.targetId);
+      if (existingRec && (existingRec.content === m.content || overlapScore(m.content, existingRec.content) >= OVERLAP_DEDUP_THRESHOLD)) {
+        await auditWrite('dedup_skip', liveTarget.targetId, `同轮重复候选跳过（内容已存在：${m.content.slice(0, 30)}…）`);
+        log(`同轮重复候选跳过（已在表中）：${m.content.slice(0, 30)}…`);
+        return;
+      }
+    }
+    const target = liveTarget;
     if (target.action === 'supersede' && target.targetId) {
       const old = memories.get(target.targetId);
       if (old) {
@@ -795,7 +843,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           oldClaims: old.entity_claims ?? [],
           newClaims: extractClaims(m.content, '用户') as ExtractedClaim[],
         });
-        await supersedeMemory(target.targetId, old?.preset ?? preset, m.content, m.category, sid, clash, [m.content]);
+        await supersedeMemory(target.targetId, old?.preset ?? preset, m.content, m.category, sid, clash, [m.content], preparedClaims);
       }
       return;
     }
@@ -803,14 +851,28 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       const old = memories.get(target.targetId);
       if (old) {
         const merged = old.content.length + m.content.length < 200 ? `${old.content}；${m.content}` : m.content;
-        await memories.update(target.targetId, (cur) => ({ ...cur, content: merged, importance: Math.max(cur.importance, m.importance), last_access: Date.now() }));
-        await auditWrite('merge', target.targetId, `L1 总结合并（${m.content.slice(0, 30)}…）`);
-        log(`记忆合并 → ${target.targetId.slice(0, 8)}`);
+        // T1：合并是"记录内容的合并"，**不是**时间轴的合并——直接把新 claim 追加进旧记录会产生
+        // 同一 (entity, attr, value) 的重复活跃断言（同一事实挂两条记录），于是后续闭合会命中
+        // "同值的新断言"而把时间轴写脏。这里逐条按 (entity, canonicalAttr, value) 去重后合并：
+        // 旧值原样保留（历史可回溯），新值只在未出现过时才叠加，且沿用其真实 valid_from。
+        const oldClaims = old.entity_claims ?? [];
+        const key = (c: { entity: string; attribute: string; value: string }): string => `${c.entity}\u0000${canonicalAttr(c.attribute)}\u0000${c.value.trim().replace(/\s+/g, ' ')}`;
+        const existing = new Set(oldClaims.map(key));
+        const mergedClaims = [...oldClaims, ...preparedClaims.filter((c) => !existing.has(key(c)))];
+        await memories.put(target.targetId, {
+          ...old,
+          content: merged,
+          importance: Math.max(old.importance, m.importance),
+          last_access: Date.now(),
+          ...(mergedClaims.length ? { entity_claims: mergedClaims } : {}),
+        });
+        await auditWrite('merge', target.targetId, `L1 总结合并（${m.content.slice(0, 30)}…）${preparedClaims.length ? ` +claim ${preparedClaims.length}` : ''}`);
+        log(`记忆合并 → ${target.targetId.slice(0, 8)}${mergedClaims.length !== oldClaims.length ? `（claim ${oldClaims.length}→${mergedClaims.length}，已按三元组去重）` : ''}`);
         return;
       }
     }
     const importance = wg.action === 'demote' ? Math.max(0, m.importance - 20) : m.importance;
-    await saveMemory(preset, m.content, m.category, importance, confidence, sid, m.scope);
+    await saveMemory(preset, m.content, m.category, importance, confidence, sid, m.scope, [m.content], preparedClaims);
   };
 
   /** 一条知识候选落知识层（pending 评审门）。sourceKind 区分 LLM 总结提取 / 规则兜底直录。 */
