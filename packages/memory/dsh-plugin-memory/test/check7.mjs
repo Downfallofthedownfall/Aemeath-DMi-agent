@@ -18,7 +18,7 @@ import {
   isActiveClaim,
 } from '../lib/timeline.js';
 import { parseLlmJson, toIndex } from '../lib/insights.js';
-import { extractClaims, hasNewClaimValue } from '../lib/gatekeeper.js';
+import { extractClaims, hasNewClaimValue, extractMemory } from '../lib/gatekeeper.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -308,6 +308,37 @@ t('extractClaims：单条上限 8 条', () => {
   const many = extractClaims('我叫林澈，我是大二学生，我学的是物理，我住在北京，我最喜欢量子力学，我的目标是考过 PHY-E1，我的薄弱环节是积分，我的邮箱是 a@b.de', '用户');
   assert.ok(many.length <= 8);
   assert.ok(many.length >= 4);
+});
+
+// —— 2026-09 真机数据回归：抽取层加固（真实 24 条记忆实测出的三类噪声） ——
+t('extractMemory：剥命令前缀 + 剥前导标点（真实数据里 4 条带"，我…"的前导逗号）', () => {
+  assert.equal(extractMemory('记住，我住在北京'), '我住在北京');
+  assert.equal(extractMemory('，我下周三有物理考试，我有点紧张。'), '我下周三有物理考试，我有点紧张');
+  assert.equal(extractMemory('记一下我的10月第一星期课程表'), '我的10月第一星期课程表');
+  assert.equal(extractMemory('记住，记住，我叫林澈'), '我叫林澈');
+  assert.equal(extractMemory(' 我的名字是 林澈 。'), '林澈');
+});
+
+t('extractMemory：替换型命令「以后叫我 X」只剥命令词、X 完整留下（交替长 token 优先的回归）', () => {
+  assert.equal(extractMemory('以后叫我小星就好'), '小星就好');
+  assert.equal(extractMemory('以后就叫我阿澈'), '阿澈');
+  assert.equal(extractMemory('叫我林澈就行'), '林澈就行');
+});
+
+t('extractClaims：提问残留不抽（"你还记得我叫什么名字吗" → 无 claim）', () => {
+  assert.deepEqual(extractClaims('小星，你还记得我叫什么名字吗？', '用户'), []);
+  assert.deepEqual(extractClaims('我叫什么来着', '用户'), []);
+});
+
+t('extractClaims：所在地不再吞掉「我在做…」这类活动陈述', () => {
+  assert.deepEqual(extractClaims('我在做一个以aemeath为主题的Scratch项目', '用户'), []);
+  assert.deepEqual(extractClaims('我在复习物理课', '用户'), []);
+  assert.deepEqual(extractClaims('我住在北京', '用户'), [{ entity: '用户', attribute: '所在地', value: '北京' }]);
+});
+
+t('extractClaims：选课枚举抽得到（"我这学期选了热力学和光学两门课"）', () => {
+  assert.deepEqual(extractClaims('我这学期选了热力学和光学两门课', '用户'), [{ entity: '用户', attribute: '课程', value: '热力学和光学' }]);
+  assert.deepEqual(extractClaims('我选修了量子力学', '用户'), []); // 不带"课"字不收，宁缺勿错
 });
 
 console.log(`\n[memory-timeline] ${passed} 项断言全部通过`);
