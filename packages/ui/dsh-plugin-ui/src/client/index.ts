@@ -4,8 +4,9 @@
 //       → 欢迎屏（角色卡片）→ TTS → 设置页 / 快速设置（P3）
 // 数据 face（settings/role/credentials/scopes）统一由 faces.ts 工厂构建。
 // ============================================================
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
 import { installI18n, reportLocaleToHost, currentActiveLocale } from './i18n.ts';
 import { registerThemes } from './theme.ts';
 import { applyBrand } from './brand.tsx';
@@ -27,7 +28,8 @@ import { createFaces } from './faces.ts';
 export { FEATURE_NAMESPACES } from './constants.ts';
 
 export const name = 'aemeath-ui';
-export const inject = ['slots', 'theme', 'connection', 'remote', 'sessions', 'workspaces', 'locale'];
+// DSH 0.2.0：新增 uiWorkspace（会话/工作区导航，接管已移除的 ctx.sessions.open）。
+export const inject = ['slots', 'theme', 'connection', 'remote', 'sessions', 'workspaces', 'locale', 'uiWorkspace'];
 
 export function apply(ctx: ClientContext): void {
   // 0) i18n：注册 aemeath 三语字典（zh/en/de）并绑定 t()（最先执行，供各组件使用）
@@ -94,9 +96,10 @@ export function apply(ctx: ClientContext): void {
   }));
 
   // 2.9) 工作区选择器（仅输入框工具行 chip，用户要求：dropdown 只保留对话框的）
+  // DSH 0.2.0：ISessions 不再有 open()（导航移交视图所有者），改用 uiWorkspace.openSession。
   registerWorkspaceSelector(ctx, {
     workspaces: ctx.workspaces as never,
-    openSession: (id: string) => ctx.sessions.open(id as never),
+    openSession: (id: string) => ctx.uiWorkspace.openSession(id as never),
   });
 
   // 2.9.5) 无工作区自动兜底：零工作区时挂项目内空文件夹为工作区，打开即聊

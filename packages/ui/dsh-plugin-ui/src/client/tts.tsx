@@ -10,14 +10,16 @@
 // 文本获取：点击时从 DOM 读取按钮所在消息气泡的文本（零数据依赖）。
 // ============================================================
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type { FetchScope as SettingsScope, ScopeSnapshot as SettingsScopeSnapshot } from './faces.ts';
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import { t, useLocale } from './i18n.ts';
 
 /** 注入 face：settings scopes（读/写 aemeath-tts.enabled）+ messageId → 消息文本解析器。 */
 export interface TtsDeps {
-  scopes: Record<string, SettingsScope<Record<string, unknown>>>;
+  scopes: Record<string, SettingsScope>;
   /**
    * 通过 messageId 从会话快照解析 assistant 消息文本（可靠方案，2026-08-17）。
    * DOM 向上抓取在 dsh 渲染结构下不可靠（按钮祖先链不含消息文本）。
@@ -407,18 +409,16 @@ function playBase64Wav(b64: string): HTMLAudioElement {
 }
 
 const noopSubscribe = (): (() => void) => () => void 0;
-const emptySnap = (): SettingsScopeSnapshot<Record<string, unknown>> => ({
+const emptySnap = (): SettingsScopeSnapshot => ({
   status: 'loading',
   value: undefined,
-  base: undefined,
-  user: undefined,
   revision: undefined,
   writable: false,
-  mode: 'memory',
+  mode: 'host',
 });
 
 /** 读取 aemeath-tts.enabled（默认 false，2026-08-17：开关初始关闭），可订阅。 */
-function useTtsEnabled(scopes?: Record<string, SettingsScope<Record<string, unknown>>>): boolean {
+function useTtsEnabled(scopes?: Record<string, SettingsScope>): boolean {
   const scope = scopes?.[TTS_NS];
   const snap = useSyncExternalStore(scope ? scope.subscribe : noopSubscribe, scope ? scope.getSnapshot : emptySnap);
   const val = snap?.value as { enabled?: boolean } | undefined;
@@ -426,7 +426,7 @@ function useTtsEnabled(scopes?: Record<string, SettingsScope<Record<string, unkn
 }
 
 /** 读取 aemeath-tts.volume（默认 1，0~1），可订阅。 */
-function useTtsVolume(scopes?: Record<string, SettingsScope<Record<string, unknown>>>): number {
+function useTtsVolume(scopes?: Record<string, SettingsScope>): number {
   const scope = scopes?.[TTS_NS];
   const snap = useSyncExternalStore(scope ? scope.subscribe : noopSubscribe, scope ? scope.getSnapshot : emptySnap);
   const val = snap?.value as { volume?: number } | undefined;

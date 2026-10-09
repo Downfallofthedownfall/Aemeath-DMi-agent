@@ -25,12 +25,56 @@ import { fileURLToPath } from 'node:url';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-settings';
+// DSH 0.2.0：'loader/volatile-update' 事件由 cordis-plugin-loader 声明，
+// 仅派发给拥有该条目的 fiber（插件借此感知自己 volatile 配置的热更新）。
+import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-credentials';
 import type {} from '@deepseek-ai/dsh-agent';
+// 注意：这里必须是「有内容的」import，不能写成空的 `import type {} from ...`——
+// 空 import 会被 tsc 从 .d.ts 里抹掉，导致下面的模块增强在消费方看不到
+// （表现为 kind:'aemeath-*' 不被 MessageSourceMap 接受）。故用 re-export 形式，
+// 保证 '@deepseek-ai/dsh-llm' 一定出现在产出的 .d.ts 里。
+export type { MessageSourceMap as DshMessageSourceMap } from '@deepseek-ai/dsh-llm';
+
+// DSH 0.2.0：MessageSourceMap 改为「各 producer 在自己模块里声明自己的 kind」的
+// 可合并联合。**0.1.1 的 `kind:'plugin'` 包装器已被 v4 会话格式明确拒收**
+// （dsh-session-format-v3-to-v4: `... || value["kind"] === "plugin") throw
+// new SessionFormatError("format v4 message requires a producer-owned source kind")`），
+// 官方约定是 kind 用「生产者自己的名字」——参考 dsh-agent-instructions 的
+// `source: { kind: 'agent-instructions', form: 'instructions', ... }`。
+// 旧格式的迁移映射也印证这一点：`producerKind()` 把 `kind:'plugin'` 包成
+// `plugin:<名字>`。故 Aemeath 各插件一律用 kind:'aemeath-<模块>'。
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /** Aemeath 公共插件注入的上下文消息。 */
+    'aemeath-common': AemeathPluginSource;
+    /** Aemeath worldbook 注入的知识条目。 */
+    'aemeath-worldbook': AemeathPluginSource;
+    /** Aemeath retriever 注入的讲义片段。 */
+    'aemeath-retriever': AemeathPluginSource;
+    /** Aemeath memory 注入的召回记忆。 */
+    'aemeath-memory': AemeathPluginSource;
+    /** Aemeath workflow 注入的解题规范/提示。 */
+    'aemeath-workflow': AemeathPluginSource;
+  }
+}
+
+/**
+ * Aemeath 生产者消息来源（v4 生产者自有 kind）。
+ * 0.2.0 的 ContextFormed 载体：form 决定需要哪些字段（notice 需 summary，
+ * snapshot 需 sections，instructions/catalog/relay 无额外字段）。
+ */
+export interface AemeathPluginSource {
+  kind: 'aemeath-common' | 'aemeath-worldbook' | 'aemeath-retriever' | 'aemeath-memory' | 'aemeath-workflow';
+  form: 'notice' | 'catalog' | 'recall' | 'snapshot' | 'instructions' | 'relay';
+  /** notice 的一行说明。 */
+  summary?: string;
+  /** snapshot 形态需要的分节。 */
+  sections?: readonly { name: string; text: string }[];
+}
+
 export const name = 'aemeath-common';
 export const inject = ['tools', 'systemPrompt', 'agents', 'credentials', 'settings'];
 
@@ -60,6 +104,11 @@ export const Config = z.object({
   /** 系统审批弹窗（S7）：mcp__control__* 等需审批的调用改弹系统级 MessageBox
    *  （前台显示 + 回车允许/Esc 拒绝），免去切回 dsh Web UI 点审批。默认开。 */
   systemApproval: z.boolean(),
+  // —— DSH 0.2.0：可运行时编辑的开关（原 installSettingsSection('aemeath-common') 的
+  //    用户层）。`.volatile()` = 由设置页写入 profile patch，热更新时只提交值、
+  //    不重挂插件；读取一律走 config.<field>.get()。——
+  oocRulesEnabled: z.boolean().default(true).volatile(),
+  oocLlmEnabled: z.boolean().default(false).volatile(),
 });
 
 export interface PersonaConfig {
@@ -77,6 +126,9 @@ export interface CommonConfig {
   oocRules?: Record<string, OocRuleConfig>;
   oocLlm?: { enabled?: boolean; apiKey?: string; baseUrl?: string; model?: string };
   systemApproval?: boolean;
+  /** DSH 0.2.0 volatile 引用：可运行时编辑的 OOC 开关（见 Config 注释）。 */
+  oocRulesEnabled?: { get?: () => boolean };
+  oocLlmEnabled?: { get?: () => boolean };
 }
 
 // ===== 日志（[前缀] 约定） =====
@@ -89,8 +141,153 @@ export function warn(msg: string): void {
 }
 
 // ============================================================
+// DSH 0.2.0 兼容层：会话 preset 解析
+// 0.1.1-rc.2 的 `resolveSessionPreset(session)`（@deepseek-ai/dsh-agent-presets）
+// 在 0.2.0-rc.2 被移除：该包拆成 dsh-agent-preset（插件类，只注册子行）
+// 与 dsh-agent-preset-registry（ctx.agentPresets 服务）。会话当前 preset 改为
+// 经 session projection 读取，键名 `agentPreset`——这正是官方
+// dsh-api-session-controller 的读法（agent.js: `ctx.sessionProjections
+// .stateOf(session, 'agentPreset') ?? undefined`）。
+//
+// projection 值是 `string | null`（未选择时为 null），对外统一收敛成
+// `string | undefined`，让所有调用点保持 `?? config.defaultPreset` 的原有写法。
+//
+// 兼容策略：旧 CLI（0.1.1）仍走 resolveSessionPreset 动态导入，新 CLI 走
+// projection；两者都不可用时返回 undefined，由调用方回退 defaultPreset。
+// ============================================================
+
+/** 会话当前 agent preset（0.2.0 读法）；解析不出时 undefined。 */
+export function sessionPresetOf(ctx: unknown, session: unknown): string | undefined {
+  if (!ctx || !session) return undefined;
+  try {
+    const projections = (ctx as { sessionProjections?: { stateOf?: (s: unknown, k: string) => unknown } })
+      .sessionProjections;
+    const value = projections?.stateOf?.(session, 'agentPreset');
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 取会话的 header（projection 与旧 API 都需要它）。 */
+function headerOf(session: unknown): { agentPreset?: string } | undefined {
+  const h = (session as { header?: unknown } | undefined)?.header;
+  return h && typeof h === 'object' ? (h as { agentPreset?: string }) : undefined;
+}
+
+/**
+ * 解析会话的 agent preset，兼容 0.1.1 与 0.2.0 两种 CLI。
+ * 优先读 projection（0.2.0 权威：含会话中途切换的记录），
+ * 回退 header.agentPreset（创建时的值），再回退 undefined。
+ */
+export function resolvePresetCompat(ctx: unknown, session: unknown): string | undefined {
+  const fromProjection = sessionPresetOf(ctx, session);
+  if (fromProjection) return fromProjection;
+  return headerOf(session)?.agentPreset;
+}
+
+// ============================================================
+// DSH 0.2.0 兼容层：settings（插件自有配置 + 跨命名空间读）
+//
+// 0.1.1 的 settings API 在 0.2.0 被整体移除且**没有同名替代**：
+//   - installSettingsSection(ctx, ns, Schema, base, hooks) → 删除
+//   - settingsNamespace('foo')                            → 删除（ns 现在就是 profile 条目 id 字符串）
+//   - ctx.settings.get(ns)                                → 删除（跨命名空间读不再支持）
+//
+// 0.2.0 的模型是「插件的设置就是它的 composition config」：把可运行时编辑的字段
+// 在插件自己的 Config schema 上标 `.volatile()`，框架据此自动生成设置页并把改动
+// 写回 profile patch；插件用 `config.<field>.get()` 每次读最新值，用
+// `ctx.on('loader/volatile-update', ...)` 收到变更通知（仅派发给拥有该条目的 fiber）。
+// 官方样例：dsh-web-search-deepseek（`config.apiKey.get()`）、
+// dsh-client-locale（`z.object({ preference: ...volatile() })`）。
+//
+// 跨命名空间**读**在 0.2.0 被有意取消（本文件里 aemeath 要读的
+// 'locale' / 'aemeath-ui' / 'agent-presets' 都属此列）。本层用一个小注册表
+// 承接：Aemeath 各插件在启动时把自己那几个 volatile 引用登记进来，
+// 读方通过本层的 `readSetting(ns, field)` 统一取值——语义与旧的
+// `ctx.settings.get(ns)?.field` 对齐，且天然支持热更新（每次调用都 .get()）。
+//
+// 兼容策略：新 CLI 走注册表；若将来仍在旧 CLI 上跑，回退 ctx.settings.get。
+// ============================================================
+
+/** 一个命名空间当前生效的值（惰性求值，保证读到热更新后的最新值）。 */
+type SettingsReader = () => Record<string, unknown> | undefined;
+
+/** 全局命名空间读表：ns -> 惰性 reader。 */
+const settingsReaders = new Map<string, SettingsReader>();
+
+/**
+ * 登记一个命名空间的读取器（由拥有该配置的插件在 apply 时调用）。
+ * @param ns 命名空间 id（= profile 条目 id，如 'aemeath-common'）
+ * @param reader 返回当前值的惰性函数（内部应调用 volatile 引用的 .get()）
+ */
+export function registerSettingsReader(ns: string, reader: SettingsReader): void {
+  settingsReaders.set(ns, reader);
+}
+
+/**
+ * 读取某命名空间的当前值（兼容 0.2.0 注册表与 0.1.1 的 ctx.settings.get）。
+ * @returns 值对象；未登记/不可用时 undefined
+ */
+export function readSetting(ctx: unknown, ns: string): Record<string, unknown> | undefined {
+  const reader = settingsReaders.get(ns);
+  if (reader) {
+    try {
+      return reader();
+    } catch {
+      /* 读失败：落到旧路径兜底 */
+    }
+  }
+  // 旧 CLI（0.1.1）兜底：ctx.settings.get(settingsNamespace(ns))
+  try {
+    const settings = (ctx as { settings?: { get?: (k: unknown) => unknown } } | undefined)?.settings;
+    const value = settings?.get?.(ns);
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 把一组 volatile 配置引用登记为一个命名空间的读取器。
+ * 用法（插件 apply 内）：
+ *   registerVolatileSettings('aemeath-common', { oocRulesEnabled: config.oocRulesEnabled, ... });
+ * 之后任意地方 `readSetting(ctx, 'aemeath-common')?.oocRulesEnabled` 拿到的都是最新值。
+ *
+ * 每个字段可以是三种形态之一，求值顺序：
+ *   1) volatile 引用（`{ get(): T }`）      → 调 .get()
+ *   2) 取值函数（`() => T`，惰性闭包）      → 调它（UI 插件用它包住 volatile 引用）
+ *   3) 普通值                               → 原样返回
+ * 注意 2)：函数**必须**被调用。早期实现只判断 `typeof ref === 'object'`，
+ * 导致传进来的箭头函数被当成普通值原样存下（JSON 序列化后变成 `{}`），
+ * 表现为 aemeath-ui / aemeath-tts 在设置端点里读到空对象。
+ * @param ns 命名空间 id
+ * @param refs 字段名 -> volatile 引用 / 取值函数 / 普通值
+ */
+export function registerVolatileSettings(
+  ns: string,
+  refs: Record<string, { get?: () => unknown } | (() => unknown) | unknown>,
+): void {
+  registerSettingsReader(ns, () => {
+    const out: Record<string, unknown> = {};
+    for (const [key, ref] of Object.entries(refs)) {
+      if (ref && typeof (ref as { get?: unknown }).get === 'function') {
+        // 形态 1：volatile 引用
+        out[key] = (ref as { get: () => unknown }).get();
+      } else if (typeof ref === 'function') {
+        // 形态 2：取值函数（惰性闭包）——必须调用，否则存下的是函数本身
+        out[key] = (ref as () => unknown)();
+      } else {
+        // 形态 3：普通值
+        out[key] = ref;
+      }
+    }
+    return out;
+  });
+}
+
+// ============================================================
 // S7：系统审批（免 alt-tab 切回 Web UI）
-// mcp__control__* 等敏感工具调用 → 系统级审批，两种形态：
 //   首选：右下角通知 + 全局快捷键（scripts/ask-notify.ps1）——
 //     气泡通知右下角弹出、托盘图标常驻、全程不抢焦点不切窗口；
 //     Ctrl+Alt+1 = 允许，Ctrl+Alt+2 = 拒绝，点击通知/托盘菜单亦可。
@@ -173,10 +370,14 @@ async function systemApproval(toolName: string, reason: string, locale: string):
 /**
  * 读取当前 UI locale 偏好（settings.locale.preference，由 dsh 平台 locale 插件
  * 注册；缺省 zh）。host 侧无法感知浏览器语言，只能读用户显式选择的偏好。
+ *
+ * DSH 0.2.0：平台 locale 插件的 preference 是它自己的 volatile 配置，本插件
+ * 读不到（跨命名空间读已取消），故这里只在旧 CLI 上有效；新 CLI 下走
+ * uiLocale() 的前端上报路径。
  */
 function currentLocale(ctx: Context): string {
   try {
-    const v = ctx.settings?.get(settingsNamespace('locale')) as { preference?: string } | undefined;
+    const v = readSetting(ctx, 'locale');
     return v?.preference === 'en' ? 'en' : 'zh';
   } catch {
     return 'zh';
@@ -206,7 +407,8 @@ function personaFileForLocale(file: string, locale: string): string {
  */
 function uiLocale(ctx: Context): string {
   try {
-    const v = ctx.settings?.get(settingsNamespace('aemeath-ui')) as { locale?: string } | undefined;
+    // 'aemeath-ui' 由 dsh-plugin-ui 登记（前端经 /aemeath/api/settings 写入）。
+    const v = readSetting(ctx, 'aemeath-ui');
     const l = v?.locale;
     return l === 'en' || l === 'zh' ? l : '';
   } catch {
@@ -417,35 +619,35 @@ const SEARCH_PAGE_URL = /(bing\.com|cn\.bing\.com)\/search|google\.com\/search|b
 // ============================================================
 export function apply(ctx: Context, config: CommonConfig): void {
   // ---- 0) settings 接线（M5：前端设置界面 → 实时开关） ----
-  // namespace: aemeath.common；base = 本插件 composition config 的派生值；
-  // 用户层（前端设置页写入）覆盖后 watch 实时生效。
+  // DSH 0.2.0：不再有 installSettingsSection。可编辑字段改为本插件 Config 上的
+  // volatile 引用（见 Config 定义），设置页由框架按 schema 自动生成并写回
+  // profile patch；这里每次读取都 .get()，因此热更新立即生效。
+  const oocRulesRef = (config as { oocRulesEnabled?: { get?: () => boolean } }).oocRulesEnabled;
+  const oocLlmRef = (config as { oocLlmEnabled?: { get?: () => boolean } }).oocLlmEnabled;
   const runtime = {
-    oocRulesEnabled: true,
-    oocLlmEnabled: config.oocLlm?.enabled ?? false,
-  };
-  const FeatureSettingsSchema = z.object({
-    oocRulesEnabled: z.boolean(),
-    oocLlmEnabled: z.boolean(),
-  });
-  const featureBase = { oocRulesEnabled: true, oocLlmEnabled: config.oocLlm?.enabled ?? false };
-  let currentSource: () => typeof featureBase = () => featureBase;
-  installSettingsSection(
-    ctx,
-    settingsNamespace('aemeath-common'),
-    FeatureSettingsSchema,
-    featureBase,
-    {
-      setSource: (current) => {
-        currentSource = current;
-      },
-      onChange: () => {
-        const v = currentSource();
-        runtime.oocRulesEnabled = v.oocRulesEnabled;
-        runtime.oocLlmEnabled = v.oocLlmEnabled;
-        log(`settings 已应用: oocRulesEnabled=${runtime.oocRulesEnabled} oocLlmEnabled=${runtime.oocLlmEnabled}`);
-      },
+    get oocRulesEnabled(): boolean {
+      return oocRulesRef?.get?.() ?? true;
     },
-  );
+    get oocLlmEnabled(): boolean {
+      return oocLlmRef?.get?.() ?? config.oocLlm?.enabled ?? false;
+    },
+  };
+  /** 兼容旧的 setSource/onChange 读法：值来自 volatile 引用，日志仅用于排查。 */
+  const reportSettings = (): void => {
+    log(`settings 已应用: oocRulesEnabled=${runtime.oocRulesEnabled} oocLlmEnabled=${runtime.oocLlmEnabled}`);
+  };
+  reportSettings();
+
+  // 把本命名空间登记进全局读表（供 readSetting 跨插件读，语义同旧的
+  // ctx.settings.get('aemeath-common')）。
+  registerVolatileSettings('aemeath-common', {
+    oocRulesEnabled: runtime.oocRulesEnabled,
+    oocLlmEnabled: runtime.oocLlmEnabled,
+  });
+  // 热更新通知（仅派发给本条目）：值已提交，这里只需重新读一次并记录。
+  ctx.on('loader/volatile-update', () => {
+    reportSettings();
+  });
 
   // ---- 1) aemeath/version 冒烟工具 ----
   ctx.tools.register(
@@ -457,7 +659,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
         schema: { type: 'string' },
         render: (_args, value) => [{ type: 'text', text: String(value) }],
       },
-      execute: async () => `aemeath ${VERSION} (dsh 0.1.1-rc.2)`,
+      execute: async () => `aemeath ${VERSION} (dsh 0.2.0-rc.2)`,
     }),
   );
   log('冒烟工具 aemeath/version 已注册');
@@ -594,11 +796,24 @@ export function apply(ctx: Context, config: CommonConfig): void {
   // 每次 assembly 重算 → 切换角色后下一条回复即换人格，无需先开新会话。
   const mountedAgentPersonas = new Set<string>();
 
-  /** 实时角色：前端选择写入的 agent-presets.default；读不到则回退。 */
+  /**
+   * 实时角色：前端选择写入的 preset 默认值；读不到则回退。
+   * DSH 0.2.0：行 id 由 'agent-presets' 改为 'agent-preset-registry'，其
+   * `selectedDefault` 是 volatile 字段（官方实现：
+   * `get defaultId() { return this.config.selectedDefault.get() ?? this.config.default }`）。
+   * 这里直接问 ctx.agentPresets 服务的 defaultId（权威且支持热更新）。
+   */
   const currentRole = (): string | undefined => {
     try {
-      const ap = ctx.settings?.get?.(settingsNamespace('agent-presets')) as { default?: string } | undefined;
-      return ap?.default;
+      const presets = (ctx as unknown as { agentPresets?: { defaultId?: string } }).agentPresets;
+      if (typeof presets?.defaultId === 'string' && presets.defaultId) return presets.defaultId;
+    } catch {
+      /* 服务缺失：落到下面的兼容读 */
+    }
+    try {
+      const ap = readSetting(ctx, 'agent-preset-registry') ?? readSetting(ctx, 'agent-presets');
+      const v = ap?.selectedDefault ?? ap?.default;
+      return typeof v === 'string' ? v : undefined;
     } catch {
       return undefined;
     }
@@ -607,7 +822,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
   /** 按 role+locale 解析人格文本（结果缓存；switch 后新 role 会 cache-miss 重新读文件）。 */
   const personaTextCache = new Map<string, string>();
   const personaTextFor = (agent: { id: string; session: unknown }): string => {
-    const role = currentRole() ?? resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
+    const role = currentRole() ?? resolvePresetCompat(ctx, agent.session) ?? config.defaultPreset;
     const persona = config.personas?.[role ?? ''];
     if (!persona) return '';
     const locale = currentLocale(ctx);
@@ -635,7 +850,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
       return;
     }
     if (Object.keys(config.personas ?? {}).length === 0) return;
-    const role = currentRole() ?? resolveSessionPreset(agent.session as never) ?? config.defaultPreset;
+    const role = currentRole() ?? resolvePresetCompat(ctx, agent.session) ?? config.defaultPreset;
     const persona = config.personas?.[role ?? ''];
     log(`人格路由: agent=${agent.id} role=${role || '(未解析→' + (config.defaultPreset ?? '无') + ')'} defaultPreset=${config.defaultPreset} personaFile=${persona?.file ?? '(未匹配，等实时角色)'}`);
     try {
@@ -671,7 +886,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
         name: 'aemeath:runtime-context',
         order: 3,
         text: () => {
-          const preset = resolveSessionPreset(agent.session as never) ?? config.defaultPreset ?? '';
+          const preset = resolvePresetCompat(ctx, agent.session) ?? config.defaultPreset ?? '';
           return runtimeContextDirective(uiLocale(agent.ctx), relationshipCueFor(agent.ctx, preset));
         },
       });
@@ -694,7 +909,10 @@ export function apply(ctx: Context, config: CommonConfig): void {
   // 先补挂已存在的 agents（插件启动晚于 agent-loop，会错过 agent/created）
   for (const agent of ctx.agents.list()) mountPersona(agent);
   log(`现存 agents: ${ctx.agents.list().map((a) => a.id).join(', ') || '(无)'}`);
-  ctx.on('agent/created', ({ agent }) => mountPersona(agent));
+  ctx.on('agent/created', ({ agent }) => {
+    mountPersona(agent);
+    return undefined;
+  });
 
   // ---- 3) OOC 规则层（agent/pre-step） ----
   const steeredTurns = new Map<string, number>();
@@ -714,7 +932,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
 
     if (!runtime.oocRulesEnabled) return decision;
 
-    const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
+    const preset = resolvePresetCompat(ctx, payload.agent.session) ?? config.defaultPreset;
     const rules = config.oocRules?.[preset ?? ''];
     if (!rules?.forbidPatterns?.length) return decision;
 
@@ -763,7 +981,7 @@ export function apply(ctx: Context, config: CommonConfig): void {
       try {
         if (!runtime.oocLlmEnabled) return;
         if (event.type !== 'assistant/message') return;
-        const preset = resolveSessionPreset(session as never) ?? config.defaultPreset;
+        const preset = resolvePresetCompat(ctx, session) ?? config.defaultPreset;
         if (!preset) return;
         const text = (event.data.message?.content ?? [])
           .map((b: { type?: string; text?: string }) => (b.type === 'text' ? b.text ?? '' : ''))

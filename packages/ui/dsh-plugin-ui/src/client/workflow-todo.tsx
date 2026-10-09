@@ -14,8 +14,9 @@
 // ============================================================
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-import type { ConversationSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import { t, useLocale } from './i18n.ts';
 
 const CARD_WIDTH = 256;
@@ -121,7 +122,7 @@ async function fetchPlan(sessionId: string): Promise<string[]> {
 function WorkflowTodoCard({
   useSession,
 }: {
-  useSession: <S>(sel: (s: ConversationSnapshot) => S, eq?: (a: S, b: S) => boolean) => S;
+  useSession: <S>(sel: (s: SessionSnapshot) => S, eq?: (a: S, b: S) => boolean) => S;
 }): JSX.Element | null {
   useLocale(); // locale 切换时刷新文案
   const sessionId = String(useSession((s) => s.sessionId ?? '') ?? '');
@@ -374,7 +375,7 @@ function WorkflowTodoCard({
 }
 
 /** 外层（零 hooks）：会话作用域缺 useSession 时返回 null（不渲染）。 */
-export function WorkflowTodo(props: { useSession?: <S>(sel: (s: ConversationSnapshot) => S, eq?: (a: S, b: S) => boolean) => S }): JSX.Element | null {
+export function WorkflowTodo(props: { useSession?: <S>(sel: (s: SessionSnapshot) => S, eq?: (a: S, b: S) => boolean) => S }): JSX.Element | null {
   const { useSession } = props;
   if (!useSession) return null;
   return <WorkflowTodoCard useSession={useSession} />;

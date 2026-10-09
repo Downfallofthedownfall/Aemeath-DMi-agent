@@ -5,12 +5,19 @@
 // 数据流：前端 fetch GET/POST /aemeath/api/settings（host 桥，避开 api-proxy allowlist）
 //         → ctx.settings → settings.yaml → 引擎插件 watch 实时生效。
 // ============================================================
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
-import type { CredentialView, IApiClient } from '@deepseek-ai/dsh-client-connection/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type { CredentialInfo } from '@deepseek-ai/dsh-credentials/types';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import { FEATURE_NAMESPACES } from './constants.ts';
 import { CREDENTIALS } from './settings.tsx';
+
+/**
+ * RemoteResult 的最小结构断言（避免强依赖 dsh-typert-protocol 的具体导出）。
+ * 与 0.2.0 的 `RemoteResult<T>` 同形：ok=true 带 value，否则带 error。
+ */
+type RemoteLike<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
 /** 同源设置桥。 */
 export interface SettingsBridge {
@@ -33,18 +40,39 @@ export interface RoleFace {
 
 /** 凭据 face（C11：可订阅——保存/清除 key 后徽章状态实时刷新）。 */
 export interface CredentialsFace {
-  views: Record<string, CredentialView | undefined>;
+  views: Record<string, CredentialInfo | undefined>;
   refresh(): Promise<void>;
   set(ref: string, value: string): Promise<void>;
   unset(ref: string): Promise<void>;
   /** 订阅视图变化（refresh/set/unset 后通知）。 */
   subscribe(l: () => void): () => void;
-  getSnapshot(): Record<string, CredentialView | undefined>;
+  getSnapshot(): Record<string, CredentialInfo | undefined>;
 }
 
-/** SettingsScope 扩展：额外暴露 reload（供 settings/document-updated 事件刷新开关）。 */
-export interface FetchScope extends SettingsScope<Record<string, unknown>> {
+/**
+ * 前端 settings scope 快照（DSH 0.2.0）。
+ *
+ * 0.1.1 的 `SettingsScope`/`SettingsScopeSnapshot` 随 dsh-client-runtime 一起
+ * 移除了；0.2.0 官方改由 `SettingsDescribeMirror`（settings.describe 共享读）
+ * 承担跨命名空间读取，写走 `remote.settings.update/mutate`。本插件本就用自建
+ * 同源 HTTP 桥（/aemeath/api/settings）绕开 api-proxy allowlist，故这里只保留
+ * 自有的最小快照形状，不再依赖平台类型。
+ */
+export interface ScopeSnapshot {
+  status: 'loading' | 'ready' | 'unavailable';
+  value: Record<string, unknown> | undefined;
+  revision: number | undefined;
+  writable: boolean;
+  mode: 'host';
+}
+
+/** 本插件自有的 settings scope（读/订阅/写全走同源 HTTP 桥）。 */
+export interface FetchScope {
+  getSnapshot(): ScopeSnapshot;
+  subscribe(l: () => void): () => void;
   load(): Promise<void>;
+  set(field: string, value: unknown): Promise<void>;
+  unset(field: string): Promise<void>;
 }
 
 export interface Faces {
@@ -113,8 +141,21 @@ export function createFaces(ctx: ClientContext): Faces {
   void roleFace.refresh();
 
   // —— 凭据 face（describe/set/unset，值单向传输；可订阅保证 UI 刷新）——
-  const connection = ctx.get('connection');
-  const api: IApiClient = connection.api;
+  // DSH 0.2.0：credentials 不再挂在 connection.api（IApiClient 已随
+  // dsh-host-apiproxy / dsh-client-runtime 移除），改为 Typert remote 命名空间
+  // `ctx.remote.credentials`；参数由对象改为位置参数，返回 RemoteResult<T>
+  // （成功取 .value，失败取 .error，与旧 RpcResult 同形）。
+  const remote = (
+    ctx as unknown as {
+      remote?: {
+        credentials?: {
+          describe(refs: string[]): Promise<RemoteLike<Record<string, CredentialInfo>>>;
+          set(ref: string, value: string): Promise<RemoteLike<void>>;
+          unset(ref: string): Promise<RemoteLike<void>>;
+        };
+      };
+    }
+  ).remote;
   const credListeners = new Set<() => void>();
   const credNotify = (): void => {
     for (const l of credListeners) l();
@@ -125,13 +166,15 @@ export function createFaces(ctx: ClientContext): Faces {
       credListeners.add(l);
       return () => credListeners.delete(l);
     },
-    getSnapshot: (): Record<string, CredentialView | undefined> => credentialsFace.views,
+    getSnapshot: (): Record<string, CredentialInfo | undefined> => credentialsFace.views,
     refresh: async (): Promise<void> => {
       const refs = CREDENTIALS.map((c) => c.ref);
       try {
-        const res = await api.credentials.describe({ refs }, AbortSignal.timeout(8000));
-        if (res.result.ok) {
-          credentialsFace.views = res.result.value.credentials;
+        const creds = remote?.credentials;
+        if (!creds) return; // remote 命名空间未挂载：保持旧视图
+        const res = await creds.describe(refs);
+        if (res.ok) {
+          credentialsFace.views = res.value;
           credNotify(); // C11：视图引用替换后通知订阅者
         }
       } catch {
@@ -139,13 +182,17 @@ export function createFaces(ctx: ClientContext): Faces {
       }
     },
     set: async (ref: string, value: string): Promise<void> => {
-      const res = await api.credentials.set({ ref, value }, AbortSignal.timeout(8000));
-      if (!res.result.ok) throw new Error(res.result.error.message + ` (${res.result.error.code})`);
+      const creds = remote?.credentials;
+      if (!creds) throw new Error('credentials remote unavailable');
+      const res = await creds.set(ref, value);
+      if (!res.ok) throw new Error(res.error.message + ` (${res.error.code})`);
       await credentialsFace.refresh();
     },
     unset: async (ref: string): Promise<void> => {
-      const res = await api.credentials.unset({ ref }, AbortSignal.timeout(8000));
-      if (!res.result.ok) throw new Error(res.result.error.message + ` (${res.result.error.code})`);
+      const creds = remote?.credentials;
+      if (!creds) throw new Error('credentials remote unavailable');
+      const res = await creds.unset(ref);
+      if (!res.ok) throw new Error(res.error.message + ` (${res.error.code})`);
       await credentialsFace.refresh();
     },
   };
@@ -161,20 +208,17 @@ export function createFaces(ctx: ClientContext): Faces {
 }
 
 /**
- * 基于同源 HTTP 端点的 SettingsScope 适配实现（浏览器端）
- * —— dsh 的 ctx.settingsScope.bind 走 api-proxy settings.* RPC（allowlist 限制），
- * 这里用自定义端点替代：read 拉快照，set/unset 写 patch。
+ * 基于同源 HTTP 端点的 settings scope 适配实现（浏览器端）
+ * —— dsh 的 settings RPC 有 api-proxy allowlist 限制，这里用自定义端点替代：
+ * read 拉快照，set/unset 写 patch。
  */
 function makeFetchScope(
   ns: string,
   api: SettingsBridge,
 ): FetchScope {
-  type Snapshot = SettingsScopeSnapshot<Record<string, unknown>>;
-  let snap: Snapshot = {
+  let snap: ScopeSnapshot = {
     status: 'loading',
     value: undefined,
-    base: undefined,
-    user: undefined,
     revision: undefined,
     writable: true,
     mode: 'host',

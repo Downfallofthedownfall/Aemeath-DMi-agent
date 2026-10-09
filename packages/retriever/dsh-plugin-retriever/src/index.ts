@@ -14,8 +14,8 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
+import { resolvePresetCompat, registerVolatileSettings, readSetting } from '@aemeath/dsh-plugin-common';
+import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-settings';
 import { chunkText, type NoteChunk } from './chunker.js';
@@ -27,12 +27,16 @@ export const Config = z.object({
   defaultPreset: z.string(),
   notesDir: z.string(),
   maxInjectTokens: z.number(),
+  // DSH 0.2.0：原 installSettingsSection('aemeath-retriever') 的用户层开关。
+  enabled: z.boolean().default(true).volatile(),
 });
 
 export interface RetrieverConfig {
   defaultPreset?: string;
   notesDir?: string;
   maxInjectTokens?: number;
+  /** DSH 0.2.0 volatile 引用：讲义检索注入总开关。 */
+  enabled?: { get?: () => boolean };
 }
 
 function log(msg: string): void {
@@ -43,11 +47,19 @@ function warn(msg: string): void {
   console.warn(`[aemeath-retriever] ⚠ ${msg}`);
 }
 
-/** 实时角色：前端选择写入的 agent-presets.default（与 common 插件 persona 一致）。 */
+/** 实时角色：前端选择写入的 preset 默认（与 common 插件 persona 一致）。
+ *  DSH 0.2.0：行 id 由 'agent-presets' 改为 'agent-preset-registry'，优先问服务。 */
 function liveRole(ctx: Context): string | undefined {
   try {
-    const ap = ctx.settings?.get?.(settingsNamespace('agent-presets')) as { default?: string } | undefined;
-    return ap?.default;
+    const presets = (ctx as unknown as { agentPresets?: { defaultId?: string } }).agentPresets;
+    if (typeof presets?.defaultId === 'string' && presets.defaultId) return presets.defaultId;
+  } catch {
+    /* 服务缺失：落到兼容读 */
+  }
+  try {
+    const ap = readSetting(ctx, 'agent-preset-registry') ?? readSetting(ctx, 'agent-presets');
+    const v = ap?.selectedDefault ?? ap?.default;
+    return typeof v === 'string' ? v : undefined;
   } catch {
     return undefined;
   }
@@ -95,26 +107,19 @@ const PHYSICS_TERM = /F\s*=\s*ma|牛顿|能量|动量|热力学|电磁|量子|�
 
 export function apply(ctx: Context, config: RetrieverConfig): void {
   // ---- settings 接线（M5：前端设置界面 → 实时开关） ----
-  const runtime = { enabled: true };
-  const FeatureSettingsSchema = z.object({ enabled: z.boolean() });
-  const featureBase = { enabled: true };
-  let currentSource: () => typeof featureBase = () => featureBase;
-  installSettingsSection(
-    ctx,
-    settingsNamespace('aemeath-retriever'),
-    FeatureSettingsSchema,
-    featureBase,
-    {
-      setSource: (current) => {
-        currentSource = current;
-      },
-      onChange: () => {
-        const v = currentSource();
-        runtime.enabled = v.enabled;
-        log(`settings 已应用: enabled=${runtime.enabled}`);
-      },
+  // DSH 0.2.0：installSettingsSection 已移除；可编辑字段改为 Config 上的 volatile
+  // 引用（见 Config 定义），框架据此生成设置页并写回 profile patch。
+  const enabledRef = (config as { enabled?: { get?: () => boolean } }).enabled;
+  const runtime = {
+    get enabled(): boolean {
+      return enabledRef?.get?.() ?? true;
     },
-  );
+  };
+  log(`settings 已应用: enabled=${runtime.enabled}`);
+  registerVolatileSettings('aemeath-retriever', { enabled: runtime.enabled });
+  ctx.on('loader/volatile-update', () => {
+    log(`settings 已应用: enabled=${runtime.enabled}`);
+  });
 
   const maxTokens = config.maxInjectTokens ?? 1500;
   const notesDir = isAbsolute(config.notesDir ?? '') ? config.notesDir! : join(process.cwd(), config.notesDir ?? 'packages/library/physicist/notes');
@@ -185,7 +190,7 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
     // 只在本轮第一步注入（与 memory/worldbook/workflow 对齐，防多 step 上下文线性膨胀）
     if (payload.step !== 1) return decision;
 
-    const preset = liveRole(ctx) ?? resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
+    const preset = liveRole(ctx) ?? resolvePresetCompat(ctx, payload.agent.session) ?? config.defaultPreset;
     if (preset !== 'physicist') return decision;
 
     // 取进入 step 的用户原始文本（跳过插件注入消息，如 worldbook/recall）
@@ -233,7 +238,7 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
     log(`preset=physicist 讲义注入 ${block.length} 字符（≤${maxTokens} tokens 预算）`);
     const injectMsg = createUserMessage({
       content: [{ type: 'text', text: block }],
-      source: { kind: 'plugin', plugin: name, form: 'catalog' },
+      source: { kind: 'aemeath-retriever', form: 'catalog' },
     });
     return { kind: 'enter', messages: [...decision.messages, injectMsg] };
   });

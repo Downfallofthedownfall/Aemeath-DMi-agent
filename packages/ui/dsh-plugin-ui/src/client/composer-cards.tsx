@@ -13,8 +13,9 @@
 //   （running false→true）→ settleSession(sessionId)；③ 切换会话 → clearComposerCards()。
 // ============================================================
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-import type { ConversationSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import { t, useLocale } from './i18n.ts';
 
 const POLL_MS = 5000;
@@ -239,7 +240,7 @@ function ComposerCardView({
 // —— 卡片宿主（hooks 全在此；由外层零 hooks 组件保证为当前会话）——
 // 数据源：conversation.input.dock 的 owner share（InputZone.session 快照）——按规范
 //   "Read only session/input off the owner share；点时刻快照由骨架代重渲染，勿自订阅"。
-function ComposerCardHostInner({ session }: { session: ConversationSnapshot }): JSX.Element | null {
+function ComposerCardHostInner({ session }: { session: SessionSnapshot }): JSX.Element | null {
   useLocale(); // locale 切换时刷新文案
 
   const sessionId = session.sessionId ?? '';
@@ -342,7 +343,7 @@ function ComposerCardHostInner({ session }: { session: ConversationSnapshot }): 
 }
 
 /** 外层（零 hooks）：非当前会话/无会话时返回 null（不渲染）。 */
-export function ComposerCardHost(props: { session?: ConversationSnapshot }): JSX.Element | null {
+export function ComposerCardHost(props: { session?: SessionSnapshot }): JSX.Element | null {
   const { session } = props;
   if (!session?.sessionId) return null;
   return <ComposerCardHostInner session={session} />;

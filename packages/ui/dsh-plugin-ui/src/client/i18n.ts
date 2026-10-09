@@ -6,7 +6,7 @@
 //   - useLocale()：React hook，订阅 locale 切换触发重渲染
 // ============================================================
 import { useSyncExternalStore } from 'react';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type { LocaleSnapshot } from '@deepseek-ai/dsh-client-locale/client';
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots';
 import { zh, en } from './locales.ts';

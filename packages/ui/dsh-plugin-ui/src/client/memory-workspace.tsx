@@ -15,8 +15,9 @@
 // ============================================================
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
 // 引入布局插件的客户端类型声明（声明合并出 'shell.overlay' 等座位名；仅类型，无运行时代码）
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client';
 import { t } from './i18n.ts';
 import { injectMemoryWorkspaceStyles, MEMORY_WORKSPACE_CLASS } from './memory-tokens.ts';

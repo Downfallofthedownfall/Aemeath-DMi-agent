@@ -12,7 +12,7 @@
 // 同时导出 ensureFallbackChat / fetchFallbackWorkspacePath，供工作区选择器的
 // 「无工作区」菜单项复用（点它 = 直接在兜底工作区开新对话）。
 // ============================================================
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
 
 /** 客户端 workspaces 服务最小结构（跨版本结构断言，避免强依赖）。 */
 export interface WorkspacesLike {

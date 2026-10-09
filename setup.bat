@@ -24,7 +24,8 @@ if %errorlevel% neq 0 (
 echo [OK] Python found
 
 echo [3/7] Installing root npm dependencies (monorepo workspaces)...
-call npm install --cache .npm-cache
+rem DSH 0.2.0：官方包的 peer 约束用 npm 默认严格解析会报 ERESOLVE，必须 --legacy-peer-deps
+call npm install --legacy-peer-deps --cache .npm-cache
 if %errorlevel% neq 0 (
     echo [FAIL] npm install failed
     pause

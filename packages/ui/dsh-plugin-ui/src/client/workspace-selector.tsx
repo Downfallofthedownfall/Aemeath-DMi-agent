@@ -17,7 +17,8 @@
 // ============================================================
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import { ensureFallbackChat, fetchFallbackWorkspacePath } from './bootstrap.ts';
 import { t, useLocale } from './i18n.ts';

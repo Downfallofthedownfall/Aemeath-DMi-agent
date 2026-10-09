@@ -11,6 +11,9 @@
       config:
         # C8：与 aemeath-run 保持一致显式声明 defaultPreset（主 profile 默认小爱同学）
         defaultPreset: 'aemeath'
+        # DSH 0.2.0 volatile：设置页可改、热更新即时生效（原 installSettingsSection 用户层）
+        oocRulesEnabled: true
+        oocLlmEnabled: false
         personas:
           aemeath:
             file: 'profiles/aemeath/personas/aemeath.md'
@@ -46,16 +49,19 @@
           aemeath: 'packages/worldbook/data/aemeath'
         maxInjectTokens: 3000
         hotReloadInterval: 3
+        enabled: true
     - id: aemeath-retriever
       name: '@aemeath/dsh-plugin-retriever'
       config:
         defaultPreset: 'aemeath'
         notesDir: 'packages/library/physicist/notes'
         maxInjectTokens: 1500
+        enabled: true
     - id: aemeath-memory
       name: '@aemeath/dsh-plugin-memory'
       config:
         defaultPreset: 'aemeath'
+        enabled: true
         l2RecallTopK: 5
         l3Capacity: 500
         l1Capacity: 40
@@ -106,6 +112,11 @@
     # —— M5 前端 UI 插件（browser 半区经 dsh.client 声明进入 __DSH_BOOT__）——
     - id: aemeath-ui
       name: '@aemeath/dsh-plugin-ui'
+      config:
+        # DSH 0.2.0 volatile：前端上报的 locale + TTS 开关（原 aemeath-ui / aemeath-tts 两个命名空间）
+        locale: ''
+        ttsEnabled: false
+        ttsVolume: 1
     # —— Python 微服务（v1 迁移 → MCP 接入；cwd 相对仓库根，dsh.ps1 固定）——
     - id: mcp-sympy
       name: '@deepseek-ai/dsh-mcp-client'
@@ -113,7 +124,7 @@
         transport: stdio
         serverName: sympy
         command: python
-        args: ['packages/py-services/sympy_mcp/server.py']
+        args: [ 'packages/py-services/sympy_mcp/server.py' ]
         cwd: '.'
         env: {}
         toolCallTimeoutMs: 60000
@@ -125,7 +136,7 @@
         transport: stdio
         serverName: vision
         command: python
-        args: ['packages/py-services/vision_mcp/server.py']
+        args: [ 'packages/py-services/vision_mcp/server.py' ]
         cwd: '.'
         env: {}
         toolCallTimeoutMs: 180000
@@ -135,13 +146,21 @@
       config:
         transport: stdio
         serverName: tts
-        # C7 补全：command 用 PATH 上的 python（setup.bat 已校验），解释器与模型目录
-        # 全部经环境变量接线（mcp-client 的 env 继承父进程环境）：
-        #   AEMEATH_TTS_PYTHON    → IndexTTS venv python（tts_mcp 启动时 execv 换入）
-        #   AEMEATH_TTS_MODEL_DIR → 模型目录（server.py 读取）
-        # 未设置时回退 D:\index-tts（仅代码内一处兜底）；换机器只改环境变量即可
-        command: python
-        args: ['packages/py-services/tts_mcp/server.py']
+        # ⚠ 2026-10-10 修复：**必须直接用 IndexTTS venv 的 python 启动**，
+        # 不能再依赖 server.py 里的 `_maybe_relaunch()`（os.execv 同进程换入）。
+        #
+        # 原因（实测证据，见 docs/DSH_0.2.0_MIGRATION.md §6.2）：
+        #   用系统 python 启动 → server.py 走 os.execv 换入 IndexTTS venv；
+        #   在 Windows 上父进程传给它的 stdio **管道句柄活不过 execv**，
+        #   结果进程能打印 banner、却**永不响应 MCP initialize 握手**。
+        #   mcp-client 的初始化 promise 因此永不 settle → 拖住整个 Loader
+        #   → web-runtime 的认证 URL 那行永不打印 → Electron 拿不到 token
+        #   → 窗口 401、同时 dsh 自己弹出系统浏览器。
+        #
+        # 直接用目标解释器启动就完全绕开这条路径（实测握手正常）。
+        # 换机器只改这一行 command（或设 AEMEATH_TTS_PYTHON 后同步这里）。
+        command: 'D:\index-tts\.venv\Scripts\python.exe'
+        args: [ 'packages/py-services/tts_mcp/server.py' ]
         cwd: '.'
         env: {}
         toolCallTimeoutMs: 300000
@@ -154,17 +173,22 @@
         # C10：command 依赖 PATH 上的 python（setup.bat 已校验）；如需固定解释器
         # 可改 AEMEATH_TTS_PYTHON 同款环境变量方案
         command: python
-        args: ['packages/py-services/control_mcp/server.py']
+        args: [ 'packages/py-services/control_mcp/server.py' ]
         cwd: '.'
         env: {}
         toolCallTimeoutMs: 30000
         failOnStartupError: false
-# —— 覆盖 web-app 的 agent-presets 行（同 id 顶层行 = 覆盖 config）：
-#    默认 preset 改为 aemeath（爱弥斯桌宠），而非 dsh 默认 standard（code agent）——
-- id: agent-presets
-  name: '@deepseek-ai/dsh-agent-presets'
+# —— 覆盖 web-app 的 agent-preset-registry 行（同 id 顶层行 = 覆盖 config）：
+#    默认 preset 改为 aemeath（爱弥斯桌宠），而非 dsh 默认 standard（code agent）。
+#    注（DSH 0.2.0）：0.1.1 的 '@deepseek-ai/dsh-agent-presets' 已拆分为
+#    dsh-agent-preset（插件类）+ dsh-agent-preset-registry（registry 服务）；
+#    web-app bundle 里的行 id 也随之改名为 agent-preset-registry ——
+#    旧的 id/name 在 0.2.0 下会因找不到行/包而加载失败。——
+- id: agent-preset-registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
   config:
     default: aemeath
+    selectedDefault: aemeath
 # —— 禁用与爱弥斯无关的官方 UI 插件（去掉 dsh 开发工具痕迹）——
 - id: ui-agent-preset
   disabled: true
@@ -231,5 +255,20 @@
   disabled: false
 - id: tool-skill
   disabled: false
+- id: aemeath-ui
+  name: "@aemeath/dsh-plugin-ui"
+  config:
+    locale: zh
+    ttsEnabled: false
+    ttsVolume: 1
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-09-28.1
+- id: ui-theme
+  name: "@deepseek-ai/dsh-client-ui-theme"
+  config:
+    preference: dark
+
 # 2026-08-17：重新启用官方 models 设置页（用户要求加回 dsh 自带 responses/messages 接口）——
 # 我们的「爱弥斯」设置页只做 API key 快捷填写，模型/provider 配置回到官方 Models 页

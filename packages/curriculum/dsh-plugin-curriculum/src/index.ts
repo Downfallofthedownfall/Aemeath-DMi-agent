@@ -17,8 +17,8 @@ import { join, isAbsolute } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
+import { readSetting, registerVolatileSettings } from '@aemeath/dsh-plugin-common';
+import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-agent';
 import { parseCurriculum, currentSemester, semesterSummary, searchModules, formatModuleDetail, allModules, WINTER, SUMMER, type CurriculumData } from './curriculum.js';
 
@@ -26,7 +26,9 @@ export const name = 'aemeath-curriculum';
 export const inject = ['tools', 'systemPrompt', 'agents', 'settings'];
 
 export const Config = z.object({
-  enabled: z.boolean(),
+  // DSH 0.2.0：原 installSettingsSection('aemeath-curriculum') 的用户层开关与
+  // composition 的 enabled 合并为本字段（volatile = 设置页可改、热更新生效）。
+  enabled: z.boolean().default(true).volatile(),
   defaultPreset: z.string(),
   modulhandbuchFile: z.string(),
   currentSemester: z.string(),
@@ -34,7 +36,8 @@ export const Config = z.object({
 });
 
 export interface CurriculumConfig {
-  enabled?: boolean;
+  /** DSH 0.2.0 volatile 引用：课程上下文注入总开关。 */
+  enabled?: { get?: () => boolean };
   defaultPreset?: string;
   modulhandbuchFile?: string;
   currentSemester?: string;
@@ -49,38 +52,43 @@ function warn(msg: string): void {
   console.warn(`[aemeath-curriculum] ⚠ ${msg}`);
 }
 
-/** 实时角色：前端选择写入的 agent-presets.default（与 common 插件 persona 一致）。 */
+/** 实时角色：前端选择写入的 preset 默认（与 common 插件 persona 一致）。
+ *  DSH 0.2.0：行 id 由 'agent-presets' 改为 'agent-preset-registry'，优先问服务。 */
 function liveRole(ctx: Context): string | undefined {
   try {
-    const ap = ctx.settings?.get?.(settingsNamespace('agent-presets')) as { default?: string } | undefined;
-    return ap?.default;
+    const presets = (ctx as unknown as { agentPresets?: { defaultId?: string } }).agentPresets;
+    if (typeof presets?.defaultId === 'string' && presets.defaultId) return presets.defaultId;
+  } catch {
+    /* 服务缺失：落到兼容读 */
+  }
+  try {
+    const ap = readSetting(ctx, 'agent-preset-registry') ?? readSetting(ctx, 'agent-presets');
+    const v = ap?.selectedDefault ?? ap?.default;
+    return typeof v === 'string' ? v : undefined;
   } catch {
     return undefined;
   }
 }
 
 export async function apply(ctx: Context, config: CurriculumConfig): Promise<void> {
-  if (config.enabled === false) {
-    log('课程上下文已禁用（config.enabled=false）');
-    return;
-  }
   const defaultPreset = config.defaultPreset ?? 'physicist';
   const filePath = isAbsolute(config.modulhandbuchFile ?? '') ? config.modulhandbuchFile! : join(process.cwd(), config.modulhandbuchFile ?? 'packages/library/physicist/modulhandbuch.json');
   const injectTokens = config.injectTokens ?? 800;
 
   // ---- settings 接线（前端设置页实时开关） ----
-  const runtime = { enabled: true };
-  const FeatureSettingsSchema = z.object({ enabled: z.boolean() });
-  const featureBase = { enabled: true };
-  let currentSource: () => typeof featureBase = () => featureBase;
-  installSettingsSection(ctx, settingsNamespace('aemeath-curriculum'), FeatureSettingsSchema, featureBase, {
-    setSource: (current) => {
-      currentSource = current;
+  // DSH 0.2.0：installSettingsSection 已移除；可编辑字段改为 Config 上的 volatile
+  // 引用（见 Config 定义）。0.1.1 时 config.enabled===false 会直接 return（编译期
+  // 禁用）；现在该字段是 volatile、可运行时改动，故装配始终完成、每次使用前查值。
+  const enabledRef = (config as { enabled?: { get?: () => boolean } }).enabled;
+  const runtime = {
+    get enabled(): boolean {
+      return enabledRef?.get?.() ?? true;
     },
-    onChange: () => {
-      runtime.enabled = currentSource().enabled;
-      log(`settings 已应用: enabled=${runtime.enabled}`);
-    },
+  };
+  log(`settings 已应用: enabled=${runtime.enabled}`);
+  registerVolatileSettings('aemeath-curriculum', { enabled: runtime.enabled });
+  ctx.on('loader/volatile-update', () => {
+    log(`settings 已应用: enabled=${runtime.enabled}`);
   });
 
   // ---- 加载 Modulhandbuch ----
@@ -117,7 +125,10 @@ export async function apply(ctx: Context, config: CurriculumConfig): Promise<voi
     log(`课程上下文段已挂载（动态跟随实时角色）→ agent=${agent.id.slice(0, 8)}`);
   };
   for (const agent of ctx.agents.list()) mountContext(agent);
-  ctx.on('agent/created', ({ agent }) => mountContext(agent));
+  ctx.on('agent/created', ({ agent }) => {
+    mountContext(agent);
+    return undefined;
+  });
 
   // ---- curriculum_query 工具 ----
   ctx.tools.register(

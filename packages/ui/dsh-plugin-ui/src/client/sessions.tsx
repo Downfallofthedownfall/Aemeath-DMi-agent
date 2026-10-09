@@ -7,7 +7,9 @@
 //       不伪造——v1 的 bug 就是 inject 里塞了恒等函数导致列表恒空。
 // ============================================================
 import { memo, useCallback } from 'react';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import { BrandMark } from './brand.tsx';
@@ -266,7 +268,7 @@ export function registerSessionList(ctx: ClientContext): void {
         priority: -100,
         // 注意：不提供 useSessions（框架 standard kit 注入）；只给业务回调
         inject: () => ({
-          open: (id: string) => ctx.sessions.open(id as never),
+          open: (id: string) => ctx.uiWorkspace.openSession(id as never),
           archive: (id: string) => void ctx.workspaces.archiveSession(id as never),
         }),
       },

@@ -27,9 +27,9 @@ import z from '@deepseek-ai/schemastery';
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain';
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
+import { resolvePresetCompat, registerVolatileSettings } from '@aemeath/dsh-plugin-common';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
+import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
@@ -119,10 +119,15 @@ export const Config = z.object({
     /** 访问 token（S5 加固）：留空则启动时自动生成并打印一次（schemastery 属性默认可选）。 */
     token: z.string(),
   }),
+  // DSH 0.2.0：原 installSettingsSection('aemeath-memory') 的用户层开关
+  //（记忆插件总开关；关闭后不再采集/召回/注入）。
+  enabled: z.boolean().default(true).volatile(),
 });
 
 export interface MemoryConfig {
   defaultPreset?: string;
+  /** DSH 0.2.0 volatile 引用：记忆总开关。 */
+  enabled?: { get?: () => boolean };
   l2RecallTopK?: number;
   l3Capacity?: number;
   l2Capacity?: number;
@@ -167,26 +172,19 @@ const LLM_BATCH_SIZE_DEFAULT = 8;
 
 export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   // ---- settings 接线（M5：前端设置界面 → 实时开关） ----
-  const runtime = { enabled: true };
-  const FeatureSettingsSchema = z.object({ enabled: z.boolean() });
-  const featureBase = { enabled: true };
-  let currentSource: () => typeof featureBase = () => featureBase;
-  installSettingsSection(
-    ctx,
-    settingsNamespace('aemeath-memory'),
-    FeatureSettingsSchema,
-    featureBase,
-    {
-      setSource: (current) => {
-        currentSource = current;
-      },
-      onChange: () => {
-        const v = currentSource();
-        runtime.enabled = v.enabled;
-        log(`settings 已应用: enabled=${runtime.enabled}`);
-      },
+  // DSH 0.2.0：installSettingsSection 已移除；可编辑字段改为 Config 上的 volatile
+  // 引用（见 Config 定义），框架据此生成设置页并写回 profile patch。
+  const enabledRef = (config as { enabled?: { get?: () => boolean } }).enabled;
+  const runtime = {
+    get enabled(): boolean {
+      return enabledRef?.get?.() ?? true;
     },
-  );
+  };
+  log(`settings 已应用: enabled=${runtime.enabled}`);
+  registerVolatileSettings('aemeath-memory', { enabled: runtime.enabled });
+  ctx.on('loader/volatile-update', () => {
+    log(`settings 已应用: enabled=${runtime.enabled}`);
+  });
 
   const topK = config.l2RecallTopK ?? 5;
   const l3Capacity = config.l3Capacity ?? 500;
@@ -529,7 +527,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           .join('')
           .trim();
         if (text) {
-          turnBuffer.set(sid, { query: text, reply: '', preset: resolveSessionPreset(session) ?? config.defaultPreset ?? '', ts: Date.now() });
+          turnBuffer.set(sid, { query: text, reply: '', preset: resolvePresetCompat(ctx, session) ?? config.defaultPreset ?? '', ts: Date.now() });
           trimTurnBuffer();
         }
       } else if (event.type === 'assistant/message') {
@@ -1183,7 +1181,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
     if (!runtime.enabled) return decision;
 
-    const preset = resolveSessionPreset(payload.agent.session as never) ?? config.defaultPreset;
+    const preset = resolvePresetCompat(ctx, payload.agent.session) ?? config.defaultPreset;
     if (!preset) return decision;
 
     // 第三关：召回注入只在每轮第一步（step===1）执行。dsh-agent-loop 会把每次
@@ -1223,7 +1221,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     log(`preset=${preset} 召回 ${top.length} 条记忆注入`);
     const injectMsg = createUserMessage({
       content: [{ type: 'text', text: block }],
-      source: { kind: 'plugin', plugin: name, form: 'recall' },
+      source: { kind: 'aemeath-memory', form: 'recall' },
     });
     return { kind: 'enter', messages: [...decision.messages, injectMsg] };
   });

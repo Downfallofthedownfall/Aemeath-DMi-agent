@@ -17,14 +17,38 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { settingsNamespace, installSettingsSection } from '@deepseek-ai/dsh-settings';
+import { readSetting, registerVolatileSettings } from '@aemeath/dsh-plugin-common';
 import z from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-settings';
+import type {} from '@deepseek-ai/cordis-plugin-loader';
 import { buildMemoryOverview, buildTimelineView, buildGraphView, type MemoryServiceFace } from './memory-view.js';
 
 export const name = 'aemeath-ui';
 export const inject = ['webServer', 'settings', 'memory'];
+
+/**
+ * DSH 0.2.0：settings 不再由插件「注册命名空间」，而是把可编辑字段声明为插件
+ * 自己 Config 上的 volatile 引用；框架据此生成设置页并写回 profile patch。
+ *
+ * 本插件原先注册了两个命名空间（aemeath-ui / aemeath-tts）。0.2.0 下一个插件
+ * 只有一个 Config，命名空间 = profile 条目 id = 'aemeath-ui'；因此把 tts 的
+ * 两个字段也并入本 Config（tts 引擎侧本来就无行为，只承载前端开关）。
+ */
+export const Config = z.object({
+  /** 前端上报的 active locale（语言指令注入读它）。 */
+  locale: z.string().default('').volatile(),
+  /** 前端「朗读」开关（2026-08-17：启动时强制关闭，会话内可开启）。 */
+  ttsEnabled: z.boolean().default(false).volatile(),
+  /** 朗读音量。 */
+  ttsVolume: z.number().default(1).volatile(),
+});
+
+export interface UiConfig {
+  locale?: { get?: () => string };
+  ttsEnabled?: { get?: () => boolean };
+  ttsVolume?: { get?: () => number };
+}
 
 /** 无工作区时的自动兜底工作区：项目内空文件夹（打开即聊，用户无需选择）。 */
 export const DEFAULT_WORKSPACE_DIR = '.chat';
@@ -36,8 +60,21 @@ export const FEATURE_NAMESPACES = ['aemeath-common', 'aemeath-worldbook', 'aemea
 export const UI_LOCALE_NAMESPACE = 'aemeath-ui';
 export const UI_LOCALE_FIELD = 'locale';
 
-/** 允许前端切换默认角色的 settings namespace（dsh 官方 agent-presets）。 */
-export const AGENT_PRESET_NAMESPACE = 'agent-presets';
+/** 允许前端切换默认角色的 settings namespace（DSH 0.2.0 行 id：agent-preset-registry）。 */
+export const AGENT_PRESET_NAMESPACE = 'agent-preset-registry';
+
+/**
+ * DSH 0.2.0：前端沿用的「命名空间 → 字段」旧约定需要在 host 侧重映射，因为
+ * 现在一个插件只有一个 Config（命名空间 = profile 条目 id）。
+ *   - 'aemeath-tts' 的 enabled/volume 并入了本插件的 Config（字段 ttsEnabled/ttsVolume）
+ *   - 'aemeath-ui' 的 locale 直接同名
+ */
+const FEATURE_NAMESPACE_ENTRY: Record<string, string> = {
+  'aemeath-tts': 'aemeath-ui',
+};
+const FEATURE_NAMESPACE_FIELD_MAP: Record<string, Record<string, string>> = {
+  'aemeath-tts': { enabled: 'ttsEnabled', volume: 'ttsVolume' },
+};
 
 function json(res: ServerResponse, code: number, obj: unknown): void {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -47,7 +84,7 @@ function json(res: ServerResponse, code: number, obj: unknown): void {
 /** 读取前端上报的 UI locale（zh/en/''）——供 host 侧逻辑（如 TTS lang）使用。 */
 function hostUiLocale(ctx: Context): string {
   try {
-    const v = ctx.settings?.get?.(settingsNamespace(UI_LOCALE_NAMESPACE)) as { locale?: string } | undefined;
+    const v = readSetting(ctx, UI_LOCALE_NAMESPACE);
     return v?.locale === 'en' ? 'en' : v?.locale === 'zh' ? 'zh' : '';
   } catch {
     return '';
@@ -118,26 +155,45 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: UiConfig = {}): void {
   const settings = ctx.settings;
   const webServer = ctx.webServer;
+  // 归一化 volatile 引用（缺省时给出安全的静态回退；调用点无需再判空）。
+  const uiConfig = {
+    locale: { get: (): string => config.locale?.get?.() ?? '' },
+    ttsEnabled: { get: (): boolean => config.ttsEnabled?.get?.() ?? false },
+    ttsVolume: { get: (): number => config.ttsVolume?.get?.() ?? 1 },
+  };
 
   // —— UI 改造 P1：默认亮色迁移（决策 Q1：默认亮色，深色仅设置页可选）——
   // 持久化偏好为 dark/system/缺失时 → 迁移为 light，避免每次启动先闪暗色；
   // 插件侧（theme.ts）再把 light → aemeath（金强调亮色）。
   // 用户若在设置页显式选过 aemeath/physicist，此处不覆盖。
+  //
+  // ⚠⚠ DSH 0.2.0 实测结论（2026-10-09，见 docs/DSH_0.2.0_MIGRATION.md §8）：
+  //   写 **非本插件拥有** 的命名空间（这里是官方 dsh-client-ui-theme 的 'ui-theme'）
+  //   会让 `settings.update()` 永不 resolve——实测该 promise 既不 resolve 也不
+  //   reject，HTTP 写请求随之全部超时，且 .catch() 不会触发（重试逻辑形同虚设）。
+  //   同一个 `settings.update()` 写**自己**的条目（'aemeath-ui'）则会完成并落盘。
+  //   原因在 dsh 侧：configEditor.edit() 写完 profile patch 后要
+  //   `await ctx.loader.await()` 做全树 reconcile，而 ui-theme 是 bundle 提供的
+  //   条目、其 fiber 生命周期与本插件交错，reconcile 迟迟不 settle。
+  //
+  //   因此：**不再由本插件代改官方主题偏好**。改为只读 + 提示，真正的默认亮色
+  //   由 theme.ts 在渲染层直接应用（它本来就把 light 映射到 aemeath 主题），
+  //   不依赖持久化字段，也就没有启动期写入。
+  //   —— 该改动同时消除了启动期的挂死：此前 TTS 重置写自己的条目虽然能落盘，
+  //      但会被这个卡住的 promise 占住事件循环，表现为"设置开关全部失灵"。
   void (async () => {
     try {
-      const themeNs = settingsNamespace('ui-theme');
-      const cur = settings.get(themeNs) as { preference?: string } | undefined;
+      const cur = readSetting(ctx, 'ui-theme');
       const pref = cur?.preference;
       if (!pref || pref === 'dark' || pref === 'system') {
-        await settings.update(themeNs, { preference: 'light' });
-        console.log(`[aemeath-ui] ui-theme.preference → light（${pref ? '原 ' + pref : '缺省'}，默认亮色）`);
+        // 只记录不写入：渲染层已按亮色渲染，用户显式选择后才需要持久化。
+        console.log(`[aemeath-ui] ui-theme.preference=${pref ?? '(缺省)'} → 渲染层按亮色处理（0.2.0 下不再代写官方条目）`);
       }
-    } catch (e) {
-      // settings 未就绪：忽略，下次启动再迁移
-      console.warn('[aemeath-ui] 主题偏好迁移失败（可忽略）:', (e as Error).message);
+    } catch {
+      /* 读不到：渲染层仍按亮色兜底 */
     }
   })();
 
@@ -174,19 +230,27 @@ export function apply(ctx: Context): void {
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // 无 CORS 头：端点仅服务同源前端（S3 修复；跨源读取/写入由浏览器同源策略拦截）
     if (req.method === 'GET') {
-      // 读：返回每个 namespace 的 resolved 值（引擎插件注册后可用）+ agent-presets 默认
+      // 读：返回每个 namespace 的当前值（各插件启动时登记进读表）+ preset 默认。
+      // DSH 0.2.0：跨命名空间读改走 common 的 readSetting 注册表；官方 ui-theme
+      // 的 preference 读不到（属它自己的 volatile 配置），前端按缺省处理。
       const out: Record<string, unknown> = {};
       for (const ns of FEATURE_NAMESPACES) {
         try {
-          const value = settings.get(settingsNamespace(ns));
+          const value = readSetting(ctx, ns);
           if (value !== undefined) out[ns] = value;
         } catch {
-          /* namespace 未注册：跳过 */
+          /* namespace 未登记：跳过 */
         }
       }
       try {
-        const ap = settings.get(settingsNamespace(AGENT_PRESET_NAMESPACE)) as { default?: string } | undefined;
-        if (ap?.default) out[AGENT_PRESET_NAMESPACE] = ap.default;
+        const presets = (ctx as unknown as { agentPresets?: { defaultId?: string } }).agentPresets;
+        const resolved =
+          (typeof presets?.defaultId === 'string' && presets.defaultId) ||
+          (readSetting(ctx, AGENT_PRESET_NAMESPACE)?.selectedDefault as string | undefined) ||
+          (readSetting(ctx, AGENT_PRESET_NAMESPACE)?.default as string | undefined);
+        if (resolved) out[AGENT_PRESET_NAMESPACE] = resolved;
+        // 兼容前端既有读法：老键名 agent-presets.default
+        if (resolved) out['agent-presets'] = resolved;
       } catch {
         /* ignore */
       }
@@ -209,27 +273,55 @@ export function apply(ctx: Context): void {
         if (!patchOk && !unsetOk) {
           return json(res, 400, { ok: false, error: 'body requires {patch: object} and/or {unset: string[]}' });
         }
-        // 允许写 agent-presets.default（角色模式切换）；其余限 aemeath-* 白名单
-        if (parsed.ns === AGENT_PRESET_NAMESPACE) {
+        // 允许写 agent-preset-registry（角色模式切换）；其余限 aemeath-* 白名单
+        if (parsed.ns === AGENT_PRESET_NAMESPACE || parsed.ns === 'agent-presets') {
           if (!patchOk) return json(res, 400, { ok: false, error: 'agent-presets only supports patch (no unset)' });
           const patch = parsed.patch as Record<string, unknown>;
           if (typeof patch.default !== 'string') return json(res, 400, { ok: false, error: 'agent-presets patch requires {default: string}' });
           if (!['aemeath', 'physicist'].includes(patch.default)) return json(res, 400, { ok: false, error: `unsupported role: ${patch.default}` });
-          await settings.update(settingsNamespace(AGENT_PRESET_NAMESPACE), { default: patch.default });
+          // DSH 0.2.0：默认 preset 的 volatile 字段是 selectedDefault（官方实现
+          // `defaultId = selectedDefault.get() ?? default`）。
+          await settings.update(AGENT_PRESET_NAMESPACE, { selectedDefault: patch.default });
           json(res, 200, { ok: true });
           return;
         }
         if (!FEATURE_NAMESPACES.includes(parsed.ns)) return json(res, 403, { ok: false, error: `namespace not managed by aemeath-ui: ${parsed.ns}` });
-        const nsKey = settingsNamespace(parsed.ns);
+        // DSH 0.2.0：命名空间即 profile 条目 id。除本插件自己的 'aemeath-ui' 外，
+        // 其余 aemeath-* 条目由对应引擎插件持有（其 Config 上已声明 volatile 字段），
+        // 因此这里仍按 ns 直接写——条目 id 是全局的。
+        const remapped = FEATURE_NAMESPACE_FIELD_MAP[parsed.ns];
+        const fieldFor = (f: string): string => remapped?.[f] ?? f;
+        const entryId = FEATURE_NAMESPACE_ENTRY[parsed.ns] ?? parsed.ns;
+        // DSH 0.2.0 护栏：settings.update/mutate 对某些条目可能永不 resolve
+        //（实测：写非本插件拥有的条目时既不 resolve 也不 reject，
+        //  见文件顶部主题迁移处与 docs/DSH_0.2.0_MIGRATION.md §8）。
+        // 这里加超时，保证端点如实报错而不是静默挂死 30s+。
+        const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+          Promise.race([
+            p,
+            new Promise<T>((_, rej) =>
+              setTimeout(
+                () => rej(new Error(`${label} 超时（${ms}ms）：DSH 0.2.0 对该条目的设置写入未返回`)),
+                ms,
+              ),
+            ),
+          ]);
         if (unsetOk) {
           // 删除字段 → settings.mutate 的 {op:'unset'}（恢复 base/默认，而非置值）
-          await settings.mutate(
-            nsKey,
-            (parsed.unset as string[]).map((f) => ({ op: 'unset', path: [f] })),
+          await withTimeout(
+            settings.mutate(
+              entryId,
+              (parsed.unset as string[]).map((f) => ({ op: 'unset', path: [fieldFor(f)] })),
+            ),
+            10_000,
+            'settings.mutate',
           );
         }
         if (patchOk) {
-          await settings.update(nsKey, parsed.patch as Record<string, unknown>);
+          const patchIn = parsed.patch as Record<string, unknown>;
+          const patchOut: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(patchIn)) patchOut[fieldFor(k)] = v;
+          await withTimeout(settings.update(entryId, patchOut), 10_000, 'settings.update');
         }
         json(res, 200, { ok: true });
       } catch (e) {
@@ -242,49 +334,41 @@ export function apply(ctx: Context): void {
     json(res, 405, { ok: false, error: 'method not allowed' });
   };
 
-  // —— UI locale namespace（2026：前端上报 active locale → 语言指令注入读取）——
-  // 前端在 locale 变化时 POST /aemeath/api/settings {ns:'aemeath-ui', patch:{locale:'en'}}；
-  // host 侧语言指令 provider 每次 assembly 读它，让模型回复跟随前端语言。
-  installSettingsSection(
-    ctx,
-    settingsNamespace(UI_LOCALE_NAMESPACE),
-    z.object({ [UI_LOCALE_FIELD]: z.string().required(false) }),
-    { locale: '' },
-    {
-      setSource: () => undefined,
-      onChange: () => undefined,
-    },
-  );
-  console.log('[aemeath-ui] aemeath-ui 设置 namespace 已注册（locale 上报）');
-
-  // —— TTS 设置 namespace（2026-08-17：前端「朗读」开关，settings.yaml 持久化）——
-  // 引擎侧无行为（合成在 tts HTTP 服务），仅承载 enabled 开关供前端门控。
-  installSettingsSection(
-    ctx,
-    settingsNamespace('aemeath-tts'),
-    z.object({ enabled: z.boolean(), volume: z.number() }),
-    { enabled: false, volume: 1 },
-    {
-      setSource: () => undefined,
-      onChange: () => undefined,
-    },
-  );
+  // —— UI locale + TTS 开关（2026：前端上报 active locale / 朗读开关）——
+  // DSH 0.2.0：不再 installSettingsSection；两者都是本插件 Config 上的 volatile
+  // 字段（locale / ttsEnabled / ttsVolume），设置页由框架自动生成并写回
+  // profile patch。注册进全局读表，供 common 的语言指令与 /tts/status 读取。
+  registerVolatileSettings(UI_LOCALE_NAMESPACE, {
+    locale: () => uiConfig.locale.get() ?? '',
+    enabled: () => uiConfig.ttsEnabled.get() ?? false,
+    volume: () => uiConfig.ttsVolume.get() ?? 1,
+  });
+  // 兼容旧命名空间名：0.1.1 时 TTS 开关写在 'aemeath-tts' 下。
+  registerVolatileSettings('aemeath-tts', {
+    enabled: () => uiConfig.ttsEnabled.get() ?? false,
+    volume: () => uiConfig.ttsVolume.get() ?? 1,
+  });
+  console.log('[aemeath-ui] aemeath-ui 设置已接线（locale 上报 + TTS 开关，volatile）');
   // 2026-08-17：TTS 每次启动强制关闭（用户要求"启动时永远显示未开启"）——
-  // 会话内可开启，重启后回到关闭态。注意：apply 早期 settings 可能未就绪，
-  // update 会静默 reject，故延迟 500ms 启动并失败重试。
+  // 会话内可开启，重启后回到关闭态。
+  // DSH 0.2.0：写的是**本插件自己**的条目（aemeath-ui），实测能正常落盘；
+  // 但仍加超时护栏——若 dsh 侧 reconcile 卡住，不能让一个悬空的 promise
+  // 拖住启动逻辑（此前正是这种悬空导致"设置开关全部失灵"）。
   let ttsResetAttempts = 0;
   const resetTtsAtBoot = (): void => {
     if (ttsResetAttempts > 10) return;
     ttsResetAttempts++;
-    settings
-      .update(settingsNamespace('aemeath-tts'), { enabled: false })
+    void Promise.race([
+      settings.update(UI_LOCALE_NAMESPACE, { ttsEnabled: false }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('tts reset timeout')), 8000)),
+    ])
       .then(() => console.log('[aemeath-ui] aemeath-tts 已重置为关闭（启动默认）'))
       .catch(() => {
         setTimeout(resetTtsAtBoot, 1000);
       });
   };
   setTimeout(resetTtsAtBoot, 500);
-  console.log('[aemeath-ui] aemeath-tts 设置 namespace 已注册');
+  console.log('[aemeath-ui] TTS 开关已接线（volatile ttsEnabled/ttsVolume）');
 
   // —— TTS 后端（IndexTTS2）：懒启动 tts HTTP 服务 + 代理端点 ——
   // 2026-08-17：Electron 渲染器 Web Speech API 无系统语音（getVoices()=0，speak 无声），
@@ -317,8 +401,7 @@ export function apply(ctx: Context): void {
 
   const ttsSettingsEnabled = (): boolean => {
     try {
-      const v = settings.get(settingsNamespace('aemeath-tts')) as { enabled?: boolean } | undefined;
-      return v?.enabled ?? false; // 2026-08-17：默认关闭（开关初始为关）
+      return readSetting(ctx, 'aemeath-tts')?.enabled === true; // 2026-08-17：默认关闭（开关初始为关）
     } catch {
       return false;
     }

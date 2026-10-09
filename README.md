@@ -4,7 +4,7 @@
 >
 > **架构 / Architecture**: v2 is rebuilt on the DeepSeek Harness (dsh) plugin system. **The platform is just the engine — the moat is the physics content track**: Worldbook knowledge base, exam benchmark, weekly usage log (see [docs/usage-log.md](docs/usage-log.md) and migration plan `docs/v2-migration-plan.md`).
 >
-> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona; borrowing ripples-of-aion ideas: fact timeline with valid_from/valid_until, evolution-vs-conflict, autoDream idle consolidation into a separate insights store, canonical attribute normalization, recall write throttle, LLM salvage parsing); frontend enhanced (Cyrene borrow: tabbed settings+appearance, status pill, mode chips, tiered memory panel, floating plan todo card, in-composer cards); TTS upgraded to IndexTTS-2.5; 264 unit tests green.
+> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona; borrowing ripples-of-aion ideas: fact timeline with valid_from/valid_until, evolution-vs-conflict, autoDream idle consolidation into a separate insights store, canonical attribute normalization, recall write throttle, LLM salvage parsing); frontend enhanced (Cyrene borrow: tabbed settings+appearance, status pill, mode chips, tiered memory panel, floating plan todo card, in-composer cards); TTS upgraded to IndexTTS-2.5; 256 unit-test assertions green (17 files).
 
 ---
 
@@ -19,7 +19,7 @@ A local-first desktop AI with **two strictly isolated characters**:
 | **physicist** | Physics-study Copilot | Solves with reasoning first, verifies with SymPy, cites sources (Worldbook id / lecture chapter), and **honestly admits when it doesn't know** — it never pretends. |
 | **Aemeath (爱弥斯)** | Companion desktop pet | Emotional companion persona. Personality and knowledge are fully separated from physicist by agent isolation. |
 
-Built on [DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.1.0-rc.6`) as a TypeScript plugin monorepo — the engine stays vanilla dsh; all domain capability (knowledge / memory / retrieval / solving workflow / UI) lives in self-written plugins.
+Built on [DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.2.0-rc.2`) as a TypeScript plugin monorepo — the engine stays vanilla dsh; all domain capability (knowledge / memory / retrieval / solving workflow / UI) lives in self-written plugins.
 
 ### Features
 
@@ -87,7 +87,7 @@ curl.exe -H "Authorization: Bearer <token>" http://127.0.0.1:18895/memory/stats
 Equivalent manual install steps (bash):
 
 ```bash
-npm install --cache .npm-cache
+npm install --legacy-peer-deps --cache .npm-cache
 npm run build
 cd profiles\aemeath && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
 cd profiles\aemeath-run && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
@@ -101,7 +101,7 @@ cd app && npm install
 
 | Tech | Purpose |
 |---|---|
-| **DeepSeek Harness (dsh) rc.6** | Agent loop, tool pipeline, session event sourcing, approval, plugin system (the engine) |
+| **DeepSeek Harness (dsh) 0.2.0-rc.2** | Agent loop, tool pipeline, session event sourcing, approval, plugin system (the engine) |
 | DeepSeek API | Chat model (deepseek-v4-flash) |
 | TypeScript (plugins) · Cordis | dsh plugin monorepo (`packages/`) |
 | Python microservices (MCP) | SymPy compute / YOLO-OCR vision / IndexTTS-2.5 TTS / keyboard-mouse control, wired via dsh `mcp-client` (`packages/py-services/`) |
@@ -133,13 +133,13 @@ electron-app/        # v1 (frozen, tag v1.0; migrated files removed, shell refer
 ```bash
 npm test -w @aemeath/dsh-plugin-common       # 15 (OOC rule layer + persona craft/runtime/execution)
 npm test -w @aemeath/dsh-plugin-worldbook    # 10 (trigger/order/chain/token budget)
-npm test -w @aemeath/dsh-plugin-memory       # 196 assertions (gatekeeper/BM25-conflict/engine/L1 buffer + write-gate/typed-conflict/mood/relationship/DMAE-activation + fact-timeline/evolution-vs-conflict/autoDream consolidation/recall-throttle + real-plugin e2e)
+npm test -w @aemeath/dsh-plugin-memory       # 193 assertions (gatekeeper/BM25-conflict/engine/L1 buffer + write-gate/typed-conflict/mood/relationship/DMAE-activation + fact-timeline/evolution-vs-conflict/autoDream consolidation/recall-throttle + real-plugin e2e)
 npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
 npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views: list/timeline/graph)
-# Total: 264 unit tests (all green)
-# (memory 196 + ui 12 + common 15 + worldbook 10 + retriever 4 + workflow 13 + curriculum 9)
+# Total: 256 unit-test assertions (all green, 17 files)
+# (memory 193 + ui 12 + common 15 + worldbook 10 + retriever 4 + workflow 13 + curriculum 9)
 ```
 
 ### Roadmap (next)
@@ -162,7 +162,7 @@ npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views:
 | **physicist** | 物理学习 Copilot | 先讲原理再给结论；计算必过 SymPy 验证；回答带来源（Worldbook id / 讲义章节）；**不会就诚实承认**，绝不编造。 |
 | **爱弥斯** | 情感陪伴桌宠 | 陪伴型人格；与 physicist 通过 agent 隔离彻底分开，人格与知识互不串扰。 |
 
-基于 [DeepSeek Harness](https://github.com/deepseek-ai)（dsh `0.1.0-rc.6`）的 TypeScript 插件 monorepo 构建——引擎保持原版 dsh，所有领域能力（知识/记忆/检索/解题流/前端）都是自研插件。
+基于 [DeepSeek Harness](https://github.com/deepseek-ai)（dsh `0.2.0-rc.2`）的 TypeScript 插件 monorepo 构建——引擎保持原版 dsh，所有领域能力（知识/记忆/检索/解题流/前端）都是自研插件。
 
 ### 能力清单
 
@@ -229,7 +229,7 @@ curl.exe -H "Authorization: Bearer <token>" http://127.0.0.1:18895/memory/stats
 等价手动安装步骤（bash）：
 
 ```bash
-npm install --cache .npm-cache
+npm install --legacy-peer-deps --cache .npm-cache
 npm run build
 cd profiles\aemeath && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
 cd profiles\aemeath-run && npm install --legacy-peer-deps --cache ..\..\.npm-cache && cd ..\..
@@ -243,7 +243,7 @@ cd app && npm install
 
 | 技术 | 用途 |
 |---|---|
-| **DeepSeek Harness（dsh）rc.6** | agent loop、工具流水线、会话事件溯源、审批、插件体系（引擎） |
+| **DeepSeek Harness（dsh）0.2.0-rc.2** | agent loop、工具流水线、会话事件溯源、审批、插件体系（引擎） |
 | DeepSeek API | 对话模型（deepseek-v4-flash） |
 | TypeScript（插件）· Cordis | dsh 插件 monorepo（`packages/`） |
 | Python 微服务（MCP） | SymPy 计算 / YOLO-OCR 视觉 / IndexTTS-2.5 语音 / 键鼠控制，经 dsh `mcp-client` 接入（`packages/py-services/`） |
@@ -275,11 +275,11 @@ electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留�
 ```bash
 npm test -w @aemeath/dsh-plugin-common       # 15 （OOC 规则层 + 人格 craft/runtime/execution）
 npm test -w @aemeath/dsh-plugin-worldbook    # 10 （触发/排序/chain 防环/token 预算）
-npm test -w @aemeath/dsh-plugin-memory       # 196 （守门员/BM25 冲突/引擎/L1 缓冲 + 写门/typed 冲突/情绪/关系/DMAE 激活 + 事实时间轴/演进≠矛盾/空闲整合/召回节流 + 真插件端到端）
+npm test -w @aemeath/dsh-plugin-memory       # 193 （守门员/BM25 冲突/引擎/L1 缓冲 + 写门/typed 冲突/情绪/关系/DMAE 激活 + 事实时间轴/演进≠矛盾/空闲整合/召回节流 + 真插件端到端）
 npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
-# 合计：264 项单测（全绿，含 ui-memory-view 12）
+# 合计：256 项断言（全绿，17 个测试文件，含 ui-memory-view 12）
 ```
 
 ### 下一步

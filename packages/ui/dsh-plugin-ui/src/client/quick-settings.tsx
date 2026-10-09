@@ -10,9 +10,10 @@
 // ============================================================
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client';
-import type { CredentialView } from '@deepseek-ai/dsh-client-connection/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type { FetchScope as SettingsScope } from './faces.ts';
+import type { CredentialInfo } from '@deepseek-ai/dsh-credentials/types';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type { RoleFace } from './faces.ts';
 import { FEATURES, FeatureSwitchCell, type FeatureSwitch } from './settings.tsx';
@@ -20,12 +21,12 @@ import { t, useLocale } from './i18n.ts';
 
 export interface QuickSettingsDeps {
   role?: RoleFace;
-  scopes?: Record<string, SettingsScope<Record<string, unknown>>>;
+  scopes?: Record<string, SettingsScope>;
   credentials?: {
-    views: Record<string, CredentialView | undefined>;
+    views: Record<string, CredentialInfo | undefined>;
     refresh: () => void;
     subscribe?: (l: () => void) => () => void;
-    getSnapshot?: () => Record<string, CredentialView | undefined>;
+    getSnapshot?: () => Record<string, CredentialInfo | undefined>;
   };
 }
 
@@ -72,7 +73,7 @@ function QuickSettingsLoaded({
   onClose,
 }: {
   role: RoleFace;
-  scopes: Record<string, SettingsScope<Record<string, unknown>>>;
+  scopes: Record<string, SettingsScope>;
   credentials: NonNullable<QuickSettingsDeps['credentials']>;
   anchor: { left: number; top: number };
   onClose: () => void;
@@ -81,7 +82,7 @@ function QuickSettingsLoaded({
   useLocale(); // locale 切换时刷新面板文案
   // C11：凭据徽章可订阅——设置页保存/清除 key 后，面板开启期间也实时刷新
   const noopSub = (): (() => void) => () => void 0;
-  const credSnap = (): Record<string, CredentialView | undefined> => credentials.views ?? {};
+  const credSnap = (): Record<string, CredentialInfo | undefined> => credentials.views ?? {};
   const credViews = useSyncExternalStore(credentials.subscribe ?? noopSub, credentials.getSnapshot ?? credSnap);
   const apiConfigured = credViews['DEEPSEEK_API_KEY']?.configured ?? false;
 
@@ -207,7 +208,7 @@ function QuickSettingsInner({
   credentials,
 }: {
   role: RoleFace;
-  scopes: Record<string, SettingsScope<Record<string, unknown>>>;
+  scopes: Record<string, SettingsScope>;
   credentials: NonNullable<QuickSettingsDeps['credentials']>;
 }): JSX.Element {
   const [open, setOpen] = useState(false);

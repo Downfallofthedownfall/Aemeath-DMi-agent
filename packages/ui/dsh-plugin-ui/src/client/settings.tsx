@@ -11,9 +11,10 @@
 // 角色模式已前移：hero 欢迎屏 + 快速设置面板（quick-settings.tsx）
 // ============================================================
 import { useState, useSyncExternalStore, useEffect } from 'react';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
-import type { CredentialView } from '@deepseek-ai/dsh-client-connection/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type { FetchScope as SettingsScope, ScopeSnapshot as SettingsScopeSnapshot } from './faces.ts';
+import type { CredentialInfo } from '@deepseek-ai/dsh-credentials/types';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import { t, useLocale } from './i18n.ts';
 
@@ -84,16 +85,14 @@ export const CREDENTIALS: Array<{ ref: string; label: string; hintKey: string }>
 const APPEARANCE_NS = 'aemeath-ui';
 
 /** useSyncExternalStore 的稳定空快照：必须返回稳定引用，否则触发 React #310 死循环。 */
-const EMPTY_SNAPSHOT: SettingsScopeSnapshot<Record<string, unknown>> = Object.freeze({
+const EMPTY_SNAPSHOT: SettingsScopeSnapshot = Object.freeze({
   status: 'loading',
   value: undefined,
-  base: undefined,
-  user: undefined,
   revision: undefined,
   writable: false,
-  mode: 'memory',
+  mode: 'host',
 });
-const GET_EMPTY_SNAPSHOT = (): SettingsScopeSnapshot<Record<string, unknown>> => EMPTY_SNAPSHOT;
+const GET_EMPTY_SNAPSHOT = (): SettingsScopeSnapshot => EMPTY_SNAPSHOT;
 const NOOP_SUBSCRIBE = (): (() => void) => () => void 0;
 /** appearance value 缺失时的稳定空对象（避免每次 render 生成新引用）。 */
 const EMPTY_RECORD: Record<string, unknown> = {};
@@ -126,15 +125,15 @@ const TABS: TabDef[] = [
 // ============================================================
 
 interface LoadedProps {
-  scopes: Record<string, SettingsScope<Record<string, unknown>>>;
+  scopes: Record<string, SettingsScope>;
   credentials: {
-    views: Record<string, CredentialView | undefined>;
+    views: Record<string, CredentialInfo | undefined>;
     refresh: () => void;
     set: (ref: string, value: string) => Promise<void>;
     unset: (ref: string) => Promise<void>;
     /** C11：订阅视图变化（保存/清除后徽章实时刷新）。 */
     subscribe?: (l: () => void) => () => void;
-    getSnapshot?: () => Record<string, CredentialView | undefined>;
+    getSnapshot?: () => Record<string, CredentialInfo | undefined>;
   };
 }
 
@@ -212,7 +211,7 @@ function ApiKeyRow({
 }: {
   label: string;
   hint: string;
-  view: CredentialView | undefined;
+  view: CredentialInfo | undefined;
   onSave: (value: string) => Promise<void>;
   onClear: () => Promise<void>;
 }): JSX.Element {
@@ -344,19 +343,17 @@ export function FeatureSwitchCell({
   onChange,
 }: {
   feature: FeatureSwitch;
-  scope: SettingsScope<Record<string, unknown>> | undefined;
+  scope: SettingsScope | undefined;
   onChange: (f: FeatureSwitch, v: boolean) => void;
 }): JSX.Element {
   // hooks 必须无条件调用：scope 缺失时用 no-op 订阅，避免 hooks 数量跳变（React #290）
   const noopSubscribe = (): (() => void) => () => void 0;
-  const emptySnap = (): SettingsScopeSnapshot<Record<string, unknown>> => ({
+  const emptySnap = (): SettingsScopeSnapshot => ({
     status: 'loading',
     value: undefined,
-    base: undefined,
-    user: undefined,
     revision: undefined,
     writable: false,
-    mode: 'memory',
+    mode: 'host',
   });
   const snap = useSyncExternalStore(scope ? scope.subscribe : noopSubscribe, scope ? scope.getSnapshot : emptySnap);
   const val = snap?.value as Record<string, unknown> | undefined;
@@ -430,7 +427,7 @@ function AppearanceSection({
   scope,
   value,
 }: {
-  scope: SettingsScope<Record<string, unknown>> | undefined;
+  scope: SettingsScope | undefined;
   value: Record<string, unknown>;
 }): JSX.Element {
   useLocale(); // locale 切换时刷新面板文案
@@ -632,7 +629,7 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
 
   // C11：凭据视图可订阅——保存/清除 API key 后徽章状态实时刷新（不再依赖手动 refresh）
   const noopSub = (): (() => void) => () => void 0;
-  const credSnap = (): Record<string, CredentialView | undefined> => credentials.views ?? {};
+  const credSnap = (): Record<string, CredentialInfo | undefined> => credentials.views ?? {};
   const credViews = useSyncExternalStore(credentials.subscribe ?? noopSub, credentials.getSnapshot ?? credSnap);
 
   // 外观 scope（aemeath-ui）：订阅变更 → 应用 CSS 变量（全局生效，无论当前 tab）
@@ -779,14 +776,14 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
 // ============================================================
 
 export interface AemeathSettingsSectionProps {
-  scopes?: Record<string, SettingsScope<Record<string, unknown>>>;
+  scopes?: Record<string, SettingsScope>;
   credentials?: {
-    views: Record<string, CredentialView | undefined>;
+    views: Record<string, CredentialInfo | undefined>;
     refresh: () => void;
     set: (ref: string, value: string) => Promise<void>;
     unset: (ref: string) => Promise<void>;
     subscribe?: (l: () => void) => () => void;
-    getSnapshot?: () => Record<string, CredentialView | undefined>;
+    getSnapshot?: () => Record<string, CredentialInfo | undefined>;
   };
 }
 
@@ -803,7 +800,7 @@ export function AemeathSettingsSection({ scopes, credentials }: AemeathSettingsS
 export function registerSettingsSection(
   ctx: ClientContext,
   deps: {
-    scopes: () => Record<string, SettingsScope<Record<string, unknown>>>;
+    scopes: () => Record<string, SettingsScope>;
     credentials: () => AemeathSettingsSectionProps['credentials'];
   },
 ): void {

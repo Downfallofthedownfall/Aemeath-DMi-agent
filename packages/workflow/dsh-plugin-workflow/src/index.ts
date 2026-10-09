@@ -22,8 +22,8 @@ import { promisify } from 'node:util';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings';
+import { resolvePresetCompat, registerVolatileSettings } from '@aemeath/dsh-plugin-common';
+import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-subprocess';
@@ -36,7 +36,9 @@ export const inject = ['tools', 'subprocess', 'settings', 'agents'];
 
 export const Config = z.object({
   defaultPreset: z.string(),
-  enabled: z.boolean(),
+  // DSH 0.2.0：原 installSettingsSection('aemeath-workflow') 的用户层开关与
+  // composition 的 enabled 合并为本字段（volatile = 可在设置页改、热更新生效）。
+  enabled: z.boolean().default(true).volatile(),
   /** M6 v2：plan 步骤落 scratch（plan_step 工具 + post-execute 缺失提示）。 */
   planScratch: z.boolean(),
   /** compute_verify 每会话调用预算，超限 deny 并引导诚实降级（dsh 原版 deny 语义）。 */
@@ -49,7 +51,8 @@ export const Config = z.object({
 
 export interface WorkflowConfig {
   defaultPreset?: string;
-  enabled?: boolean;
+  /** DSH 0.2.0 volatile 引用：工作流总开关。 */
+  enabled?: { get?: () => boolean };
   planScratch?: boolean;
   verifyBudget?: number;
   dimensionCheck?: boolean;
@@ -191,31 +194,23 @@ except Exception as e:
 const PLAN_SCRATCH_KEY = 'workflow.plan';
 
 export async function apply(ctx: Context, config: WorkflowConfig): Promise<void> {
-  if (config.enabled === false) {
-    log('工作流已禁用（config.enabled=false）');
-    return;
-  }
   // ---- settings 接线（M5：前端设置界面 → 实时开关） ----
-  const runtime = { enabled: true };
-  const FeatureSettingsSchema = z.object({ enabled: z.boolean() });
-  const featureBase = { enabled: true };
-  let currentSource: () => typeof featureBase = () => featureBase;
-  installSettingsSection(
-    ctx,
-    settingsNamespace('aemeath-workflow'),
-    FeatureSettingsSchema,
-    featureBase,
-    {
-      setSource: (current) => {
-        currentSource = current;
-      },
-      onChange: () => {
-        const v = currentSource();
-        runtime.enabled = v.enabled;
-        log(`settings 已应用: enabled=${runtime.enabled}`);
-      },
+  // DSH 0.2.0：installSettingsSection 已移除；可编辑字段改为 Config 上的 volatile
+  // 引用（见 Config 定义），框架据此生成设置页并写回 profile patch。
+  // 注：0.1.1 时这里对 config.enabled===false 直接 return（编译期禁用）；现在
+  // enabled 是 volatile，值可在运行时改动，故改为「装配始终完成、每次使用前查值」，
+  // 这样在设置页关掉开关能立即生效，而不需要重启。
+  const enabledRef = (config as { enabled?: { get?: () => boolean } }).enabled;
+  const runtime = {
+    get enabled(): boolean {
+      return enabledRef?.get?.() ?? true;
     },
-  );
+  };
+  log(`settings 已应用: enabled=${runtime.enabled}`);
+  registerVolatileSettings('aemeath-workflow', { enabled: runtime.enabled });
+  ctx.on('loader/volatile-update', () => {
+    log(`settings 已应用: enabled=${runtime.enabled}`);
+  });
   const defaultPreset = config.defaultPreset ?? 'physicist';
   const planScratch = config.planScratch ?? true;
   const dimensionCheck = config.dimensionCheck ?? true;
@@ -402,7 +397,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     // 只在本轮第一步注入（与 memory/worldbook/retriever 对齐，防多 step 上下文线性膨胀）
     if (payload.step !== 1) return decision;
 
-    const preset = resolveSessionPreset(payload.agent.session as never) ?? defaultPreset;
+    const preset = resolvePresetCompat(ctx, payload.agent.session) ?? defaultPreset;
     if (preset !== 'physicist') return decision;
 
     // 取用户原始消息
@@ -422,7 +417,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     log(`preset=physicist 分流=plan（${route.reason}）：${query.slice(0, 30)}…`);
     const injectMsg = createUserMessage({
       content: [{ type: 'text', text: SOLVER_PROMPT }],
-      source: { kind: 'plugin', plugin: name, form: 'notice', summary: `解题工作流已启用（${route.reason}）` },
+      source: { kind: 'aemeath-workflow', form: 'notice', summary: `解题工作流已启用（${route.reason}）` },
     });
     return { kind: 'enter', messages: [...decision.messages, injectMsg] };
   });
@@ -435,7 +430,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     if (decision.kind !== 'allow') return decision;
     if (!runtime.enabled) return decision;
 
-    const preset = resolveSessionPreset(exec.agent?.session as never) ?? defaultPreset;
+    const preset = resolvePresetCompat(ctx, exec.agent?.session) ?? defaultPreset;
     if (preset !== 'physicist') return decision;
 
     if (exec.name === 'compute_verify') {
@@ -468,7 +463,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
       const decision = await next();
       if (decision.kind === 'block') return decision;
       if (!runtime.enabled) return decision;
-      const preset = resolveSessionPreset(exec.agent?.session as never) ?? defaultPreset;
+      const preset = resolvePresetCompat(ctx, exec.agent?.session) ?? defaultPreset;
       if (preset !== 'physicist') return decision;
       if (exec.name !== 'compute_verify') return decision;
       const sid = exec.agent?.session?.id;
@@ -480,7 +475,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
           additionalContexts: [
             createUserMessage({
               content: [{ type: 'text', text: PLAN_MISSING_NOTICE }],
-              source: { kind: 'plugin', plugin: name, form: 'notice', summary: 'plan 缺失提示' },
+              source: { kind: 'aemeath-workflow', form: 'notice', summary: 'plan 缺失提示' },
             }),
           ],
         };
@@ -507,7 +502,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
 
   // ---- 爱弥斯零回归：aemeath preset 隐藏全部解题工具（工具集隔离） ----
   const restrictAemeath = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
-    const preset = resolveSessionPreset(agent.session as never) ?? defaultPreset;
+    const preset = resolvePresetCompat(ctx, agent.session) ?? defaultPreset;
     if (preset !== 'aemeath') return;
     try {
       agent.ctx.tools.restrict({ deny: WORKFLOW_TOOLS });
@@ -517,25 +512,34 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     }
   };
   for (const agent of ctx.agents.list()) restrictAemeath(agent);
-  ctx.on('agent/created', ({ agent }) => restrictAemeath(agent));
+  ctx.on('agent/created', ({ agent }) => {
+    restrictAemeath(agent);
+    return undefined;
+    });
   log('爱弥斯零回归：aemeath preset 工具隔离已挂载');
 
-  // ---- presentAs('code')（v2，config 门控默认关） ----
+  // ---- presentAs('ptc')（v2，config 门控默认关） ----
+  // DSH 0.2.0：呈现模式由 'code' 改名为 'ptc'（native | ptc | both），且
+  // presentAs 现在返回一个「恢复部署默认」的 disposer，须交给 ctx.effect 释放。
   if (codeMode) {
     const applyCodeMode = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
-      const preset = resolveSessionPreset(agent.session as never) ?? defaultPreset;
+      const preset = resolvePresetCompat(ctx, agent.session) ?? defaultPreset;
       if (preset !== 'physicist') return;
       try {
-        agent.ctx.tools.presentAs('code');
-        log(`preset=${preset}（${agent.id}）已启用 code 呈现模式`);
+        const restore = agent.ctx.tools.presentAs('ptc');
+        agent.ctx.effect(() => restore);
+        log(`preset=${preset}（${agent.id}）已启用 ptc 呈现模式`);
       } catch (e) {
-        warn(`codeMode 需要 codeRuntime 与 SDK renderer，当前不可用: ${(e as Error).message}`);
+        warn(`codeMode 需要 ptcRuntime 与 SDK renderer，当前不可用: ${(e as Error).message}`);
       }
     };
     for (const agent of ctx.agents.list()) applyCodeMode(agent);
-    ctx.on('agent/created', ({ agent }) => applyCodeMode(agent));
-    log('codeMode 已启用（presentAs("code")，physicist 计算密集流）');
+    ctx.on('agent/created', ({ agent }) => {
+      applyCodeMode(agent);
+      return undefined;
+      });
+    log('codeMode 已启用（presentAs("ptc")，physicist 计算密集流）');
   } else {
-    log('codeMode 默认关闭（presentAs("code") 可选，需 codeRuntime）');
+    log('codeMode 默认关闭（presentAs("ptc") 可选，需 ptcRuntime）');
   }
 }

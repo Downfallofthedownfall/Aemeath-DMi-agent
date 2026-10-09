@@ -7,10 +7,17 @@
 #       storageDomain/storage，storage-json 提供 JSON 后端；顺序即依赖顺序，
 #       storage-domain 依赖 storage + storage-json 先于其插入）。
 # ============================================================
-# —— agent-presets 默认预设：physicist（headless 一次性运行按 physicist 人格/知识注入）——
-- id: agent-presets
-  config:
-    default: physicist
+# —— agent-preset-registry 默认预设：physicist（headless 一次性运行按 physicist
+#    人格/知识注入）——
+#    DSH 0.2.0：'@deepseek-ai/dsh-agent-presets' 拆分为 dsh-agent-preset（插件类）
+#    + dsh-agent-preset-registry（registry 服务），行 id 也随之改名。
+#    关键差异：headless bundle 直接挂在 dsh-base 上，**不含** web-app bundle 里
+#    那一行，所以这里不是"覆盖 config"，而是必须显式 insert 整行。——
+- insert:
+    - id: agent-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
+      config:
+        default: physicist
 # —— 插入 storage 三件套（headless bundle 无 Web 层，需自行提供存储）——
 - insert:
     - id: storage
@@ -31,6 +38,9 @@
       name: '@aemeath/dsh-plugin-common'
       config:
         defaultPreset: 'physicist'
+        # DSH 0.2.0 volatile：设置页可改、热更新即时生效
+        oocRulesEnabled: true
+        oocLlmEnabled: false
         personas:
           aemeath:
             file: 'profiles/aemeath/personas/aemeath.md'
@@ -56,6 +66,7 @@
       name: '@aemeath/dsh-plugin-worldbook'
       config:
         defaultPreset: 'physicist'
+        enabled: true
         libraries:
           physicist: 'packages/worldbook/data/physicist'
           aemeath: 'packages/worldbook/data/aemeath'
@@ -65,6 +76,7 @@
       name: '@aemeath/dsh-plugin-retriever'
       config:
         defaultPreset: 'physicist'
+        enabled: true
         notesDir: 'packages/library/physicist/notes'
         maxInjectTokens: 1500
     - id: aemeath-workflow
@@ -87,6 +99,7 @@
       name: '@aemeath/dsh-plugin-memory'
       config:
         defaultPreset: 'physicist'
+        enabled: true
         l2RecallTopK: 5
         l3Capacity: 500
         l1Capacity: 40

@@ -8,7 +8,8 @@
 // 角色切换语义（决策 Q2）：对新会话生效（写 agent-presets.default，roleFace）。
 // ============================================================
 import { useSyncExternalStore } from 'react';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { RoleFace } from './faces.ts';
 import { t, useLocale } from './i18n.ts';

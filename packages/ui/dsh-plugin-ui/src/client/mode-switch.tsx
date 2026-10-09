@@ -11,7 +11,8 @@
 //   两者保持一致——镜像在真源变化时同步写入，绝不反向改写后端。
 // ============================================================
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { RoleFace } from './faces.ts';
 import { t, useLocale } from './i18n.ts';

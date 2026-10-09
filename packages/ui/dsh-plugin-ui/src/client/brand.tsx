@@ -6,7 +6,7 @@
 //   2. CSS 隐藏 dsh 鲸鱼 logo / wordmark（品牌位本身迁至侧边栏顶部
 //      sessions.tsx 的 SidebarBrandHeader，P2 起 footer 品牌位不再注册）。
 // ============================================================
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import { t, useLocale } from './i18n.ts';
 

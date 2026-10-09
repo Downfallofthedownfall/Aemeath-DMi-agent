@@ -13,9 +13,10 @@
 // ============================================================
 import { useEffect, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
-import type { ConversationSnapshot } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+import type { FetchScope as SettingsScope, ScopeSnapshot as SettingsScopeSnapshot } from './faces.ts';
+import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { RoleFace } from './faces.ts';
 import { BrandMark } from './brand.tsx';
@@ -25,28 +26,28 @@ import { useCharacterStatus, setStatusRunning, setStatusSpeaking, type Character
 
 export interface CharacterStatusDeps {
   role?: RoleFace;
-  scopes?: Record<string, SettingsScope<Record<string, unknown>>>;
+  scopes?: Record<string, SettingsScope>;
 }
 
 /** 角色状态持久化 namespace（与外观设置共用 aemeath-ui）。 */
 const STATUS_NS = 'aemeath-ui';
 
 // —— useSyncExternalStore 稳定空快照 / no-op 订阅（缺注入时不崩，React #290/#310 安全）——
-const EMPTY_SNAPSHOT: SettingsScopeSnapshot<Record<string, unknown>> = Object.freeze({
+const EMPTY_SNAPSHOT: SettingsScopeSnapshot = Object.freeze({
   status: 'loading',
   value: undefined,
   base: undefined,
   user: undefined,
   revision: undefined,
   writable: false,
-  mode: 'memory',
+  mode: 'host',
 });
-const GET_EMPTY_SNAPSHOT = (): SettingsScopeSnapshot<Record<string, unknown>> => EMPTY_SNAPSHOT;
+const GET_EMPTY_SNAPSHOT = (): SettingsScopeSnapshot => EMPTY_SNAPSHOT;
 const NOOP_SUBSCRIBE = (): (() => void) => () => undefined;
 const GET_DEFAULT_ROLE = (): string => 'aemeath';
 
 /** 读取「是否显示 pill / float」设置（默认开）。 */
-function useStatusVisibility(scopes?: Record<string, SettingsScope<Record<string, unknown>>>): { showPill: boolean; showFloat: boolean } {
+function useStatusVisibility(scopes?: Record<string, SettingsScope>): { showPill: boolean; showFloat: boolean } {
   const scope = scopes?.[STATUS_NS];
   const snap = useSyncExternalStore(scope ? scope.subscribe : NOOP_SUBSCRIBE, scope ? scope.getSnapshot : GET_EMPTY_SNAPSHOT);
   const v = snap?.value as { showStatusPill?: boolean; showStatusFloat?: boolean } | undefined;
@@ -73,9 +74,9 @@ function CharacterStatusPillInner({
   role,
   scopes,
 }: {
-  useSession?: <S>(sel: (s: ConversationSnapshot) => S, eq?: (a: S, b: S) => boolean) => S;
+  useSession?: <S>(sel: (s: SessionSnapshot) => S, eq?: (a: S, b: S) => boolean) => S;
   role?: RoleFace;
-  scopes?: Record<string, SettingsScope<Record<string, unknown>>>;
+  scopes?: Record<string, SettingsScope>;
 }): JSX.Element | null {
   useLocale(); // locale 切换时刷新角色名/状态文案
 
@@ -117,7 +118,7 @@ function CharacterStatusPillInner({
 }
 
 /** pill 外层（零 hooks）：会话作用域缺 useSession 时返回 null（不渲染）。 */
-export function CharacterStatusPill(props: CharacterStatusDeps & { useSession?: <S>(sel: (s: ConversationSnapshot) => S, eq?: (a: S, b: S) => boolean) => S }): JSX.Element | null {
+export function CharacterStatusPill(props: CharacterStatusDeps & { useSession?: <S>(sel: (s: SessionSnapshot) => S, eq?: (a: S, b: S) => boolean) => S }): JSX.Element | null {
   const { role, scopes, useSession } = props;
   if (!useSession) return null;
   return <CharacterStatusPillInner role={role} scopes={scopes} useSession={useSession} />;
