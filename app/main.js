@@ -123,8 +123,20 @@ function ensureDshCli() {
 }
 
 // ===== dsh 进程托管 =====
+/**
+ * dsh 启动时打印的「带认证 token 的 URL」。
+ * `dsh web` 用进程级 launch token 换 cookie 才能进 UI：裸访问 / 一律 401。
+ * 所以必须从 stdout 抓 `dsh web: http://127.0.0.1:<port>/?token=...` 这一行，
+ * 让窗口加载带 token 的地址（首次访问换取 cookie，之后即可正常导航）。
+ */
+let authenticatedUrl = null;
+const AUTH_URL_RE = /dsh web:\s+(https?:\/\/\S+)/;
+
 async function startDsh() {
-  // 若 3081 已有 dsh 实例（用户自己起的），直接复用
+  // 若 3081 已有 dsh 实例（用户自己起的），直接复用。
+  // 注意：复用场景拿不到它的 token（token 只在其 stdout 里），
+  // 因此这种情况下窗口很可能 401——此时提示用户自行在浏览器打开，
+  // 或先关掉那一个实例让本壳自己拉起（见下方 createWindow 分支）。
   if (await portOpen(PORT)) {
     if (await isDshService(PORT)) {
       console.log('[shell] 复用已有 dsh 服务（3081）');
@@ -134,7 +146,12 @@ async function startDsh() {
     return 'foreign';
   }
   console.log('[shell] 启动 dsh 服务（3081）…');
-  const args = ['-ExecutionPolicy', 'Bypass', '-File', DSH_SCRIPT, '--profile', 'aemeath', '--port', String(PORT)];
+  // --no-open：不要弹出系统默认浏览器——壳自己就是那个"浏览器"。
+  // 否则会出现「浏览器打开一份 + Electron 里又一份」的双开。
+  const args = [
+    '-ExecutionPolicy', 'Bypass', '-File', DSH_SCRIPT,
+    '--profile', 'aemeath', '--port', String(PORT), '--no-open',
+  ];
   dshProc = spawn('powershell', args, {
     cwd: REPO_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -143,6 +160,14 @@ async function startDsh() {
   dshProc.stdout.on('data', (d) => {
     const msg = String(d).trim();
     if (msg) console.log('[dsh]', msg);
+    // 抓取认证 URL（可能分片到达，故在累积缓冲上匹配）
+    stdoutBuffer += String(d);
+    const m = AUTH_URL_RE.exec(stdoutBuffer);
+    if (m && !authenticatedUrl) {
+      authenticatedUrl = m[1];
+      console.log('[shell] 已获取认证 URL（窗口将加载带 token 的地址）');
+      if (pendingResolve) { pendingResolve(); pendingResolve = null; }
+    }
   });
   dshProc.stderr.on('data', (d) => {
     const msg = String(d).trim();
@@ -158,6 +183,22 @@ async function startDsh() {
   });
   // 等待就绪（C24：超时返回，不在此开白屏——窗口层据结果决定加载内容）
   return waitForService(PORT, 60000);
+}
+
+/** stdout 累积缓冲（认证 URL 可能跨 chunk）+ 等待它出现的一次性 resolver。 */
+let stdoutBuffer = '';
+let pendingResolve = null;
+
+/**
+ * 等待认证 URL 出现（最多 timeoutMs）。
+ * @returns 带 token 的 URL；超时返回 null（调用方回退裸 origin）。
+ */
+function waitForAuthUrl(timeoutMs) {
+  if (authenticatedUrl) return Promise.resolve(authenticatedUrl);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { pendingResolve = null; resolve(null); }, timeoutMs);
+    pendingResolve = () => { clearTimeout(timer); resolve(authenticatedUrl); };
+  });
 }
 
 function stopDsh() {
@@ -302,7 +343,32 @@ app.whenReady().then(async () => {
   const depsOk = await ensureDshCli();
   const serviceState = depsOk ? await startDsh() : 'unavailable';
   if (serviceState === 'ready') {
-    createWindow(APP_ORIGIN + '/');
+    // 关键：必须加载**带认证 token** 的地址，否则 dsh 的浏览器信任栅栏
+    // 会返回 401（"dsh web authentication required"）。
+    // token 由 dsh 进程在 stdout 打印，startDsh 已在后台抓取。
+    const authed = await waitForAuthUrl(8000);
+    if (authed) {
+      console.log('[shell] 加载认证 URL');
+      createWindow(authed);
+    } else {
+      // 拿不到 token：要么是复用了外部已有实例（其 token 我们无从获取），
+      // 要么 dsh 还没来得及打印。加载一个说明页，而不是直接撞 401。
+      console.warn('[shell] 未获取到认证 URL，显示引导页');
+      createWindow('data:text/html;charset=utf-8,' + encodeURIComponent(
+        errorPageHtml(
+          uiText('需要手动完成一次认证', 'One-time sign-in required'),
+          uiText(
+            '检测到 3081 已在运行，但它不是本壳启动的，因此拿不到本次会话的认证凭据。\n'
+            + '请任选其一：\n'
+            + '  1) 关闭那个 dsh 实例后重启本程序（推荐，壳会自动完成认证）；\n'
+            + '  2) 或在浏览器里打开 dsh 启动日志中打印的带 token 的 URL 完成一次认证。',
+            'Port 3081 is already served, but not by this shell, so its session credential is unavailable.\n'
+            + 'Either: (1) close that dsh instance and restart this app (recommended), or\n'
+            + '(2) open the tokenized URL printed in the dsh startup log in a browser once.',
+          ),
+        ),
+      ));
+    }
   } else if (serviceState === 'foreign') {
     // C24：端口被非 dsh 进程占用——不加载外来内容，显示错误页
     createWindow('data:text/html;charset=utf-8,' + encodeURIComponent(
@@ -335,7 +401,10 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(APP_ORIGIN + '/');
+    // 同样优先用认证 URL（cookie 已换取，但带 token 的地址依然有效）
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow(authenticatedUrl ?? APP_ORIGIN + '/');
+    }
   });
 });
 
