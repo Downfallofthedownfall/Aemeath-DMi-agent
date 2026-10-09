@@ -77,11 +77,13 @@ body[data-ds-dark-theme] {
   --fluent-border-l1: #3a3a3a;
   --fluent-border-l2: #464646;
   --fluent-border-l3: #555555;
-  --fluent-accent: #5b8def;
-  --fluent-accent-hover: #4a7cdd;
-  --fluent-accent-active: #3d6ccb;
-  --fluent-accent-subtle: #24304a;
-  --fluent-accent-disabled: #2a3a5e;
+  /* 强调色与亮色同为玫粉（2026-10-10 修正：此前深色用蓝色 #5b8def 系，
+     导致选中背景/焦点描边在深色下不是品牌粉，与亮色不一致）。 */
+  --fluent-accent: #ff8cbd;
+  --fluent-accent-hover: #ffa8cd;
+  --fluent-accent-active: #f25e9e;
+  --fluent-accent-subtle: #3d2230;
+  --fluent-accent-disabled: #4a2a38;
   --fluent-mica: rgba(31, 31, 31, 0.8);
   --fluent-acrylic: rgba(40, 40, 40, 0.86);
   --fluent-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.25);

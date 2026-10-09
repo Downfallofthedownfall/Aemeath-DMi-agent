@@ -108,7 +108,9 @@ const LIGHT: Record<string, string> = {
   '--dsw-specific-tip': '#fff2f8',
 };
 
-/** Fluent 深色 token 值（与 LIGHT 成对；随 physicist 深色主题使用）。 */
+/** Fluent 深色 token 值（与 LIGHT 成对；随 physicist 深色主题使用）。
+ *  强调色与亮色同为玫粉 #ff8cbd 系（2026-10-10 修正：此前是蓝色 #5b8def 系，
+ *  导致深色下按钮/选中态与亮色不是同一套品牌色）。仅中性文字保留灰蓝调。 */
 const DARK: Record<string, string> = {
   '--dsw-alias-label-primary': '#e8ecf4',
   '--dsw-alias-label-secondary': '#aab4c8',
@@ -125,22 +127,25 @@ const DARK: Record<string, string> = {
   '--dsw-alias-bg-mask-3': 'rgba(255, 255, 255, 0.12)',
   '--dsw-alias-bg-skeleton': '#383838',
   '--dsw-alias-bg-module-platform': '#2d2d2d',
-  '--dsw-alias-bg-multi-select': '#24304a',
+  // 多选底色：深色下用暗玫粉（原 #24304a 偏蓝，与亮色 #ffe9f3 不是同一色系）
+  '--dsw-alias-bg-multi-select': '#3d2230',
   '--dsw-alias-border-l1': '#3a3a3a',
   '--dsw-alias-border-l2': '#464646',
   '--dsw-alias-border-l3': '#555555',
   '--dsw-alias-border-l4': '#666666',
   '--dsw-alias-border-inverted': '#1f1f1f',
-  '--dsw-alias-state-business-primary': '#5b8def',
-  '--dsw-alias-state-business-primary-hover': '#4a7cdd',
-  '--dsw-alias-state-business-tertiary': '#24304a',
-  '--dsw-alias-accent': '#5b8def',
-  '--dsw-alias-brand-primary': '#5b8def',
+  // —— 强调：与亮色同一套玫粉（深色下取高明度粉，保证暗底对比度）——
+  // 原为蓝色 #5b8def 系，与亮色 #ff8cbd 不一致；现统一为粉。
+  '--dsw-alias-state-business-primary': '#ff8cbd',
+  '--dsw-alias-state-business-primary-hover': '#ffa8cd',
+  '--dsw-alias-state-business-tertiary': '#3d2230',
+  '--dsw-alias-accent': '#ff8cbd',
+  '--dsw-alias-brand-primary': '#ff8cbd',
   '--dsw-alias-brand-primary-invert': '#0d1117',
-  '--dsw-alias-brand-text': '#8fb0f5',
-  '--dsw-alias-button-primary-fill': '#5b8def',
-  '--dsw-alias-button-primary-hover': '#4a7cdd',
-  '--dsw-alias-button-primary-dimmed': '#2a3a5e',
+  '--dsw-alias-brand-text': '#ffb3d4',
+  '--dsw-alias-button-primary-fill': '#ff8cbd',
+  '--dsw-alias-button-primary-hover': '#ffa8cd',
+  '--dsw-alias-button-primary-dimmed': '#4a2a38',
   '--dsw-alias-button-contrast-fill': '#ffffff',
   '--dsw-alias-button-elevated-fill': '#2d2d2d',
   '--dsw-alias-button-floating-fill': '#2d2d2d',
@@ -155,9 +160,9 @@ const DARK: Record<string, string> = {
   '--dsw-alias-button-tool-bar-hover': '#2f2f2f',
   '--dsw-alias-interactive-bg-hover': '#2f2f2f',
   '--dsw-alias-interactive-bg-active': '#3a3a3a',
-  '--dsw-alias-interactive-bg-hover-accent': '#24304a',
+  '--dsw-alias-interactive-bg-hover-accent': '#3d2230',
   '--dsw-alias-interactive-bg-hover-danger': '#3d1d1a',
-  '--dsw-alias-interactive-bg-hover-solid': '#4a7cdd',
+  '--dsw-alias-interactive-bg-hover-solid': '#ffa8cd',
   '--dsw-alias-state-error-primary': '#f1707a',
   '--dsw-alias-state-error-secondary': '#3d1d1a',
   '--dsw-alias-state-success-primary': '#6ccb6c',
@@ -174,19 +179,19 @@ const DARK: Record<string, string> = {
   '--dsw-alias-markdown-inline-code': '#2d2d2d',
   '--dsw-alias-markdown-code-block': '#282828',
   '--dsw-alias-markdown-code-block-banner': '#383838',
-  '--dsw-alias-markdown-tag': '#24304a',
+  '--dsw-alias-markdown-tag': '#3d2230',
   '--dsw-alias-markdown-placeholder': '#555555',
   '--dsw-alias-tooltip-bg': '#2d2d2d',
   '--dsw-alias-toast-bg': '#2d2d2d',
   '--dsw-specific-sidebar-fill': 'rgba(31, 31, 31, 0.8)',
   '--dsw-specific-sidebar-nav-item-active': '#2f2f2f',
-  '--dsw-specific-sidebar-nav-item-active-accent': '#24304a',
+  '--dsw-specific-sidebar-nav-item-active-accent': '#3d2230',
   '--dsw-specific-sidebar-nav-item-hover': '#2a2a2a',
   '--dsw-specific-bubble': '#2b2b2b',
-  '--dsw-specific-bubble-highlight': '#24304a',
+  '--dsw-specific-bubble-highlight': '#3d2230',
   '--dsw-specific-menu': '#282828',
   '--dsw-specific-input-major': '#282828',
-  '--dsw-specific-selector': '#24304a',
+  '--dsw-specific-selector': '#3d2230',
   '--dsw-specific-tip': '#2a2c1e',
 };
 
