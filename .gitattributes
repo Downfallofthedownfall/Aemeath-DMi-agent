@@ -12,7 +12,14 @@
 * text=auto
 
 # 明确要求 LF 的文件类型
+#
+# ⚠️ 为什么必须钉死 eol=lf：带 CRLF 的 shell 脚本在 mac/Linux 上会以各种
+#    方式炸掉。真机踩过：lecture-mac.sh 以 CRLF 提交后，mac 上 `./xxx.sh` 报
+#       line 207: syntax error near unexpected token `<'
+#    因为 \r 被当成了命令的一部分（那行是 `done < <(node -e '...`）。
+#    报错位置和真正的原因（行尾）看起来毫无关系，极难联想。
 *.sh          text eol=lf
+*.command     text eol=lf
 *.bash        text eol=lf
 *.mjs         text eol=lf
 *.js          text eol=lf
@@ -25,6 +32,9 @@
 
 # PowerShell 脚本在 Windows 上用 CRLF 更稳（部分老版本对 LF 的 .ps1 报错）
 *.ps1         text eol=crlf
+# 批处理同理（cmd.exe 对 LF 的 .bat 处理有兼容问题）
+*.bat         text eol=crlf
+*.cmd         text eol=crlf
 
 # 二进制：不要做任何行尾转换
 *.png         binary

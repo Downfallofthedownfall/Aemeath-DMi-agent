@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # ============================================================
 # scripts/lecture-mac.sh — 在 macOS 上跑「课堂记录模式」
 #
@@ -24,7 +24,7 @@ set -euo pipefail
 
 # 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
 # （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
-LECTURE_MAC_VERSION="2026-10-12.4"
+LECTURE_MAC_VERSION="2026-10-12.5"
 
 # ---- 路径 ----
 # ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
