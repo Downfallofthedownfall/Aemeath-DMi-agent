@@ -215,7 +215,62 @@
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config:
     default: aemeath
-    selectedDefault: aemeath
+    selectedDefault: physicist
+
+# —— 声明 aemeath / physicist 两个 preset 本体 ——
+#
+# ⚠️⚠️ 真机踩过（"以前能用，突然 Unknown agent preset: physicist"）：
+#
+#   DSH **0.1.1** 时代，主 profile 挂的是 `@deepseek-ai/dsh-agent-presets`，
+#   那个包会**自动扫描 `$DSH_HOME/.agent-presets/` 目录** ——
+#   所以当时的配置里看不到任何 preset 声明，却能用。
+#
+#   DSH **0.2.0** 把它拆成了「dsh-agent-preset（插件类）」+
+#   「dsh-agent-preset-registry（注册表服务）」。升级时只把**行 id 改了名**
+#   （agent-presets → agent-preset-registry），**扫描目录的机制随之消失**，
+#   但没有任何地方补上 preset 声明。
+#
+#   后果：`default: aemeath` 和 `defaultPreset: 'physicist'` 全都指不到东西。
+#   平时不报错（新建会话时 registry 找不到 preset 才报），
+#   所以**潜伏了很久** —— 直到某个会话缓存里钉了 `physicist` 才暴露：
+#       agent-preset/not-found: Unknown agent preset: physicist
+#
+#   注意 `.dsh-home/.agent-presets/` 目录和 `scripts/dsh.ps1` 的同步逻辑
+#   **现在都是死代码**（0.2.0 没人读那个目录），保留只是为了不破坏其他引用。
+#
+#   正确做法（照 dsh-web-app/presets/*.patch.yml 的写法）：
+#   每个 preset 一个 `@deepseek-ai/dsh-agent-preset` 条目。
+- insert:
+    # 爱弥斯桌宠（陪伴 / 情感 / 日常）——主 profile 的默认角色
+    - id: preset-aemeath
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: aemeath
+        name: 爱弥斯
+        description: 爱弥斯桌宠：陪伴、日常、情感向对话
+        order: 10
+        plugins:
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
+    # 拉贝尔学部学霸（物理学习引擎）
+    # ⚠️ lecture 插件与 curriculum 都写 `defaultPreset: 'physicist'`，
+    #    缺了这个声明它们全部指不到东西。
+    - id: preset-physicist
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: physicist
+        name: 爱弥斯-拉贝尔学部学霸
+        description: 物理学习模式：引导式讲解、推导、复盘
+        order: 20
+        plugins:
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
 # —— 禁用与爱弥斯无关的官方 UI 插件（去掉 dsh 开发工具痕迹）——
 - id: ui-agent-preset
   disabled: true
@@ -295,7 +350,11 @@
 - id: ui-theme
   name: "@deepseek-ai/dsh-client-ui-theme"
   config:
-    preference: light
+    preference: dark
+- id: locale
+  name: "@deepseek-ai/dsh-client-locale"
+  config:
+    preference: zh
 
 # 2026-08-17：重新启用官方 models 设置页（用户要求加回 dsh 自带 responses/messages 接口）——
 # 我们的「爱弥斯」设置页只做 API key 快捷填写，模型/provider 配置回到官方 Models 页
