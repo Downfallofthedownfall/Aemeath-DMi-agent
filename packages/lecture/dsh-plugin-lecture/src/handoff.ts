@@ -50,6 +50,27 @@ export const handoffSchema = z.object({
       summary_ref: z.string().default(''),
     }),
   ),
+  /**
+   * 第 5 步人工逐条确认过的**学习状态断言**（entity/attribute/value）。
+   *
+   * 为什么必须进 schema：这些是用户在复盘界面**逐条勾选**的内容。
+   * 界面上给了 checkbox，就必须有读者——否则就是"界面承诺了语义、后端没有实现"。
+   * （曾经漏掉这个字段，导致勾选结果只落到本地 candidates 文件，永远没人读。）
+   *
+   * 注意：这里**不带时间戳**。valid_from 由接收侧按导入时刻赋值
+   * （见 import-handoff.ts）——课堂侧不知道主记忆的时间轴语义，
+   * 硬塞一个猜测的时间戳反而会污染 T1 时间轴。
+   */
+  claims: z
+    .array(
+      z.object({
+        unit: z.string(),
+        entity: z.string(),
+        attribute: z.string(),
+        value: z.string(),
+      }),
+    )
+    .default([]),
 });
 export type Handoff = z.infer<typeof handoffSchema>;
 
@@ -73,6 +94,7 @@ export function buildHandoff(input: BuildHandoffInput): Handoff {
   const progress: Handoff['progress'] = [];
   const weakPoints: Handoff['weak_points'] = [];
   const units: Handoff['units'] = [];
+  const claims: Handoff['claims'] = [];
 
   for (const unit of index.units) {
     progress.push({ unit: unit.id, title: unit.title, date: unit.date, reviewed: unit.reviewed });
@@ -103,6 +125,12 @@ export function buildHandoff(input: BuildHandoffInput): Handoff {
     for (const q of cand?.unresolved_questions ?? []) {
       weakPoints.push({ unit: unit.id, topic: q.slice(0, 120), evidence: '未解决问题', confidence: 0.6 });
     }
+
+    // 第 5 步人工确认过的断言：同样只传已复盘的（D4 门控）
+    for (const c of cand?.entity_claims ?? []) {
+      if (!c.attribute || !c.value) continue;
+      claims.push({ unit: unit.id, entity: c.entity || '用户', attribute: c.attribute, value: c.value });
+    }
   }
 
   // 去重：同一 (unit, topic) 只留一条（保留最高 confidence）
@@ -120,6 +148,7 @@ export function buildHandoff(input: BuildHandoffInput): Handoff {
     progress,
     weak_points: [...dedup.values()],
     units,
+    claims,
   };
 }
 
@@ -135,6 +164,7 @@ export function filterReviewed(handoff: Handoff): Handoff {
     ...handoff,
     weak_points: handoff.weak_points.filter((w) => reviewed.has(w.unit)),
     units: handoff.units.map((u) => (reviewed.has(u.unit) ? u : { unit: u.unit, title: u.title, topics: [], summary_ref: '' })),
+    claims: handoff.claims.filter((c) => reviewed.has(c.unit)),
   };
 }
 

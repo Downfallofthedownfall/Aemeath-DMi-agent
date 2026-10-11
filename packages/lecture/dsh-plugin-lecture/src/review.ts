@@ -287,10 +287,17 @@ export class ReviewMachine {
   // ---------- 第 5 步：确认写入 ----------
 
   /**
-   * 逐条确认后提交。
-   * @param accepted 用户确认保留的条目（未确认的由调用方丢弃）
+   * 完成第 5 步。
+   *
+   * ⚠️ 契约：本方法**只推进状态机**，不保存任何内容。
+   *    候选条目的落盘由调用方负责（`store.writeCandidates(accepted)`）——
+   *    因为"用户勾掉了哪些"是界面侧的知识，状态机不该猜。
+   *
+   *    早先的签名是 `commit(accepted: Candidates)` 但参数被无声忽略，
+   *    看着像"提交这些条目"，实际什么都没做（API 误导）。
+   *    现在参数移除，并把职责写清楚。
    */
-  commit(accepted: Candidates): ReviewState {
+  commit(): ReviewState {
     this.requireStep('commit');
     this.state.step = 'done';
     this.state.updated_at = Date.now();

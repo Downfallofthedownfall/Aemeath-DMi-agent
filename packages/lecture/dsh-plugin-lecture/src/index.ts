@@ -24,7 +24,8 @@
 // ============================================================
 
 import { join } from 'node:path';
-import { existsSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdirSync, readFileSync, rmSync, readdirSync } from 'node:fs';
+import { hostname } from 'node:os';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -54,6 +55,24 @@ export const name = 'aemeath-lecture';
 // webServer 可选（inject 里带上会在 headless profile 缺服务时抛错，
 // 故用 reflect.get 惰性取——见下方 HTTP 桥接线）。
 export const inject = ['tools', 'settings', 'credentials'];
+
+/**
+ * 本进程的 profile 名（用于课堂指针的归属判定）。
+ *
+ * 为什么需要区分 profile：主 profile（Windows 日常）与独立 lecture profile
+ * （课堂上/mac）按设计共用同一份数据目录。若不分归属，两边同时记录会互相
+ * 覆盖"正在记哪一讲"的指针，恢复时把速记静默追加进另一个单元。
+ */
+const PROFILE_NAME = process.env.DSH_PROFILE || 'unknown';
+
+/** 主机名（写进指针，便于人工排查"这条是哪台机器写的"）。 */
+const HOST_NAME = (() => {
+  try {
+    return hostname();
+  } catch {
+    return 'unknown';
+  }
+})();
 
 export const Config = z.object({
   defaultPreset: z.string(),
@@ -93,6 +112,29 @@ function log(msg: string): void {
 
 function warn(msg: string): void {
   console.warn(`[aemeath-lecture] ⚠ ${msg}`);
+}
+
+/**
+ * 下一个速记块序号 = max(已有 seq) + 1。
+ *
+ * ⚠️ 不要用 `chunks.length`（早先的写法）：中间块被删掉后，
+ * length 会与已落盘的 seq 错位，新块拿到重复序号；
+ * 而 `allBlanksOk` 是按 seq 报错块的，错位会把报错指向错误的块。
+ * 空数组 → 0。
+ */
+function nextSeq(chunks: ReadonlyArray<{ seq: number }>): number {
+  let max = -1;
+  for (const c of chunks) if (Number.isFinite(c.seq) && c.seq > max) max = c.seq;
+  return max + 1;
+}
+
+/** 本地日期 YYYY-MM-DD（**不用 toISOString**：那是 UTC，
+ *  东八区 00:00–08:00 记的课会落到前一天）。 */
+function localDateString(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 /** LLM 超时（转录是后台任务，可比交互式宽松）。 */
@@ -206,18 +248,54 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   const machines = new Map<string, ReviewMachine>();
 
   /**
-   * 当前课堂的**磁盘指针**（`_active.json`）。
+   * 写摘要（D4 的唯一出口）。
+   *
+   * 两条路径（工具 lecture_review_next / 前端 HTTP `op: 'next'`）都必须走这里，
+   * 保证 `has_summary` 的含义一致：**候选生成 = 摘要就绪**。
+   *
+   * 早先的偏差：前端路径把摘要推迟到第 5 步 commit 才写，于是"已生成候选但未确认"
+   * 的单元在两条路径下 `has_summary` 不同 —— 握手的 summary_ref 会时有时无。
+   * 两者都不违反 D4（都不早于第 4 步），但语义分裂本身就是 bug。
+   */
+  const writeSummaryFor = (
+    courseId: string,
+    unitId: string,
+    cand: Candidates,
+    model: string,
+  ): void => {
+    try {
+      store.writeSummary(courseId, unitId, {
+        text: JSON.stringify(cand, null, 2),
+        created_at: Date.now(),
+        model,
+      });
+    } catch (e) {
+      warn(`写摘要失败（${courseId}/${unitId}）：${(e as Error).message}`);
+    }
+  };
+
+  /**
+   * 当前课堂的**磁盘指针**。
    *
    * 为什么需要：`active` 是内存态，进程重启即空。若只靠内存，
    * 重启后 `lecture_capture` 会失败并被迫重新 `session_start`——
    * 而课堂上进程可能被重启（换电池/误关窗口），此时丢掉"正在记哪一讲"
    * 会直接打断记录。
    *
-   * 语义：一个数据目录同时只有一节"进行中的课"（课堂场景成立），
-   * 故用单文件即可，无需按 sessionId 分片。
-   * 由 `session_start` 写、`session_start` 覆盖（换课）、显式 `end` 清除。
+   * ⚠️ **为什么不只用单个 `_active.json`**（早先的实现，已修正）：
+   *    当时的注释假设"一个数据目录同时只有一节进行中的课（课堂场景成立）"。
+   *    但这个前提**不成立**：主 profile（Windows 日常）与独立 lecture profile
+   *    （课堂上/mac）按设计共用同一份 `packages/library/physicist/lectures`
+   *    （见 profiles/aemeath/cordis.patch.yml 与 README 的用法表）。
+   *    于是两处同时记录会互相覆盖指针，恢复时把速记**静默追加进另一个单元**。
+   *
+   * 现在的做法：
+   *   · 每个会话写自己的 `_active.<ownerHash>.json`（owner = profile|sessionId）
+   *   · 指针里记录 `owner` 与 `host`，恢复时校验归属
+   *   · 若同一目录存在**其他 owner 的活跃指针**，warn 一条（不阻断——
+   *     跨机器场景下那可能是正常的另一台设备）
    */
-  const POINTER_FILE = '_active.json';
+  const POINTER_PREFIX = '_active';
 
   interface ActivePointer {
     course_id: string;
@@ -225,12 +303,36 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     title: string;
     date: string;
     started_at: number;
+    /** 归属标识（profile|sessionId 的短哈希）——用于多 owner 共存时避免互踩。 */
+    owner?: string;
+    /** 可读的主机名，便于人工排查"这条指针是谁写的"。 */
+    host?: string;
   }
 
-  const readPointer = (): ActivePointer | null => {
+  /** owner 短哈希：把 profile|sessionId 压成文件名安全的小串。 */
+  const ownerHash = (sid: string | undefined): string => {
+    const seed = `${PROFILE_NAME}|${sid ?? 'unknown'}`;
+    let h = 0;
+    for (let i = 0; i < seed.length; i++) h = (Math.imul(31, h) + seed.charCodeAt(i)) | 0;
+    return (h >>> 0).toString(36);
+  };
+
+  const pointerFileOf = (sid: string | undefined): string =>
+    `${POINTER_PREFIX}.${ownerHash(sid)}.json`;
+
+  /** 列出目录下所有活跃指针文件（含别的 owner 的）。 */
+  const listPointerFiles = (): string[] => {
     try {
-      const file = join(store.rootPath, POINTER_FILE);
-      if (!existsSync(file)) return null;
+      return readdirSync(store.rootPath).filter(
+        (f) => f.startsWith(`${POINTER_PREFIX}.`) && f.endsWith('.json'),
+      );
+    } catch {
+      return [];
+    }
+  };
+
+  const parsePointer = (file: string): ActivePointer | null => {
+    try {
       const raw = JSON.parse(readFileSync(file, 'utf-8')) as Partial<ActivePointer>;
       if (!raw.course_id || !raw.unit_id) return null;
       return {
@@ -239,18 +341,59 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         title: String(raw.title ?? ''),
         date: String(raw.date ?? ''),
         started_at: Number(raw.started_at ?? 0),
+        owner: raw.owner ? String(raw.owner) : undefined,
+        host: raw.host ? String(raw.host) : undefined,
       };
     } catch {
       return null;
     }
   };
 
-  const writePointer = (p: ActivePointer): void => {
+  /** 读**本会话自己**的指针。 */
+  const readPointer = (sid: string | undefined): ActivePointer | null => {
+    const file = join(store.rootPath, pointerFileOf(sid));
+    if (!existsSync(file)) return null;
+    return parsePointer(file);
+  };
+
+  const writePointer = (sid: string | undefined, p: ActivePointer): void => {
     try {
       if (!existsSync(store.rootPath)) mkdirSync(store.rootPath, { recursive: true });
-      writeFileSync(join(store.rootPath, POINTER_FILE), JSON.stringify(p, null, 2), 'utf-8');
+      const full: ActivePointer = {
+        ...p,
+        owner: ownerHash(sid),
+        host: HOST_NAME,
+      };
+      writeFileSync(join(store.rootPath, pointerFileOf(sid)), JSON.stringify(full, null, 2), 'utf-8');
     } catch (e) {
       warn(`写课堂指针失败: ${(e as Error).message}`);
+    }
+  };
+
+  /** 清除本会话的指针（结束/销毁时）。 */
+  const clearPointer = (sid: string | undefined): void => {
+    try {
+      rmSync(join(store.rootPath, pointerFileOf(sid)), { force: true });
+    } catch {
+      /* 忽略：清不掉不影响使用 */
+    }
+  };
+
+  /**
+   * 检出**其他 owner** 留下的活跃指针（多 profile / 多机器共用同一数据目录）。
+   * 不阻断，只 warn —— 用户需要知道"这里还有另一处正在记录"。
+   */
+  const warnForeignPointers = (sid: string | undefined): void => {
+    const mine = `${POINTER_PREFIX}.${ownerHash(sid)}.json`;
+    for (const f of listPointerFiles()) {
+      if (f === mine) continue;
+      const p = parsePointer(join(store.rootPath, f));
+      if (!p) continue;
+      warn(
+        `检测到其他课堂指针：${f} → ${p.course_id}/${p.unit_id}` +
+          `${p.host ? `（来自 ${p.host}）` : ''}。` +
+          '若那是另一台设备/另一个 profile，属正常；否则请确认不要重复记录。',
+      );
     }
   };
 
@@ -264,8 +407,8 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     if (!sid) return null;
     const mem = active.get(sid);
     if (mem) return mem;
-    // —— 磁盘恢复 ——
-    const p = readPointer();
+    // —— 磁盘恢复（只认本会话自己的指针，避免把速记写进别人的单元）——
+    const p = readPointer(sid);
     if (!p) return null;
     const index = store.readIndex(p.course_id);
     const unit = index?.units.find((u) => u.id === p.unit_id);
@@ -313,15 +456,18 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         unit_id?: string;
       }, exec) => {
         const sid = exec.agent?.session?.id ?? 'default';
-        const date = args.date || new Date().toISOString().slice(0, 10);
+        const date = args.date || localDateString();
         const index = store.ensureCourse(args.course_id, args.course_title || args.course_id, args.semester ?? '', args.module_code ?? '');
         const unitId = args.unit_id || `u${String(index.units.length + 1).padStart(2, '0')}`;
         const file = `${date}-${unitId}.md`;
         const unit: UnitMeta = { id: unitId, date, title: args.title, file, reviewed: false, has_summary: false };
         store.upsertUnit(index.course_id, unit);
         active.set(sid, { courseId: index.course_id, unitId, title: args.title, date, chunks: [] });
-        // 磁盘指针：进程重启后 capture 仍能接着记（见 activeOf 的恢复逻辑）
-        writePointer({ course_id: index.course_id, unit_id: unitId, title: args.title, date, started_at: Date.now() });
+        // 磁盘指针：进程重启后 capture 仍能接着记（见 activeOf 的恢复逻辑）。
+        // 按会话/归属分片 —— 多 profile 共用同一数据目录时不会互踩。
+        writePointer(sid, { course_id: index.course_id, unit_id: unitId, title: args.title, date, started_at: Date.now() });
+        // 检出别的 owner 的活跃指针（不阻断，只提醒）
+        warnForeignPointers(sid);
         log(`课堂开始：${index.course_id}/${unitId}（${args.title}）`);
         return ok({ course_id: index.course_id, unit_id: unitId, date, file, chunk_count: 0 });
       },
@@ -352,7 +498,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         if (missing.length) {
           return fail(`强制留白未填：${missing.join('、')}。请先写下你自己的理解与疑问再继续。`, { missing });
         }
-        const seq = cur.chunks.length;
+        const seq = nextSeq(cur.chunks);
         const chunk: RawChunk = {
           seq,
           raw: args.raw,
@@ -528,12 +674,14 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             return ok({ step: m.step, candidates: null, note: '候选条目生成失败（LLM 不可用或输出不可解析）' });
           }
           store.writeCandidates(cid, cand);
-          // D4：复盘到第 4 步才写摘要
-          store.writeSummary(cid, unitId, {
-            text: JSON.stringify(cand, null, 2),
-            created_at: Date.now(),
-            model: llm.model,
-          });
+          // D4：复盘到第 4 步（候选生成）才写摘要。
+          //
+          // ⚠️ 两条路径（工具 / HTTP）必须**在同一时刻**写摘要，否则
+          //    `has_summary` 的含义会分裂：工具的路径第 4 步就有摘要，
+          //    前端的路径要等第 5 步确认。两边都用本处语义：
+          //    「候选生成 = 已产出可握手的内容」→ 写摘要。
+          //    （早先前端路径把摘要在 commit 时才写，已统一到这里。）
+          writeSummaryFor(cid, unitId, cand, llm.model);
           persistReview(sid, m);
           return ok({
             step: m.step,
@@ -554,7 +702,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           const unitId = m.current.unit_id;
           const cand = store.readCandidates(cid, unitId);
           if (!cand) return fail('候选条目缺失');
-          m.commit(cand);
+          m.commit();
           store.markUnit(cid, unitId, { reviewed: true, has_summary: true });
           persistReview(sid, m);
           // 可选：导出为讲义供主 agent 检索（plan §4.2）
@@ -645,6 +793,13 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               scope?: string;
               preset: string;
               source_mode?: string;
+              entityClaims?: Array<{
+                entity: string;
+                attribute: string;
+                value: string;
+                valid_from: number;
+                valid_until: number | null;
+              }>;
             }): Promise<string>;
             knowledgeAdd(input: {
               preset: string;
@@ -664,6 +819,8 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         decide: (q, r) => gkMod.decide(q, r),
         writeGate: (q, c) => gkMod.writeGate(q, c),
         save: async (input) => {
+          // ⚠️ entityClaims 必须透传：memory 侧要求 valid_from/valid_until，
+          //    丢了就只能退化成纯文本，第 5 步"逐条确认"的结构化语义会丢。
           const id = await memory.save({
             content: input.content,
             category: input.category,
@@ -671,7 +828,12 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             confidence: input.confidence,
             scope: input.scope,
             preset: input.preset,
-            source_mode: input.sourceMode,
+            // 来源可追溯：把"哪节课来的"编码进 source_mode
+            //（memory 的 MemorySaveInput 没有独立的 sourceLecture 字段）。
+            source_mode: input.sourceLecture
+              ? `${input.sourceMode}@${input.sourceLecture.course}/${input.sourceLecture.unit}`
+              : input.sourceMode,
+            entityClaims: input.entityClaims,
           });
           return id;
         },
@@ -851,12 +1013,9 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   ctx.on('session/disposed', (session) => {
     active.delete(session.id);
     machines.delete(session.id);
-    try {
-      const file = join(store.rootPath, POINTER_FILE);
-      if (existsSync(file)) rmSync(file, { force: true });
-    } catch (e) {
-      warn(`清理课堂指针失败: ${(e as Error).message}`);
-    }
+    // 只清**本会话自己的**指针：别的 profile/会话的指针不归我们管
+    //（早先单文件实现会把别人的指针一起删掉，属于跨 owner 误伤）。
+    clearPointer(session.id);
   });
 
   // ============================================================
@@ -891,7 +1050,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             // 复用工具层的落盘：从 markdown 恢复已有块，追加新块
             const md = store.readUnitMarkdown(courseId, unit);
             const existing = md ? parseUnitMarkdown(md).chunks : [];
-            const seq = existing.length;
+            const seq = nextSeq(existing);
             const next: RawChunk = {
               seq,
               raw: chunk.raw,
@@ -1015,6 +1174,8 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
                 return { step: 'candidates', candidates: null, note: '候选生成失败（LLM 不可用）' };
               }
               store.writeCandidates(courseId, cand);
+              // D4：候选生成即写摘要（与工具路径同一出口，保证 has_summary 语义一致）
+              writeSummaryFor(courseId, unitId, cand, llm.model);
               save();
               return { step: 'candidates', candidates: cand };
             }
@@ -1028,27 +1189,14 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             if (m.step === 'candidates') m.setCandidates();
             const accepted = payload.accepted as Candidates | null;
             const cand = accepted ?? store.readCandidates(courseId, unitId);
+            // 落盘在这里（状态机只管推进，见 ReviewMachine.commit 的契约注释）
             if (cand) store.writeCandidates(courseId, cand);
-            m.commit(
-              cand ?? {
-                unit_id: unitId,
-                worldbook_entries: [],
-                entity_claims: [],
-                unresolved_questions: [],
-                insights: [],
-                created_at: Date.now(),
-              },
-            );
+            m.commit();
             save();
             store.markUnit(courseId, unitId, { reviewed: true, has_summary: true });
-            // 摘要只在此刻写（D4）
-            if (cand) {
-              store.writeSummary(courseId, unitId, {
-                text: JSON.stringify(cand, null, 2),
-                created_at: Date.now(),
-                model: llm.model,
-              });
-            }
+            // ⚠️ 摘要不在这里写——已在第 4 步（候选生成）由 writeSummaryFor 写过。
+            //    早先这里也写一次，导致"前端路径第 5 步才有摘要、工具路径第 4 步就有"，
+            //    has_summary 的语义在两个入口下不一致。现在统一由 writeSummaryFor 负责。
             log(`复盘完成（前端）：${courseId}/${unitId}`);
             return { step: 'done' };
           }

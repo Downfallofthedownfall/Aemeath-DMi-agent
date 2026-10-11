@@ -344,7 +344,7 @@ t('buildHandoff：短板去重（保留高置信）', () => {
   assert.equal(h.weak_points[0].confidence, 0.7);
 });
 
-t('filterReviewed：未复盘单元不传 topics', () => {
+t('filterReviewed：未复盘单元不传 topics / 断言', () => {
   const h = {
     version: 1, generated_at: 'x',
     course: { id: 'c', title: 'C', module: '' },
@@ -357,6 +357,10 @@ t('filterReviewed：未复盘单元不传 topics', () => {
       { unit: 'u01', title: 'A', topics: ['t1'], summary_ref: 's' },
       { unit: 'u02', title: 'B', topics: ['t2'], summary_ref: 's2' },
     ],
+    claims: [
+      { unit: 'u01', entity: '用户', attribute: '掌握度', value: '熟练' },
+      { unit: 'u02', entity: '用户', attribute: '掌握度', value: '薄弱' },
+    ],
   };
   const f = filterReviewed(h);
   assert.equal(f.weak_points.length, 0);
@@ -364,6 +368,9 @@ t('filterReviewed：未复盘单元不传 topics', () => {
   assert.deepEqual(f.units[1].topics, []); // 未复盘 → 清空
   assert.equal(f.units[1].summary_ref, '');
   assert.equal(f.progress.length, 2); // 进度照传
+  // 断言同样受 D4 门控：未复盘单元的 claim 不传
+  assert.equal(f.claims.length, 1);
+  assert.equal(f.claims[0].unit, 'u01');
 });
 
 t('握手包不含原始速记字段（D7 只传粗略内容）', () => {

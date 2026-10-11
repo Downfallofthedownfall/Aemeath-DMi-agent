@@ -33,14 +33,20 @@ const ta = async (name, fn) => {
 const tmp = mkdtempSync(join(tmpdir(), 'lec-p4-'));
 
 // ---------- 假 gatekeeper：记录调用，可控判定 ----------
+//
+// ⚠️ 注意 content 用 **q**（query 位）而不是 r：
+//    真实 decide 的语义是一轮对话，导入侧把待判文本放 query 位、reply 传空串。
+//    早先这个假实现用 r 拼 content，于是"导入侧把 topic 同时塞进 q 和 r"
+//    这个 bug 在测试里完全看不出来（r 恰好也有值）。
+//    现在断言 reply 必须为空 —— 这样传参错了测试就会红。
 function makeGk(opts = {}) {
   const calls = { decide: [], writeGate: [], save: [], knowledgeAdd: [] };
   return {
     calls,
     decide(q, r) {
       calls.decide.push({ q, r });
-      if (opts.decideKind) return { kind: opts.decideKind, content: `短板：${r}`, category: 'study_log', importance: 50 };
-      return { kind: 'save', content: `学习短板：${r}`, category: 'study_log', importance: 60 };
+      if (opts.decideKind) return { kind: opts.decideKind, content: `判定：${q}`, category: 'study_log', importance: 50 };
+      return { kind: 'save', content: `判定：${q}`, category: 'study_log', importance: 60 };
     },
     writeGate(q, c) {
       calls.writeGate.push({ q, c });
@@ -78,6 +84,12 @@ function mkHandoff() {
     units: [
       { unit: 'u01', title: '角动量', topics: ['角动量守恒'], summary_ref: 'u01.summary.json' },
       { unit: 'u02', title: '刚体', topics: [], summary_ref: '' },
+    ],
+    // 第 5 步人工确认的学习状态断言（u02 未复盘 → 必须被 D4 门控拦住）
+    claims: [
+      { unit: 'u01', entity: '用户', attribute: '掌握度', value: '角动量守恒熟练' },
+      { unit: 'u01', entity: '用户', attribute: '薄弱点', value: '转动惯量' },
+      { unit: 'u02', entity: '用户', attribute: '掌握度', value: '不该进主记忆' },
     ],
   };
 }
@@ -122,11 +134,14 @@ await ta('未复盘单元的短板被跳过', async () => {
   assert.ok(o.details.some((d) => d.reason.includes('未复盘')));
 });
 
-await ta('已复盘单元的两条短板都写入', async () => {
+await ta('已复盘单元的两条短板都写入（另有 1 条聚合断言）', async () => {
   const gk = makeGk();
   const o = await importHandoff(mkHandoff(), gk, {});
-  assert.equal(o.memoriesWritten, 2);
-  assert.equal(gk.calls.save.length, 2);
+  // 2 条短板 + 1 条 u01 的聚合断言记录 = 3
+  const weakSaves = gk.calls.save.filter((s) => !s.entityClaims?.length);
+  assert.equal(weakSaves.length, 2, '两条短板');
+  assert.equal(gk.calls.save.length, 3, '加上 1 条断言记录');
+  assert.equal(o.memoriesWritten, 3);
 });
 
 await ta('短板进 mode 作用域（跟课程绑定，不是全局身份）', async () => {
@@ -144,7 +159,8 @@ await ta('dry_run=true：只判定，**不写入**', async () => {
   const o = await importHandoff(mkHandoff(), gk, { dryRun: true });
   assert.equal(gk.calls.save.length, 0, 'dry_run 不应写入');
   assert.ok(gk.calls.decide.length >= 2, '但应做判定');
-  assert.equal(o.memoriesWritten, 2, 'dry_run 也报告"将会写入"的条数');
+  // 2 条短板 + 1 条聚合断言
+  assert.equal(o.memoriesWritten, 3, 'dry_run 也报告"将会写入"的条数');
   assert.ok(o.details.some((d) => d.reason.includes('试运行')));
 });
 
@@ -165,7 +181,8 @@ await ta('decide=skip → 全部丢弃', async () => {
   const o = await importHandoff(mkHandoff(), gk, {});
   assert.equal(gk.calls.save.length, 0);
   assert.equal(o.memoriesWritten, 0);
-  assert.equal(o.dropped, 3);
+  // 3 条短板（含未复盘的 1 条）+ 1 条聚合断言 + u02 的 1 条断言 = 5
+  assert.equal(o.dropped, 5);
 });
 
 await ta('decide=blocked → 全部丢弃（凭据拦截）', async () => {
@@ -219,18 +236,95 @@ await ta('单条写入失败不中断整体', async () => {
   assert.ok(o.details.some((d) => d.reason.includes('写入失败')));
 });
 
-await ta('空 handoff（无短板）→ 正常返回零', async () => {
+await ta('空 handoff（无短板无断言）→ 正常返回零', async () => {
   const gk = makeGk();
   const h = mkHandoff();
   h.weak_points = [];
+  h.claims = [];
   const o = await importHandoff(h, gk, {});
   assert.equal(o.memoriesWritten, 0);
   assert.equal(o.dropped, 0);
 });
 
+await ta('只有断言、没有短板 → 断言照样写入', async () => {
+  const gk = makeGk();
+  const h = mkHandoff();
+  h.weak_points = [];
+  const o = await importHandoff(h, gk, {});
+  assert.equal(o.claimsWritten, 2, 'u01 的 2 条断言应写入');
+  assert.equal(o.memoriesWritten, 1);
+});
+
 // ============================================================
 // 文件层
 // ============================================================
+
+// ============================================================
+// 第 5 步「逐条确认」的学习状态断言必须真的落地
+//
+// 背景（严重 bug）：这些断言曾在界面上以 checkbox 呈现，用户认真勾选、
+// 落盘到本地 candidates，但 handoff schema 里**根本没有它们的字段** ——
+// 永远没有读者。界面承诺了语义、后端没实现，比单纯的未实现更糟。
+// 下面每组断言都对应当时缺失的一环。
+// ============================================================
+
+await ta('学习状态断言被写进记忆（不是只有界面勾选）', async () => {
+  const gk = makeGk();
+  const o = await importHandoff(mkHandoff(), gk, {});
+  assert.ok(o.claimsWritten > 0, `应写入断言，实际 claimsWritten=${o.claimsWritten}`);
+});
+
+await ta('断言以 entityClaims 透传给 save（不是降级成纯文本）', async () => {
+  const gk = makeGk();
+  await importHandoff(mkHandoff(), gk, {});
+  const withClaims = gk.calls.save.filter((s) => s.entityClaims?.length);
+  assert.ok(withClaims.length > 0, 'save 应带 entityClaims');
+  const c = withClaims[0].entityClaims[0];
+  assert.equal(c.attribute, '掌握度');
+  assert.equal(c.value, '角动量守恒熟练');
+  // memory 的 EntityClaim 要求 valid_from/valid_until，缺了 schema 校验会挂
+  assert.equal(typeof c.valid_from, 'number');
+  assert.equal(c.valid_until, null);
+});
+
+await ta('未复盘单元的断言受 D4 门控（不进主记忆）', async () => {
+  const gk = makeGk();
+  const o = await importHandoff(mkHandoff(), gk, {});
+  const all = gk.calls.save.flatMap((s) => s.entityClaims ?? []);
+  assert.ok(!all.some((c) => c.value === '不该进主记忆'), '未复盘单元的断言不该写入');
+  assert.ok(
+    o.details.some((d) => d.kind === 'claim' && d.reason.includes('未复盘')),
+    '应有"未复盘跳过"的明细',
+  );
+});
+
+await ta('同一单元的断言聚合成一条记忆（不是 N 条碎片）', async () => {
+  const gk = makeGk();
+  await importHandoff(mkHandoff(), gk, {});
+  const claimSaves = gk.calls.save.filter((s) => s.entityClaims?.length);
+  assert.equal(claimSaves.length, 1, 'u01 的 2 条断言应聚合成 1 条记忆');
+  assert.equal(claimSaves[0].entityClaims.length, 2);
+});
+
+await ta('断言也过守门员（接收侧不绕过规则层）', async () => {
+  const gk = makeGk({ decideKind: 'skip' });
+  const o = await importHandoff(mkHandoff(), gk, {});
+  assert.equal(o.claimsWritten, 0, '守门员 skip 时不该写入断言');
+});
+
+// ============================================================
+// decide 传参语义（曾经"生造"：把 topic 同时塞进 query 和 reply）
+// ============================================================
+
+await ta('导入侧调 decide 时 reply 传空串（不是把同一段文本塞两处）', async () => {
+  const gk = makeGk();
+  await importHandoff(mkHandoff(), gk, {});
+  assert.ok(gk.calls.decide.length > 0);
+  for (const c of gk.calls.decide) {
+    assert.equal(c.r, '', `reply 应为空串，实际 ${JSON.stringify(c.r)}`);
+    assert.ok(c.q.length > 0, 'query 位应承载待判文本');
+  }
+});
 
 t('findHandoffFiles 找到 *-handoff.json', () => {
   const h = mkHandoff();

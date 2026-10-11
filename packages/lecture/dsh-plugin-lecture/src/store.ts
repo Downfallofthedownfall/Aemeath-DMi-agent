@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // store.ts — Lecture Mode 文件存储（D6：markdown 为主 + JSON 索引）
 //
 // 设计要点（docs/lecture-mode-plan.md §4）：
@@ -315,6 +315,27 @@ export class LectureStore {
 
   hasSummary(courseId: string, unitId: string): boolean {
     return existsSync(this.summaryFile(courseId, unitId));
+  }
+
+  /**
+   * 删除摘要。
+   *
+   * 为什么需要：`hasSummary` 只看文件存在性，而 `UnitMeta.has_summary` 是
+   * 独立落盘的标志位。若没有删除路径，两者会永久不一致——
+   * 手动删了 summary.json 而 index.json 仍写着 has_summary: true，
+   * 握手就会导出一个指向不存在文件的 summary_ref。
+   *
+   * 调用方负责同时更新 UnitMeta（本层不碰索引，保持单一职责）。
+   */
+  clearSummary(courseId: string, unitId: string): boolean {
+    try {
+      const f = this.summaryFile(courseId, unitId);
+      if (!existsSync(f)) return false;
+      rmSync(f, { force: true });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** 复盘状态机持久化（可中断续做）。 */

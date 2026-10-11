@@ -4,7 +4,7 @@
 >
 > **架构 / Architecture**: v2 is rebuilt on the DeepSeek Harness (dsh) plugin system. **The platform is just the engine — the moat is the physics content track**: Worldbook knowledge base, exam benchmark, weekly usage log (see [docs/usage-log.md](docs/usage-log.md) and migration plan `docs/v2-migration-plan.md`).
 >
-> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona; borrowing ripples-of-aion ideas: fact timeline with valid_from/valid_until, evolution-vs-conflict, autoDream idle consolidation into a separate insights store, canonical attribute normalization, recall write throttle, LLM salvage parsing); frontend enhanced (Cyrene borrow: tabbed settings+appearance, status pill, mode chips, tiered memory panel, floating plan todo card, in-composer cards); TTS upgraded to IndexTTS-2.5; **Lecture Mode (class-note capture) P0–P4 complete — standalone macOS-capable profile, zero Python, full-screen UI with a 250-symbol math palette, gatekeeper-checked handoff importer**; 462 unit-test assertions green (23 files).
+> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona; borrowing ripples-of-aion ideas: fact timeline with valid_from/valid_until, evolution-vs-conflict, autoDream idle consolidation into a separate insights store, canonical attribute normalization, recall write throttle, LLM salvage parsing); frontend enhanced (Cyrene borrow: tabbed settings+appearance, status pill, mode chips, tiered memory panel, floating plan todo card, in-composer cards); TTS upgraded to IndexTTS-2.5; **Lecture Mode (class-note capture) P0–P4 complete — standalone macOS-capable profile, zero Python, full-screen UI with a 250-symbol math palette, gatekeeper-checked handoff importer**; 482 unit-test assertions green (23 files).
 
 ---
 
@@ -163,10 +163,10 @@ npm test -w @aemeath/dsh-plugin-memory       # 193 assertions (gatekeeper/BM25-c
 npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
-npm test -w @aemeath/dsh-plugin-lecture      # 206 (markers/storage/traversal-guard/BOM + transcriber/5-step-review/D4-gate/D12-guard/notation + tool-chain regression + math-symbol palette + P3 no-leak contract + P4 handoff importer + client theme/standalone-shape regression)
+npm test -w @aemeath/dsh-plugin-lecture      # 226 (markers/storage/traversal-guard/BOM + transcriber/5-step-review/D4-gate/D12-guard/notation + tool-chain regression + math-symbol palette + P3 no-leak contract + P4 handoff importer + client theme/standalone-shape regression)
 npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views: list/timeline/graph)
-# Total: 462 unit-test assertions (all green, 23 files)
-# (memory 193 + lecture 206 + ui 12 + common 15 + worldbook 10 + retriever 4 + workflow 13 + curriculum 9)
+# Total: 482 unit-test assertions (all green, 23 files)
+# (memory 193 + lecture 226 + ui 12 + common 15 + worldbook 10 + retriever 4 + workflow 13 + curriculum 9)
 ```
 
 ### Roadmap (next)
@@ -332,10 +332,10 @@ npm test -w @aemeath/dsh-plugin-memory       # 193 （守门员/BM25 冲突/引�
 npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
-npm test -w @aemeath/dsh-plugin-lecture      # 206（标记语法/存储/穿越防护/BOM + 转录员/五步复盘/D4/D12/记号约定 + 工具链回归 + 符号边栏 + P3 不泄漏契约 + P4 握手接收 + 客户端主题/独立窗口形态回归）
+npm test -w @aemeath/dsh-plugin-lecture      # 226（标记语法/存储/穿越防护/BOM + 转录员/五步复盘/D4/D12/记号约定 + 工具链回归 + 符号边栏 + P3 不泄漏契约 + P4 握手接收 + 客户端主题/独立窗口形态回归）
 npm test -w @aemeath/dsh-plugin-ui           # 12 （记忆工作区代理视图：列表/时间轴/图谱）
-# 合计：462 项断言（全绿，23 个测试文件）
-# （memory 193 + lecture 206 + ui 12 + common 15 + worldbook 10 + retriever 4 + workflow 13 + curriculum 9）
+# 合计：482 项断言（全绿，23 个测试文件）
+# （memory 193 + lecture 226 + ui 12 + common 15 + worldbook 10 + retriever 4 + workflow 13 + curriculum 9）
 ```
 
 ### 下一步

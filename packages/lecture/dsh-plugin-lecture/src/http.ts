@@ -188,8 +188,15 @@ export function buildSymbolPayload(): unknown {
  *
  * 用途：所有 GET 分支在 `json()` 之前调用一次（开发期护栏）；
  * 单测 `check6.mjs` 直接对每个视图断言。
+ *
+ * ⚠️ 黑名单式护栏的固有弱点：漏一个键就漏一条路。所以：
+ *   · 覆盖**加工链路里确定会出现的所有字段名**
+ *     （ProcessingRecord: processed/formulas/model/chunk_seq；
+ *      其 formulas[] 元素: shorthand/latex——这两个确在 types.ts:209）
+ *   · 另加形态式兜底 `looksProcessed()`：catch 改名字的情况
  */
-const LEAK_KEYS = ['processed', 'formulas', 'model', 'chunk_seq'];
+const LEAK_KEYS = ['processed', 'formulas', 'model', 'chunk_seq', 'shorthand', 'latex'];
+
 export function findLeakedKeys(payload: unknown): string[] {
   const hits: string[] = [];
   const walk = (v: unknown, path: string): void => {
@@ -199,13 +206,35 @@ export function findLeakedKeys(payload: unknown): string[] {
       return;
     }
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      // `formulas` 只在 ProcessingRecord 里；速记块不含该字段
       if (LEAK_KEYS.includes(k)) hits.push(`${path}.${k}`);
       walk(val, `${path}.${k}`);
     }
   };
   walk(payload, 'root');
+  // 形态兜底：即使字段改了名，只要"同时出现 LaTeX 与规范文本"也判泄漏
+  if (hits.length === 0 && looksProcessed(payload)) hits.push('root.<shape>');
   return hits;
+}
+
+/**
+ * 形态式兜底：一个对象同时带 `latex` 与 `processed` 类键 → 几乎可以肯定
+ * 是 ProcessingRecord（改名也躲不掉）。宁可误报也不放过——这是 D3 的最后一道闸。
+ */
+function looksProcessed(v: unknown): boolean {
+  const seen = new Set<string>();
+  const collect = (x: unknown): void => {
+    if (!x || typeof x !== 'object') return;
+    if (Array.isArray(x)) {
+      x.forEach(collect);
+      return;
+    }
+    for (const [k, val] of Object.entries(x as Record<string, unknown>)) {
+      seen.add(k.toLowerCase());
+      collect(val);
+    }
+  };
+  collect(v);
+  return seen.has('latex') && (seen.has('processed') || seen.has('normalized'));
 }
 
 // ============================================================

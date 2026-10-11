@@ -269,6 +269,24 @@ function CapturePanel(props: {
   const [err, setErr] = useState('');
   const [okMsg, setOkMsg] = useState('');
   const [symOpen, setSymOpen] = useState(false);
+  // 实时留白缺口（**只提示、不阻断**）。
+  // 后端语义是"不填不继续"，但让用户敲完一大段才在提交时被拒很挫败；
+  // 这里在打字过程中就把缺口显示出来，仍允许继续输入。
+  const [gaps, setGaps] = useState<string[]>([]);
+
+  /** 重算留白缺口（不阻断输入，只驱动提示）。 */
+  const recomputeGaps = (): void => {
+    const raw = rawRef.current?.value ?? '';
+    const u = understandingRef.current?.value ?? '';
+    const q = questionRef.current?.value ?? '';
+    const next: string[] = [];
+    if (raw.trim()) {
+      // 只有当速记有内容时，留白缺失才算"缺口"（空表单不唠叨）
+      if (!u.trim()) next.push('我的理解');
+      if (!q.trim()) next.push('我的疑问');
+    }
+    setGaps(next);
+  };
 
   const submit = async (): Promise<void> => {
     const raw = rawRef.current?.value ?? '';
@@ -300,6 +318,7 @@ function CapturePanel(props: {
     if (rawRef.current) rawRef.current.value = '';
     if (understandingRef.current) understandingRef.current.value = '';
     if (questionRef.current) questionRef.current.value = '';
+    setGaps([]);
     setOkMsg('已记录。加工在后台进行，结果不会显示——留给复盘时你自己先说。');
     await onSubmitted();
   };
@@ -315,6 +334,7 @@ function CapturePanel(props: {
       <textarea
         ref={rawRef}
         className="lec-input lec-shorthand"
+        onInput={recomputeGaps}
         placeholder={'# 角动量定义\n= L = r⃗ × p⃗ = Iω\n! 定轴转动才可写成 Iω\n? 为什么必须有对称轴'}
       />
 
@@ -337,12 +357,29 @@ function CapturePanel(props: {
       <div className="lec-label">
         <span className="lec-req">*</span>我的理解
       </div>
-      <textarea ref={understandingRef} className="lec-input lec-small" placeholder="用自己的话说这段讲了什么" />
+      <textarea
+        ref={understandingRef}
+        className="lec-input lec-small"
+        onInput={recomputeGaps}
+        placeholder="用自己的话说这段讲了什么"
+      />
 
       <div className="lec-label">
         <span className="lec-req">*</span>我的疑问
       </div>
-      <textarea ref={questionRef} className="lec-input lec-small" placeholder="还没搞懂的地方（不填不继续）" />
+      <textarea
+        ref={questionRef}
+        className="lec-input lec-small"
+        onInput={recomputeGaps}
+        placeholder="还没搞懂的地方（不填不继续）"
+      />
+
+      {/* 实时缺口提示（不阻断输入——后端仍会在提交时强制校验） */}
+      {gaps.length ? (
+        <div className="lec-hint" style={{ marginTop: 6 }}>
+          还差 <b>{gaps.join(' / ')}</b> —— 填了才能记录这一块（现在仍可继续写速记）
+        </div>
+      ) : null}
 
       <div className="lec-actions">
         <button type="button" className="lec-btn" disabled={busy} onClick={() => void submit()}>

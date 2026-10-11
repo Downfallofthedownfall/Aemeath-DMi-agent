@@ -1,4 +1,4 @@
-# Lecture Mode · 课堂记录模式
+﻿# Lecture Mode · 课堂记录模式
 
 > Aemeath 的**独立拓展 app**：课堂上采集速记 → 后端 LLM 加工（不回显）→ 课后五步人工复盘
 > → 生成结构化摘要 → 把课程进度与短板**单向**同步回主 agent。
@@ -70,7 +70,13 @@ cd app
 npm start          # 托管 dsh（3081）+ 打开品牌窗口
 ```
 
-窗口打开后，**侧边栏底部有蓝色的「课堂」胶囊按钮** —— 点它打开全屏课堂界面。
+窗口打开后，**侧边栏底部有蓝色的「课堂」胶囊按钮** —— 点它打开**独立的课堂窗口**
+（可以拖到屏幕另一侧，不跟主窗口重叠）。
+
+> 为什么是独立窗口而不是主界面里的一块：dsh 的 Web UI 只开放四个座位
+> （sidebar/conversation/details/shell.overlay），**插件开不了新 OS 窗口**，
+> 所以真窗口由 Electron 壳提供（`app/main.js` 的第二个 `BrowserWindow`）。
+> 浏览器里没有壳桥时**降级为右侧停靠面板**，功能不变。
 
 > 挂进主 profile 不违反 D2 隔离：本插件不注入 memory 召回 / worldbook /
 > retriever / curriculum / workflow 的任何注入链，只是多了几个工具 + 一个 overlay 界面。
@@ -88,7 +94,7 @@ lecture 自己就是主界面。mac 上只需 Node + dsh + DeepSeek key（**零 
 
 ```powershell
 npm run build -w @aemeath/dsh-plugin-lecture    # host(tsc) + client(esbuild)
-npm test  -w @aemeath/dsh-plugin-lecture        # 195 项断言
+npm test  -w @aemeath/dsh-plugin-lecture        # 226 项断言
 ```
 
 ### 2. 落地独立 profile（仅方式 B 需要）
@@ -211,16 +217,23 @@ npm test -w @aemeath/dsh-plugin-lecture
 | `check.mjs` | 24 | 标记语法解析 / 回写往返 / 强制留白 / front-matter |
 | `check2.mjs` | 30 | 存储往返 / **目录穿越防护** / **UTF-8 BOM** / D3 分离 |
 | `check3.mjs` | 39 | 转录员 / 五步状态机 / **D4 门控** / **D12 护栏** / 握手 / **记号约定** |
-| `check4.mjs` | 12 | **工具链回归**（checkpoint flush 时序 + 重启恢复） |
+| `check4.mjs` | 15 | **工具链回归**（checkpoint flush 时序 + 重启恢复 + 多 owner 指针隔离） |
 | `check5.mjs` | 55 | **数学符号边栏**（数据完整性 / 光标落点 / 模板插槽 / Tab 跳转） |
 | `check6.mjs` | 16 | **P3 前端契约**：D3 不泄漏（含反例）/ 服务端留白 |
-| `check7.mjs` | 19 | **P4 握手接收侧**：过守门员 / D4 双端门控 / dry_run |
+| `check7.mjs` | 26 | **P4 握手接收侧**：过守门员 / D4 双端门控 / dry_run |
+| `check8.mjs` | 21 | **客户端主题 / 独立窗口形态 / D3 护栏覆盖度 / 构建安全**（静态回归） |
 
 ---
 
 ## 前端（P3）
 
-挂在 `shell.overlay` 的**全屏课堂界面**（宿主没有 tab 系统，overlay 是唯一的加法座位）。
+**双形态**（同一份客户端代码，按环境自动选择）：
+
+| 环境 | 形态 | 判定依据 |
+|---|---|---|
+| Electron 主窗口 | 侧边栏「课堂」→ 开**独立窗口** | 有 `window.shell.lecture` 桥 |
+| Electron 课堂窗口 | **整窗铺满**的课堂界面 | `window.shell.isLectureWindow`（preload 从 `process.argv` 同步读） |
+| 浏览器 | **右侧停靠面板**（可收成窄条） | 无壳桥 → 降级 |
 
 | 页签 | 内容 |
 |---|---|
@@ -357,9 +370,15 @@ checkpoint flush 来固化这个时序，**不要删掉那个测试**。
 
 ### 尚未实现
 
-- **前端界面**（P3）：五步复盘逻辑完整且有测试，但没有 UI
-- **主 agent 侧导入入口**（P4）：`handoff.json` 能生成，接收侧未做
-  —— 做的时候**必须跑 gatekeeper**，别直接 `ctx.memory.save()`
+- **讲义导出到 retriever**（`exportToNotes`）：开关已接线，但只在主 profile 下有意义；
+  尚未做端到端验证
+- **跨机器握手实测**：schema / 导入器 / 单元测试都齐了，但还**没在两台真机上跑过一遍**
+  （mac 导出 → 局域网 → Windows 导入）。这是唯一还靠"推理正确"而非"实测正确"的环节
+- **macOS 实机**：零 Python 的装配是"按缺失确认"的（没有 mcp-tts/mcp-control/mcp-vision），
+  等 M2 真机启动验证
+
+> 说明：P3 前端与 P4 导入入口**都已落地**（本 README 早先写着"未做"，是文档债，已修正）。
+> 前端形态见上面的「快速开始」——Electron 下是独立窗口，浏览器下降级为右侧面板。
 
 ---
 

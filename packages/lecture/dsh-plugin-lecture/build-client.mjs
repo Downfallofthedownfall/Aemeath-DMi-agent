@@ -49,10 +49,22 @@ Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });`,
 } catch (e) {
   const msg = e && e.message ? String(e.message) : String(e);
   const isSandboxSpawnBlock = /(esbuild.*spawn|spawn.*(esbuild|EPERM|EACCES)|could not spawn)/i.test(msg);
-  if (existsSync(outPath) && isSandboxSpawnBlock) {
-    console.warn(`[dsh-plugin-lecture] ⚠ esbuild 不可用（${msg.slice(0, 80)}…），保留既有 bundle`);
+  // ⚠️ 沙箱里 esbuild 起不来时，"保留旧 bundle"只是**本地开发**的便利，
+  //    绝不能静默：CI 里那会构建失败却退出 0，产出的 lib/client.js 是旧的
+  //    （前端改动看似"没生效"，实际是根本没构建）。
+  //    所以：CI / 显式要求严格时一律抛错；本地才降级为警告，且必须显著提示。
+  const strict = !!process.env.CI || process.env.AEMEATH_BUILD_STRICT === '1';
+  if (existsSync(outPath) && isSandboxSpawnBlock && !strict) {
+    console.warn(
+      `[dsh-plugin-lecture] ⚠ esbuild 不可用（${msg.slice(0, 80)}…），保留既有 bundle。\n` +
+        `[dsh-plugin-lecture] ⚠ 注意：lib/client.js **未更新**，前端改动不会生效。\n` +
+        `[dsh-plugin-lecture] ⚠ 如需强制构建失败（CI 行为），设 CI=1 或 AEMEATH_BUILD_STRICT=1。`,
+    );
   } else {
     console.error('[dsh-plugin-lecture] esbuild 构建失败:');
+    if (existsSync(outPath) && strict) {
+      console.error('[dsh-plugin-lecture] （严格模式：即使存在旧 bundle 也判定失败）');
+    }
     throw e;
   }
 }

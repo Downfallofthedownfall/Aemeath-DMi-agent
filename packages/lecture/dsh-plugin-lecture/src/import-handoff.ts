@@ -50,7 +50,15 @@ export interface WriteGateResult {
  *   · 将来 memory 重构不会连带改本文件
  */
 export interface HandoffGatekeeper {
-  /** 规则层初筛（对应 memory 的 gatekeeper.decide）。 */
+  /**
+   * 规则层初筛（对应 memory 的 gatekeeper.decide）。
+   *
+   * ⚠️ 语义是**一轮对话**（用户输入 + 助手回复），
+   * 不是"给一段文本判个类"。握手导入不是对话，所以调用方必须
+   * 把待判内容放在 **query 位**，reply 传空串——不要把同一段文本
+   * 塞进两个位置：那会让基于对话形状的启发式（凭据双检、classifyCategory
+   * 的 reply 分支）看到重复输入，判出奇怪的结果。
+   */
   decide(query: string, reply: string): GateDecision;
   /** user_fact 写门（对应 memory 的 gatekeeper.writeGate）。 */
   writeGate(query: string, content: string): WriteGateResult;
@@ -68,6 +76,20 @@ export interface HandoffGatekeeper {
      * 用于回答"这条记忆是哪节课来的"。
      */
     sourceLecture?: { course: string; unit: string; date: string };
+    /**
+     * T1 事实时间轴断言（对应 memory 的 MemorySaveInput.entityClaims）。
+     *
+     * ⚠️ 必须透传：memory 侧要求 valid_from/valid_until，
+     * 缺了就只能退化成纯文本——那样第 5 步"逐条确认"的结构化语义就丢了。
+     * valid_from 由本模块在导入时刻赋值（课堂侧不猜主记忆的时间轴语义）。
+     */
+    entityClaims?: Array<{
+      entity: string;
+      attribute: string;
+      value: string;
+      valid_from: number;
+      valid_until: number | null;
+    }>;
   }): Promise<string>;
   /** 知识层直达（对应 memory 的 handleKnowledgeDirect / knowledgeAdd）。 */
   knowledgeAdd(input: { preset: string; content: string; topic: string; sourceSession: string }): Promise<string>;
@@ -86,6 +108,8 @@ export interface ImportOutcome {
   memoriesWritten: number;
   /** 写入的知识条数。 */
   knowledgeWritten: number;
+  /** 写入的**结构化断言**条数（第 5 步人工确认的学习状态）。 */
+  claimsWritten: number;
   /** 被守门员丢弃的（skip/blocked/drop）。 */
   dropped: number;
   /** 逐条明细（供人工核对——"传了什么进来"必须可见）。 */
@@ -128,6 +152,7 @@ export async function importHandoff(
     course: handoff.course.id,
     memoriesWritten: 0,
     knowledgeWritten: 0,
+    claimsWritten: 0,
     dropped: 0,
     details: [],
   };
@@ -142,8 +167,13 @@ export async function importHandoff(
       continue;
     }
     // 用户短板 → study_log（"我在 X 上薄弱"属于学习状态，不是身份事实）
-    const query = `学习短板：${wp.topic}`;
-    const decision = gk.decide(query, wp.topic);
+    //
+    // ⚠️ decide 的语义是一轮对话。这里不是对话，所以把用于判定的陈述句
+    //    放在 **query 位、reply 传空串** —— 不要把 topic 同时塞两处
+    //    （那会让凭据检测双检、classifyCategory 走错分支）。
+    const statement = `学习短板：${wp.topic}。这是需要加强的地方。`;
+    const decision = gk.decide(statement, '');
+    const query = statement; // writeGate 与 decide 用同一段文本，保持判定一致
 
     if (decision.kind === 'skip' || decision.kind === 'blocked') {
       out.dropped++;
@@ -195,6 +225,101 @@ export async function importHandoff(
     }
   }
 
+  // ── 第 5 步人工确认过的学习状态断言 ──
+  //
+  // 这些是用户在复盘界面**逐条勾选**的（entity/attribute/value）。
+  // 曾经它们只落到本地 candidates 文件、没有任何读者 —— 界面给了 checkbox
+  // 却没有下游，等于对用户说谎。现在按单元聚合成一条记忆写入，
+  // 并把结构化断言透传给 memory 的 T1 时间轴。
+  //
+  // 按单元聚合（而不是一条断言一条记忆）：断言之间是同一节课的同一批观察，
+  // 拆成 N 条记忆会让召回时出现一堆碎片。
+  const claimsByUnit = new Map<string, Handoff['claims']>();
+  for (const c of handoff.claims ?? []) {
+    if (!reviewed.has(c.unit)) {
+      out.dropped++;
+      out.details.push({ kind: 'claim', content: `${c.attribute}=${c.value}`, reason: '单元未复盘，跳过' });
+      continue;
+    }
+    const list = claimsByUnit.get(c.unit) ?? [];
+    list.push(c);
+    claimsByUnit.set(c.unit, list);
+  }
+
+  for (const [unitId, list] of claimsByUnit) {
+    const content = `课堂学习状态：${list.map((c) => `${c.attribute} = ${c.value}`).join('；')}`;
+    // 同样过守门员（与 weak_points 一致 —— 接收侧不绕过规则层）。
+    // query 位放待判文本、reply 传空串（见接口注释）。
+    const decision = gk.decide(content, '');
+    if (decision.kind === 'skip' || decision.kind === 'blocked') {
+      out.dropped++;
+      out.details.push({ kind: 'claim', content, reason: `守门员判定 ${decision.kind}` });
+      continue;
+    }
+
+    let confidence = 0.75;
+    let importance = decision.importance;
+    if (decision.category === 'user_fact') {
+      const wg = gk.writeGate(content, decision.content);
+      if (wg.action === 'drop') {
+        out.dropped++;
+        out.details.push({ kind: 'claim', content, reason: `写门拦截：${wg.reason}` });
+        continue;
+      }
+      if (wg.action === 'demote') {
+        confidence = wg.confidence ?? 0.55;
+        importance = Math.max(0, importance - 20);
+      }
+    }
+
+    // valid_from = 导入时刻：课堂侧不知道主记忆的时间轴语义，
+    // 猜一个更早的时间反而会污染 T1（见 handoff.ts 的 schema 注释）。
+    const now = Date.now();
+    const entityClaims = list.map((c) => ({
+      entity: c.entity || '用户',
+      attribute: c.attribute,
+      value: c.value,
+      valid_from: now,
+      valid_until: null,
+    }));
+
+    if (dryRun) {
+      out.details.push({
+        kind: 'claim',
+        content: decision.content,
+        reason: `[试运行] 将写入（${decision.category}，含 ${entityClaims.length} 条断言）`,
+      });
+      out.memoriesWritten++;
+      continue;
+    }
+
+    try {
+      await gk.save({
+        preset,
+        content: decision.content,
+        category: decision.category,
+        importance,
+        confidence,
+        scope: 'mode',
+        sourceMode: 'lecture',
+        sourceLecture: { course: handoff.course.id, unit: unitId, date: '' },
+        entityClaims,
+      });
+      out.memoriesWritten++;
+      out.claimsWritten += entityClaims.length;
+      out.details.push({
+        kind: 'claim',
+        content: decision.content,
+        reason: `已写入（${decision.category}，含 ${entityClaims.length} 条断言）`,
+      });
+      gk.log(`握手导入：${unitId} 学习状态 → 记忆（${entityClaims.length} 条断言）`);
+    } catch (e) {
+      out.dropped++;
+      out.details.push({ kind: 'claim', content, reason: `写入失败：${(e as Error).message}` });
+      gk.warn(`握手导入断言失败（${unitId}）：${(e as Error).message}`);
+    }
+  }
+
   return out;
 }
 
@@ -236,7 +361,7 @@ export function peekHandoffFile(file: string): string | null {
 export function describeOutcome(o: ImportOutcome): string {
   return [
     `课程：${o.course}`,
-    `写入记忆 ${o.memoriesWritten} 条 · 知识 ${o.knowledgeWritten} 条 · 丢弃 ${o.dropped} 条`,
+    `写入记忆 ${o.memoriesWritten} 条（含 ${o.claimsWritten} 条结构化断言）· 知识 ${o.knowledgeWritten} 条 · 丢弃 ${o.dropped} 条`,
     ...o.details.map((d) => `  · [${d.kind}] ${d.content} — ${d.reason}`),
   ].join('\n');
 }

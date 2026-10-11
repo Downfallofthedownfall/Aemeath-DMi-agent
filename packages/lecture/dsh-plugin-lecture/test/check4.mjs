@@ -18,7 +18,7 @@
 //   5) 重启（新 apply，内存态为空）→ capture 明确失败（不猜单元），重新 start 即可继续
 // ============================================================
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply } from '../lib/index.js';
@@ -213,6 +213,52 @@ try {
 
   await ta('数据文件真实存在（课程索引）', () => {
     assert.ok(existsSync(join(tmp, 'physik-1', 'index.json')));
+  });
+
+  // ============================================================
+  // 多 owner 指针隔离（主 profile 与独立 lecture profile 共用同一数据目录）
+  //
+  // 背景（严重 bug）：早先指针是单个 _active.json，注释假设"同时只有一节
+  // 进行中的课"。但两个 profile 按设计共用 packages/library/physicist/lectures，
+  // 于是两边同时记录会互相覆盖指针 → 恢复时把速记静默追加进另一个单元。
+  // ============================================================
+  await ta('每个会话写自己的指针文件（不是共用一个 _active.json）', async () => {
+    const c = makeCtx();
+    await apply(c.ctx, cfg);
+    await dispatch(c, 'lecture_session_start', { course_id: 'physik-1', title: 'A 会话语' }, { id: 'sess-A' });
+    await dispatch(c, 'lecture_session_start', { course_id: 'physik-1', title: 'B 会话语' }, { id: 'sess-B' });
+    const files = readdirSync(tmp).filter((f) => f.startsWith('_active.'));
+    assert.equal(files.length, 2, `应有两个指针文件，实际 ${files.join(',')}`);
+    assert.ok(!existsSync(join(tmp, '_active.json')), '不该再有旧的单文件指针');
+  });
+
+  await ta('另一会话的指针不会被本会话继承（不静默写错单元）', async () => {
+    const c = makeCtx();
+    await apply(c.ctx, cfg);
+    // sess-A 记 u01
+    const a = await dispatch(c, 'lecture_session_start', { course_id: 'physik-1', title: 'A' }, { id: 'sess-A' });
+    await dispatch(c, 'lecture_capture', { raw: 'A 的内容', my_understanding: 'ua', my_question: 'qa' }, { id: 'sess-A' });
+    // sess-B 起 u02（会写自己的指针，**不覆盖 A 的**）
+    const bStart = await dispatch(c, 'lecture_session_start', { course_id: 'physik-1', title: 'B' }, { id: 'sess-B' });
+    assert.notEqual(a.data.unit_id, bStart.data.unit_id);
+    // 模拟 A 的进程重启：新 apply，内存态为空，A 应恢复到**自己**的 u01
+    const c2 = makeCtx();
+    await apply(c2.ctx, cfg);
+    const st = await dispatch(c2, 'lecture_status', {}, { id: 'sess-A' });
+    assert.equal(st.ok, true, JSON.stringify(st));
+    assert.equal(st.data.unit_id, a.data.unit_id, 'A 应恢复到自己那一讲，而不是 B 的');
+  });
+
+  await ta('session/disposed 只清自己的指针，不动别人的', async () => {
+    const c = makeCtx();
+    await apply(c.ctx, cfg);
+    await dispatch(c, 'lecture_session_start', { course_id: 'physik-1', title: 'A' }, { id: 'sess-A' });
+    await dispatch(c, 'lecture_session_start', { course_id: 'physik-1', title: 'B' }, { id: 'sess-B' });
+    const before = readdirSync(tmp).filter((f) => f.startsWith('_active.')).length;
+    assert.equal(before, 2);
+    for (const fn of c.listeners.get('session/disposed') ?? []) await fn({ id: 'sess-A' });
+    const after = readdirSync(tmp).filter((f) => f.startsWith('_active.')).length;
+    assert.equal(after, 1, 'B 的指针不该被 A 的销毁带走');
   });
 
   console.log(`\ncheck4: ${passed} 项通过`);
