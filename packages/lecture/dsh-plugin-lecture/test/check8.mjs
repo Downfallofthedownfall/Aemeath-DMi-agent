@@ -372,4 +372,31 @@ t('工作台栏底色是不透明实色（否则主 agent 会透出来）', () =
   assert.ok(!/lec-wb-nav\s*\{[\s\S]{0,240}?color-mix/.test(stylesSrc), '左栏底色不该用 color-mix（半透明会透出底层）');
 });
 
+console.log('\n[启动脚本必须能察觉"源码更新了但 bundle 没重建"]');
+
+// 真机踩过（第四次"改了没生效"）：
+//   packages/**/lib/ 被 gitignore → `git pull` 只更新源码，不更新 bundle。
+//   而启动脚本原本的条件是"bundle **不存在**才构建"：
+//       if [[ ! -f "$LECTURE_LIB" ]]; then npm run build; fi
+//   bundle 已经存在（旧版）→ **永远跳过构建** →
+//   用户 pull 了、重启了，界面一点没变（"和之前没区别"）。
+//
+//   正确做法：比对**时间戳**，源码比 bundle 新就重建。
+t('lecture-mac.sh 用时间戳判断是否需要重建（不是"文件存在就跳过"）', () => {
+  const sh = readFileSync(join(REPO_ROOT, 'scripts/lecture-mac.sh'), 'utf-8');
+  assert.match(sh, /find "\$LECTURE_SRC"[^\n]*-newer/, '应比对新旧时间戳');
+  assert.match(sh, /needs_build/, '应有 needs_build 判断');
+  // 旧写法必须消失：只判断"文件不存在"
+  assert.ok(
+    !/if \[\[ ! -f "\$COMMON_LIB" \|\| ! -f "\$LECTURE_LIB" \]\]; then\n\s*say "构建 workspace/.test(sh),
+    '不该再是"文件存在就跳过构建"（那会让 pull 后永远用旧 bundle）',
+  );
+});
+
+t('launcher 也做同样的判断（Windows 路径）', () => {
+  const ps = readFileSync(join(REPO_ROOT, 'lecture-launch.ps1'), 'utf-8');
+  // Windows 启动器同样不能"存在就跳过"，否则一样会卡在旧 bundle
+  assert.match(ps, /LastWriteTime|needsBuild|\$needsBuild/i, '应按时间戳判断是否需要构建');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

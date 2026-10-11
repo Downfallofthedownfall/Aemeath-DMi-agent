@@ -52,30 +52,51 @@ if (-not (Test-Path "$root\node_modules\.bin\dsh.cmd")) {
   if ($LASTEXITCODE -ne 0) { Die "npm install 失败。" }
 }
 
-if (-not (Test-Path "$root\packages\lecture\dsh-plugin-lecture\lib\client.js")) {
-  Write-Host "构建插件…" -ForegroundColor Yellow
+# ---- 构建（源码比 bundle 新就重建）----
+#
+# ⚠️ 真机踩过（"和之前没区别"的根因）：
+#   packages\**\lib\ 被 gitignore → `git pull` 只更新源码，不更新 bundle。
+#   而这里原本是"bundle **不存在**才构建"：
+#       if (-not (Test-Path ...client.js)) { npm run build }
+#   bundle 已经存在（旧版）→ **永远跳过构建** →
+#   用户 pull 了、重启了，界面一点没变。
+#
+#   现在比对时间戳：src\client 下有文件比 bundle 新，就重建。
+$clientJs = "$root\packages\lecture\dsh-plugin-lecture\lib\client.js"
+$clientSrc = "$root\packages\lecture\dsh-plugin-lecture\src\client"
+$needsBuild = $false
+if (-not (Test-Path $clientJs)) {
+  $needsBuild = $true
+} elseif (Test-Path $clientSrc) {
+  $bundleTime = (Get-Item $clientJs).LastWriteTimeUtc
+  $newer = Get-ChildItem $clientSrc -Recurse -File | Where-Object { $_.LastWriteTimeUtc -gt $bundleTime } | Select-Object -First 1
+  if ($newer) { $needsBuild = $true }
+}
+
+if ($needsBuild) {
+  Write-Host "构建插件（源码比 bundle 新，或 bundle 缺失）…" -ForegroundColor Yellow
   & npm run build
   if ($LASTEXITCODE -ne 0) { Die "构建失败。详见上方输出。" }
 }
 
-# ---- 同步 agent presets（关键！）----
-# dsh 的 agent preset 不在 profile 里，而在 $DSH_HOME\.agent-presets\。
-# 不复制过去，profile 里的 `default: physicist` 就指不到东西，创建会话时报：
-#     agent-preset/not-found: Unknown agent preset: physicist
+# ---- 校验 profile 里声明了 preset 本体（这是 0.2.0 的真实机制）----
 #
-# dsh.ps1 会做这件事，但本启动器**直接调 dsh.cmd**（为了自己抓 token URL），
-# 绕过了 dsh.ps1 —— 所以必须在这里补上。真机踩过。
-$presetSrc = "$root\profiles\aemeath\agent-presets"
-$presetDst = "$root\.dsh-home\.agent-presets"
-if (Test-Path $presetSrc) {
-  if (Test-Path $presetDst) { Remove-Item $presetDst -Recurse -Force -ErrorAction SilentlyContinue }
-  New-Item -ItemType Directory -Path $presetDst -Force | Out-Null
-  Copy-Item "$presetSrc\*" $presetDst -Recurse -Force
-  $names = (Get-ChildItem $presetDst -Directory | ForEach-Object { $_.Name }) -join ', '
-  Write-Host "agent presets 已同步：$names" -ForegroundColor DarkGray
-} else {
-  Write-Warning "找不到 agent presets 源目录：$presetSrc"
-  Write-Warning "创建会话时可能报 'Unknown agent preset: physicist'。"
+# ⚠️ 早先这里"同步 .agent-presets 目录"，那是 **DSH 0.1.1 的机制，0.2.0 无效**：
+#   0.2.0 里 preset 是 profile patch 里的一个 `@deepseek-ai/dsh-agent-preset` 条目，
+#   运行时里根本没有 ".agent-presets" 这个字符串。
+#   照着过时注释做，结果是"同步成功了"但 preset 依然不存在 ——
+#   创建会话报 agent-preset/not-found: Unknown agent preset: physicist。
+#
+#   所以现在只做**校验**：profile 必须声明 registry 默认的那个 preset。
+$profilePatch = "$root\profiles\lecture\cordis.patch.yml"
+if (Test-Path $profilePatch) {
+  $pp = Get-Content $profilePatch -Raw -Encoding UTF8
+  if ($pp -notmatch '@deepseek-ai/dsh-agent-preset') {
+    Write-Warning "profiles\lecture\cordis.patch.yml 里没有 @deepseek-ai/dsh-agent-preset 声明。"
+    Write-Warning "创建会话时会报 'Unknown agent preset: physicist'。"
+  } else {
+    Write-Host "profile preset 声明已校验。" -ForegroundColor DarkGray
+  }
 }
 Write-Host ""
 

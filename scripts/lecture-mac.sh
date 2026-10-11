@@ -24,7 +24,7 @@ set -euo pipefail
 
 # 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
 # （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
-LECTURE_MAC_VERSION="2026-10-12.7"
+LECTURE_MAC_VERSION="2026-10-12.8"
 
 # ---- 路径 ----
 # ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
@@ -123,8 +123,27 @@ node "$ROOT/scripts/verify-shell-portability.mjs" || die "\
 #    而不是只 build lecture。
 COMMON_LIB="$ROOT/packages/shared/dsh-plugin-common/lib/index.d.ts"
 LECTURE_LIB="$ROOT/packages/lecture/dsh-plugin-lecture/lib/client.js"
+LECTURE_SRC="$ROOT/packages/lecture/dsh-plugin-lecture/src/client"
+
+# ⚠️⚠️ 真机踩过（第四次"改了没生效"）：早先条件是"bundle 不存在才构建"：
+#        if [[ ! -f "$LECTURE_LIB" ]]; then npm run build; fi
+#     而 **packages/**/lib/ 被 gitignore** → `git pull` 只更新源码、
+#     不更新 bundle；bundle 又"已经存在"（旧版）→ **永远跳过构建**。
+#     症状：pull 了、重启了、界面一点没变，用户会说"和之前没区别"。
+#
+#     现在改成**比对时间戳**：源码比 bundle 新就重建。
+#     （用 -nt 而不是无条件构建：多数启动是没改动的，省掉几十秒。）
+needs_build=0
 if [[ ! -f "$COMMON_LIB" || ! -f "$LECTURE_LIB" ]]; then
-  say "构建 workspace（含 lecture 的依赖 —— 类型声明是构建产物，不在 git 里）…"
+  needs_build=1
+elif [[ -d "$LECTURE_SRC" ]]; then
+  # 只要 src/client 下有文件比 bundle 新，就要重建
+  newer="$(find "$LECTURE_SRC" -type f -newer "$LECTURE_LIB" -print -quit 2>/dev/null || true)"
+  [[ -n "$newer" ]] && needs_build=1
+fi
+
+if [[ "$needs_build" == "1" ]]; then
+  say "构建 workspace（源码比 bundle 新，或 bundle 缺失）…"
   npm run build || die "\
 构建失败。
   若报 'Cannot find module @aemeath/dsh-plugin-common'，先确认依赖已构建：
