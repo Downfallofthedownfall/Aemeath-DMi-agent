@@ -399,4 +399,71 @@ t('launcher 也做同样的判断（Windows 路径）', () => {
   assert.match(ps, /LastWriteTime|needsBuild|\$needsBuild/i, '应按时间戳判断是否需要构建');
 });
 
+console.log('\n[独立界面模式必须有 boot 标记的生产者]');
+
+// 真机踩过（用户定位到的根因），这是最隐蔽的一次：
+//   lecture GUI 已经有了、bundle 也是新的、profile 链接也对，
+//   但 mac（**纯浏览器，没有 Electron 壳**）上永远是主 agent 的前端。
+//
+//   因为客户端 detectStandalone() 三条判据在浏览器下全部落空：
+//     ① window.shell.isLectureWindow —— 没有壳
+//     ② URL 的 aemeath_lecture=1     —— dsh 认证 303 → ./ 会丢掉 query
+//     ③ window.__AEMEATH_LECTURE_STANDALONE__ —— **从来没有生产者**（死分支）
+//   → standalone=false → 走主界面模式 → dsh 官方主 shell 照常渲染。
+//
+//   修法：host 侧用 dsh 自己的 `webserver/index-inject` 注入该全局标记。
+const clientSrc = readFileSync(join(root, 'src/client/index.tsx'), 'utf-8');
+
+t('客户端会读 __AEMEATH_LECTURE_STANDALONE__', () => {
+  assert.match(clientSrc, /__AEMEATH_LECTURE_STANDALONE__/, '客户端应检查该标记');
+});
+
+t('host 侧必须真的**生产**这个标记（不能只有读取）', () => {
+  // 这条断言是这次踩坑的核心：读取分支存在了很久，但没人写入。
+  assert.match(
+    hostSrcForBlanks,
+    /webserver\/index-inject/,
+    'host 应挂 webserver/index-inject 才能注入 boot 标记',
+  );
+  assert.match(
+    hostSrcForBlanks,
+    /__AEMEATH_LECTURE_STANDALONE__/,
+    'host 应写入 __AEMEATH_LECTURE_STANDALONE__',
+  );
+});
+
+t('standalone 由配置控制（两个 profile 行为不同）', () => {
+  assert.match(hostSrcForBlanks, /standalone:\s*z\.boolean/, 'Config 应有 standalone');
+  const lecProfile = readFileSync(join(REPO_ROOT, 'profiles/lecture/cordis.patch.yml'), 'utf-8');
+  assert.match(lecProfile, /standalone:\s*true/, 'lecture profile 必须开 standalone（它**就是**课堂界面）');
+  const mainProfile = readFileSync(join(REPO_ROOT, 'profiles/aemeath/cordis.patch.yml'), 'utf-8');
+  assert.ok(
+    !/^\s*standalone:\s*true/m.test(mainProfile),
+    '主 profile 不该开 standalone（要保留侧栏入口）',
+  );
+});
+
+console.log('\n[aemeath-ui 不能硬依赖 memory]');
+
+// lecture profile 按设计不挂记忆系统（D10/D2），
+// 而 aemeath-ui 若把 memory 放进 inject，整个 host 半区会一直 pending：
+//   aemeath-ui: pending (waiting for service: memory)
+t('aemeath-ui 的 inject 里没有 memory（它是可选的）', () => {
+  const uiSrc = readFileSync(join(REPO_ROOT, 'packages/ui/dsh-plugin-ui/src/index.ts'), 'utf-8');
+  const m = uiSrc.match(/export const inject = \[([^\]]*)\]/);
+  assert.ok(m, '找不到 aemeath-ui 的 inject');
+  assert.ok(!/['"]memory['"]/.test(m[1]), 'memory 不该在 inject 里（会让无记忆 profile 一直 pending）');
+  // 运行时仍要能取到（可选依赖）
+  assert.match(uiSrc, /ctx\.get\('memory'\)/, '应改为运行时按需 ctx.get(memory)');
+});
+
+console.log('\n[launcher 必须显式设置 DSH_HOME]');
+
+t('lecture-launch.command 启动 dsh 时带上 DSH_HOME', () => {
+  const cmd = readFileSync(join(REPO_ROOT, 'lecture-launch.command'), 'utf-8');
+  // 干净 shell 下不设 DSH_HOME → dsh 读 ~/.dsh，那里没有 lecture profile
+  assert.match(cmd, /DSH_HOME=/, '应显式设置 DSH_HOME');
+  assert.match(cmd, /export DSH_HOME/, '应 export 出去（子进程要能看到）');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

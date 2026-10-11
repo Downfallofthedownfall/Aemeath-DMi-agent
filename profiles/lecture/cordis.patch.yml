@@ -110,6 +110,17 @@
       config:
         defaultPreset: 'physicist'
         enabled: true
+        # ⚠️ 必须为 true：这个 profile **就是**课堂独立界面。
+        #
+        # 真机踩过（用户定位到的根因）：不设这个的话，客户端的三条判定
+        # 在纯浏览器下全部落空（没有 Electron 壳 / URL 标记被 303 丢掉 /
+        # window 标记没有生产者）→ 走"主界面模式"→
+        # dsh 官方主 shell 照常渲染，lecture 只是个侧栏按钮。
+        # 症状就是用户说的"还是主 agent 一样的前端"。
+        #
+        # host 侧据此在 index.html 注入 __AEMEATH_LECTURE_STANDALONE__=true。
+        # 主 profile（profiles/aemeath）**不设**，保持侧栏入口不变。
+        standalone: true
         # D11：数据目录放 physicist 里 → retriever 可直接消费
         dataDir: 'packages/library/physicist/lectures'
         # D3：课堂内 LLM 转录员（加工只落后端，前端不剧透）

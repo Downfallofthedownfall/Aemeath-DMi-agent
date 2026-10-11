@@ -78,6 +78,24 @@ export const Config = z.object({
   defaultPreset: z.string(),
   /** 是否挂载工具（volatile：设置页可关）。 */
   enabled: z.boolean().default(true).volatile(),
+  /**
+   * 这个 profile 是否**就是**课堂独立界面（而不是挂在主 agent 里的一个插件）。
+   *
+   * 为什么需要它：前端有两条互斥的渲染路径 ——
+   *   standalone=true  → 铺满整窗的三栏工作台（StandaloneMount）
+   *   standalone=false → 只注册侧栏「课堂」按钮 + shell.overlay 浮层
+   * 而客户端的判定（detectStandalone）在**纯浏览器**里三条全部落空：
+   *   ① 没有 Electron 壳 → 没有 window.shell.isLectureWindow
+   *   ② 没有 URL 标记（dsh 认证 303 → ./ 会把 query 丢掉）
+   *   ③ window.__AEMEATH_LECTURE_STANDALONE__ **从来没有生产者**（死分支）
+   * 结果：mac 上（无 Electron）永远走主界面模式 ——
+   * 用户看到的就是"和主 agent 一模一样的前端"。
+   *
+   * 所以由 host 侧在页面 boot **之前**注入这个全局标记（见 apply 里的
+   * webserver/index-inject）。这比拼 URL 稳：不受认证重定向影响，
+   * 浏览器和 Electron 都适用。
+   */
+  standalone: z.boolean().default(false),
   /** 数据根目录（相对仓库根或绝对路径）。D11：放 physicist 里。 */
   dataDir: z.string(),
   /** 课堂内是否启用 LLM 转录员（D3 加工）。关掉则只存原始速记。 */
@@ -98,6 +116,8 @@ export const Config = z.object({
 export interface LectureConfig {
   defaultPreset?: string;
   enabled?: { get?: () => boolean };
+  /** 这个 profile 就是课堂独立界面（host 侧据此注入 boot 标记）。 */
+  standalone?: boolean;
   dataDir?: string;
   transcribe?: boolean;
   handoffDir?: string;
@@ -1111,6 +1131,42 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
       return undefined;
     }
   })();
+
+  // ============================================================
+  // 前端 boot 标记：告诉客户端"这个页面就是课堂独立界面"
+  //
+  // 为什么必须由 host 注入（真机踩过，用户定位到的根因）：
+  //   客户端的 detectStandalone() 有三条判据，在**纯浏览器**下全部落空：
+  //     ① Electron 壳的 window.shell.isLectureWindow —— 浏览器没有壳
+  //     ② URL 上的 aemeath_lecture=1 —— dsh 认证 303 → ./ 会把 query 丢掉
+  //     ③ window.__AEMEATH_LECTURE_STANDALONE__ —— **没有任何生产者**（死分支）
+  //   于是 mac（无 Electron）永远走"主界面模式"：
+  //   dsh 官方主 shell 照常渲染，lecture 只是一个侧栏按钮 ——
+  //   用户看到的就是"和主 agent 一模一样的前端"，工作台 GUI 根本进不去。
+  //
+  // 注入位置：`webserver/index-inject`。这是 dsh 自己的机制
+  //   （dsh-client-shortcuts 等插件都用它），在 index.html 渲染时
+  //   把 `globalThis.NAME = value` 写进去，**先于任何客户端脚本执行**，
+  //   且不受认证重定向影响。
+  // ============================================================
+  try {
+    const hooks = ctx as unknown as { on?: (ev: string, cb: (table: unknown[]) => void) => void };
+    if (typeof hooks.on === 'function') {
+      hooks.on('webserver/index-inject', (table: unknown[]) => {
+        if (!config.standalone) return;
+        table.push({
+          kind: 'global',
+          name: '__AEMEATH_LECTURE_STANDALONE__',
+          value: true,
+        });
+      });
+      if (config.standalone) {
+        log('已开启独立界面模式：将向页面注入 __AEMEATH_LECTURE_STANDALONE__=true');
+      }
+    }
+  } catch (e) {
+    warn(`注入 standalone 标记失败（前端可能退回主界面模式）：${(e as Error).message}`);
+  }
 
   if (webServer?.register) {
     // 前端没有 dsh session，用 `web:<课程id>` 作为合成会话标识。

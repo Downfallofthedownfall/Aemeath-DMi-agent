@@ -101,6 +101,13 @@ echo
 PORT="${AEMEATH_LECTURE_PORT:-3083}"
 URL_FILE="$(mktemp -t aemeath-lecture-url)"
 
+# ⚠️ 必须显式给 DSH_HOME，且**与 lecture-mac.sh 一致**（仓库内 .dsh-home）。
+#    真机踩过：干净 shell 下不设它，dsh 会去读 ~/.dsh ——
+#    那里没有 lecture profile（我们刚把 profile 链到了 .dsh-home/profiles/），
+#    于是报 "profile 不存在"，或者更糟：读到用户全局 dsh 的另一套配置。
+DSH_HOME="$ROOT/.dsh-home"
+export DSH_HOME
+
 # 后台跑服务，同时监听它的输出（不阻塞终端）
 ./node_modules/.bin/dsh --profile lecture --port "$PORT" 2>&1 | while IFS= read -r line; do
   printf '%s\n' "$line"

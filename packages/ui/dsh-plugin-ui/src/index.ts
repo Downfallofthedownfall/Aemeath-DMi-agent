@@ -25,7 +25,18 @@ import type {} from '@deepseek-ai/cordis-plugin-loader';
 import { buildMemoryOverview, buildTimelineView, buildGraphView, type MemoryServiceFace } from './memory-view.js';
 
 export const name = 'aemeath-ui';
-export const inject = ['webServer', 'settings', 'memory'];
+// ⚠️ memory **不能**放在 inject 里当硬依赖。
+//
+// 真机踩过：lecture profile（课堂独立界面，D10/D2 明确**不挂记忆系统**）里
+// 只挂了 common + ui + lecture。而 ui 的 inject 含 'memory' →
+// 整个 host 半区一直 pending：
+//     aemeath-ui (@aemeath/dsh-plugin-ui): pending (waiting for service: memory)
+// 于是 Aemeath 设计语言的 host 侧（设置、桥接）不完整。
+//
+// memory 本来就是**可选**的：下面用的是 ctx.get('memory')，
+// 取不到时返回 undefined，各处已有判空（memory.unavailable / 503 降级）。
+// 所以把它从 inject 里去掉，改成运行时按需取。
+export const inject = ['webServer', 'settings'];
 
 /**
  * DSH 0.2.0：settings 不再由插件「注册命名空间」，而是把可编辑字段声明为插件
