@@ -34,6 +34,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -67,8 +68,45 @@ const isComment = (line) => /^\s*#/.test(line);
 
 let problems = 0;
 
+// ---- 检查三：git 索引里的可执行位 ----
+//
+// 真机踩过：CRLF 那个 commit 顺手把 lecture-launch.command 从 100755 改成 100644
+// （用 PowerShell 改文件会丢权限位），lecture-mac.sh 也一度丢掉。
+// 后果是 mac 上 `./scripts/lecture-mac.sh` 报 Permission denied ——
+// 又是一次"我这台机器上没事、到用户那里就挂"。
+//
+// 用 git 自己判断（ls-files -s），而不是看文件系统权限：
+// Windows 上根本没有 Unix 权限位，只能看索引。
+function checkExecutableBits() {
+  let out;
+  try {
+    out = execFileSync('git', ['ls-files', '-s', '--', '*.sh', '*.command', '*.bash'], {
+      cwd: ROOT,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    console.log('（跳过可执行位检查：不在 git 仓库里或 git 不可用）');
+    return;
+  }
+  // 格式：<mode> <object> <stage>\t<path>
+  for (const line of out.split('\n')) {
+    if (!line.trim()) continue;
+    const m = line.match(/^(\d{6})\s+\S+\s+\d+\t(.+)$/);
+    if (!m) continue;
+    const [, mode, path] = m;
+    if (mode === '100755') continue;
+    console.error(`  ✗ ${path}  在 git 索引里不是可执行（mode=${mode}）`);
+    console.error('      mac/Linux 上 `./' + path + '` 会报 Permission denied。');
+    console.error('      修复：git update-index --chmod=+x ' + path);
+    problems++;
+  }
+}
+
 const files = collectShellScripts(ROOT);
 console.log(`扫描 ${files.length} 个 shell 脚本…\n`);
+
+checkExecutableBits();
 
 for (const file of files) {
   const rel = relative(ROOT, file).replace(/\\/g, '/');
@@ -125,6 +163,8 @@ if (problems === 0) {
   console.log('      所以开发机上复现不出来）');
   console.log('  · 没有 CRLF 行尾');
   console.log('    （\\r 在 mac/Linux 上会被当成命令的一部分，报错位置极具误导性）');
+  console.log('  · git 索引里的 shell 脚本都是可执行的（100755）');
+  console.log('    （丢了会让 `./xxx.sh` 报 Permission denied）');
   process.exit(0);
 }
 console.error(`发现 ${problems} 处可移植性问题（macOS bash 3.2 会解析错）。`);
