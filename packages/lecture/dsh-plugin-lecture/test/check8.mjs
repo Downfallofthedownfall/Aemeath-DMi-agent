@@ -381,22 +381,43 @@ console.log('\n[启动脚本必须能察觉"源码更新了但 bundle 没重建"
 //   bundle 已经存在（旧版）→ **永远跳过构建** →
 //   用户 pull 了、重启了，界面一点没变（"和之前没区别"）。
 //
-//   正确做法：比对**时间戳**，源码比 bundle 新就重建。
+//   正确做法：比对**时间戳**，源码比产物新就重建。
+//
+//   ⚠️ 而且必须**同时比 host 与 client**（真机又踩一次）：
+//     只比 src/client → lib/client.js 的话，改 **host**（src/index.ts）不会被发现，
+//     而那次的修复恰恰在 host（webserver/index-inject 注入）——
+//     于是"改了、pull 了、重启了，还是老样子"再来一遍。
 t('lecture-mac.sh 用时间戳判断是否需要重建（不是"文件存在就跳过"）', () => {
   const sh = readFileSync(join(REPO_ROOT, 'scripts/lecture-mac.sh'), 'utf-8');
-  assert.match(sh, /find "\$LECTURE_SRC"[^\n]*-newer/, '应比对新旧时间戳');
   assert.match(sh, /needs_build/, '应有 needs_build 判断');
+  assert.match(sh, /-newer/, '应比对新旧时间戳');
   // 旧写法必须消失：只判断"文件不存在"
   assert.ok(
     !/if \[\[ ! -f "\$COMMON_LIB" \|\| ! -f "\$LECTURE_LIB" \]\]; then\n\s*say "构建 workspace/.test(sh),
-    '不该再是"文件存在就跳过构建"（那会让 pull 后永远用旧 bundle）',
+    '不该再是"文件存在就跳过构建"（那会让 pull 后永远用旧产物）',
   );
 });
 
-t('launcher 也做同样的判断（Windows 路径）', () => {
+t('mac 脚本遍历所有 workspace 包，且**同时比 host 与 client**', () => {
+  const sh = readFileSync(join(REPO_ROOT, 'scripts/lecture-mac.sh'), 'utf-8');
+  // 遍历 packages/*/*
+  assert.match(sh, /for pkg in "\$ROOT"\/packages\/\*\/\*/, '应遍历所有 workspace 包');
+  // host 产物
+  assert.match(sh, /host_lib=.*lib\/index\.js/, '应比较 host 产物 lib/index.js');
+  // client 产物
+  assert.match(sh, /client_lib=.*lib\/client\.js/, '应比较 client 产物 lib/client.js');
+  // 关键：不能再只盯 lecture 的 client
+  assert.ok(
+    !/^LECTURE_SRC=.*src\/client$/m.test(sh) || /for pkg in/.test(sh),
+    '不能只比较 lecture 的 src/client（那会漏掉 host 改动）',
+  );
+});
+
+t('launcher 也做同样的判断（Windows 路径，含 host）', () => {
   const ps = readFileSync(join(REPO_ROOT, 'lecture-launch.ps1'), 'utf-8');
-  // Windows 启动器同样不能"存在就跳过"，否则一样会卡在旧 bundle
-  assert.match(ps, /LastWriteTime|needsBuild|\$needsBuild/i, '应按时间戳判断是否需要构建');
+  assert.match(ps, /needsBuild/i, '应按时间戳判断是否需要构建');
+  assert.match(ps, /lib\\index\.js/, 'Windows 也要比 host 产物 lib\\index.js');
+  assert.match(ps, /packages\\\*\\\*/, 'Windows 也要遍历所有 workspace 包');
 });
 
 console.log('\n[独立界面模式必须有 boot 标记的生产者]');

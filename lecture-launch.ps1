@@ -52,29 +52,50 @@ if (-not (Test-Path "$root\node_modules\.bin\dsh.cmd")) {
   if ($LASTEXITCODE -ne 0) { Die "npm install 失败。" }
 }
 
-# ---- 构建（源码比 bundle 新就重建）----
+# ---- 构建（源码比产物新就重建）----
 #
-# ⚠️ 真机踩过（"和之前没区别"的根因）：
-#   packages\**\lib\ 被 gitignore → `git pull` 只更新源码，不更新 bundle。
-#   而这里原本是"bundle **不存在**才构建"：
-#       if (-not (Test-Path ...client.js)) { npm run build }
-#   bundle 已经存在（旧版）→ **永远跳过构建** →
-#   用户 pull 了、重启了，界面一点没变。
+# ⚠️ 真机踩过两次，都是"改了没生效"：
+#   第一次：条件是"产物 **不存在**才构建"——
+#     packages\**\lib\ 被 gitignore → `git pull` 只更新源码，不更新产物；
+#     产物已经存在（旧版）→ **永远跳过构建**。
+#   第二次：改成比对时间戳后，**却只比 client**：
+#     src\client → lib\client.js。而那次修的是 **host**（src\index.ts → lib\index.js），
+#     client 没变 → 判断"不需要构建" → host 仍是旧的。
 #
-#   现在比对时间戳：src\client 下有文件比 bundle 新，就重建。
-$clientJs = "$root\packages\lecture\dsh-plugin-lecture\lib\client.js"
-$clientSrc = "$root\packages\lecture\dsh-plugin-lecture\src\client"
+#   所以现在**遍历所有 workspace 包**，每个包同时比 host 与 client：
+#     host:   src\**        vs  lib\index.js
+#     client: src\client\** vs  lib\client.js
 $needsBuild = $false
-if (-not (Test-Path $clientJs)) {
+$commonDts = "$root\packages\shared\dsh-plugin-common\lib\index.d.ts"
+if (-not (Test-Path $commonDts)) {
   $needsBuild = $true
-} elseif (Test-Path $clientSrc) {
-  $bundleTime = (Get-Item $clientJs).LastWriteTimeUtc
-  $newer = Get-ChildItem $clientSrc -Recurse -File | Where-Object { $_.LastWriteTimeUtc -gt $bundleTime } | Select-Object -First 1
-  if ($newer) { $needsBuild = $true }
+} else {
+  foreach ($pkg in (Get-ChildItem "$root\packages\*\*" -Directory -ErrorAction SilentlyContinue)) {
+    $pkgJson = Join-Path $pkg.FullName 'package.json'
+    $srcDir = Join-Path $pkg.FullName 'src'
+    if (-not (Test-Path $pkgJson) -or -not (Test-Path $srcDir)) { continue }
+
+    # host 产物
+    $hostLib = Join-Path $pkg.FullName 'lib\index.js'
+    if (-not (Test-Path $hostLib)) { $needsBuild = $true; break }
+    $hostTime = (Get-Item $hostLib).LastWriteTimeUtc
+    $newerHost = Get-ChildItem $srcDir -Recurse -File | Where-Object { $_.LastWriteTimeUtc -gt $hostTime } | Select-Object -First 1
+    if ($newerHost) { $needsBuild = $true; break }
+
+    # client 产物（只有带 src\client 的包才有）
+    $clientSrcDir = Join-Path $srcDir 'client'
+    if (Test-Path $clientSrcDir) {
+      $clientLib = Join-Path $pkg.FullName 'lib\client.js'
+      if (-not (Test-Path $clientLib)) { $needsBuild = $true; break }
+      $clientTime = (Get-Item $clientLib).LastWriteTimeUtc
+      $newerClient = Get-ChildItem $clientSrcDir -Recurse -File | Where-Object { $_.LastWriteTimeUtc -gt $clientTime } | Select-Object -First 1
+      if ($newerClient) { $needsBuild = $true; break }
+    }
+  }
 }
 
 if ($needsBuild) {
-  Write-Host "构建插件（源码比 bundle 新，或 bundle 缺失）…" -ForegroundColor Yellow
+  Write-Host "构建插件（有源码比产物新，或产物缺失）…" -ForegroundColor Yellow
   & npm run build
   if ($LASTEXITCODE -ne 0) { Die "构建失败。详见上方输出。" }
 }

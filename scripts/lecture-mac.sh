@@ -24,7 +24,7 @@ set -euo pipefail
 
 # 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
 # （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
-LECTURE_MAC_VERSION="2026-10-12.9"
+LECTURE_MAC_VERSION="2026-10-12.10"
 
 # ---- 路径 ----
 # ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
@@ -122,28 +122,61 @@ node "$ROOT/scripts/verify-shell-portability.mjs" || die "\
 #    所以这里用 `npm run build`（构建全部 workspace，按依赖顺序），
 #    而不是只 build lecture。
 COMMON_LIB="$ROOT/packages/shared/dsh-plugin-common/lib/index.d.ts"
-LECTURE_LIB="$ROOT/packages/lecture/dsh-plugin-lecture/lib/client.js"
-LECTURE_SRC="$ROOT/packages/lecture/dsh-plugin-lecture/src/client"
 
-# ⚠️⚠️ 真机踩过（第四次"改了没生效"）：早先条件是"bundle 不存在才构建"：
-#        if [[ ! -f "$LECTURE_LIB" ]]; then npm run build; fi
-#     而 **packages/**/lib/ 被 gitignore** → `git pull` 只更新源码、
-#     不更新 bundle；bundle 又"已经存在"（旧版）→ **永远跳过构建**。
-#     症状：pull 了、重启了、界面一点没变，用户会说"和之前没区别"。
+# ⚠️⚠️ 真机踩过两次，都是"改了没生效"：
 #
-#     现在改成**比对时间戳**：源码比 bundle 新就重建。
-#     （用 -nt 而不是无条件构建：多数启动是没改动的，省掉几十秒。）
+#   第一次：条件是"bundle **不存在**才构建"：
+#       if [[ ! -f "$LECTURE_LIB" ]]; then npm run build; fi
+#     而 **packages/**/lib/ 被 gitignore** → `git pull` 只更新源码、不更新产物；
+#     产物"已经存在"（旧版）→ **永远跳过构建**。
+#
+#   第二次（用户定位）：改成比对时间戳后，**却只比 client**：
+#       find "$LECTURE_SRC(client)" -newer "$LECTURE_LIB(client.js)"
+#     而那次修的是 **host**（src/index.ts → lib/index.js）——
+#     client 没变 → 判断"不需要构建" → 跳过 → host 仍是旧的。
+#     症状：源码里有 __AEMEATH_LECTURE_STANDALONE__ 注入，
+#           但 lib/index.js 里没有，页面也就没有那个标记。
+#
+#   所以现在**遍历所有 workspace 包**，对每个包同时比 host 与 client：
+#       host:   src/**        vs  lib/index.js
+#       client: src/client/** vs  lib/client.js
+#   任一"源码比产物新"或"产物缺失" → 需要重建。
 needs_build=0
-if [[ ! -f "$COMMON_LIB" || ! -f "$LECTURE_LIB" ]]; then
+if [[ ! -f "$COMMON_LIB" ]]; then
+  # common 的 d.ts 是别的包的类型依赖，缺了必构建
   needs_build=1
-elif [[ -d "$LECTURE_SRC" ]]; then
-  # 只要 src/client 下有文件比 bundle 新，就要重建
-  newer="$(find "$LECTURE_SRC" -type f -newer "$LECTURE_LIB" -print -quit 2>/dev/null || true)"
-  [[ -n "$newer" ]] && needs_build=1
+else
+  for pkg in "$ROOT"/packages/*/*; do
+    [[ -f "$pkg/package.json" && -d "$pkg/src" ]] || continue
+
+    # host 产物
+    host_lib="$pkg/lib/index.js"
+    if [[ ! -f "$host_lib" ]]; then
+      needs_build=1
+      break
+    fi
+    if [[ -n "$(find "$pkg/src" -type f -newer "$host_lib" -print -quit 2>/dev/null || true)" ]]; then
+      needs_build=1
+      break
+    fi
+
+    # client 产物（只有带 src/client 的包才有）
+    if [[ -d "$pkg/src/client" ]]; then
+      client_lib="$pkg/lib/client.js"
+      if [[ ! -f "$client_lib" ]]; then
+        needs_build=1
+        break
+      fi
+      if [[ -n "$(find "$pkg/src/client" -type f -newer "$client_lib" -print -quit 2>/dev/null || true)" ]]; then
+        needs_build=1
+        break
+      fi
+    fi
+  done
 fi
 
 if [[ "$needs_build" == "1" ]]; then
-  say "构建 workspace（源码比 bundle 新，或 bundle 缺失）…"
+  say "构建 workspace（有源码比产物新，或产物缺失）…"
   npm run build || die "\
 构建失败。
   若报 'Cannot find module @aemeath/dsh-plugin-common'，先确认依赖已构建：
