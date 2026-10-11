@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # ============================================================
 # scripts/lecture-mac.sh — 在 macOS 上跑「课堂记录模式」
 #
@@ -24,7 +24,7 @@ set -euo pipefail
 
 # 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
 # （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
-LECTURE_MAC_VERSION="2026-10-12.3"
+LECTURE_MAC_VERSION="2026-10-12.4"
 
 # ---- 路径 ----
 # ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
@@ -66,7 +66,7 @@ die()  { printf '\033[31m[lecture-mac] ✗ %s\033[0m\n' "$*" >&2; exit 1; }
 say "脚本版本 $LECTURE_MAC_VERSION  ·  port=$PORT  ·  DSH_HOME=$DSH_HOME"
 
 # ---- 0) 平台门禁 ----
-# 本脚本靠符号链接把 profile 接到 $DSH_HOME。Windows 的 Git Bash 通常
+# 本脚本靠符号链接把 profile 接到 ${DSH_HOME}。Windows 的 Git Bash 通常
 # 造不出符号链接（除非开发者模式/管理员），`ln -s` 会**退化成复制**——
 # 于是 DSH_HOME 里多出一份与仓库脱钩的副本，改了配置不生效且悄悄分叉。
 # 与其静默降级，不如直接拒绝：Windows 请用 scripts\dsh.ps1。
@@ -82,7 +82,7 @@ esac
 # ---- 0) 前置检查：明确告诉用户缺什么，而不是抛一句 node 的错 ----
 command -v node >/dev/null 2>&1 || die "找不到 node。请先装 Node.js 20+（https://nodejs.org 或 brew install node）"
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-[[ "$NODE_MAJOR" -ge 20 ]] || die "Node 版本过低（$NODE_MAJOR）。需要 20+。"
+[[ "$NODE_MAJOR" -ge 20 ]] || die "Node 版本过低（${NODE_MAJOR}）。需要 20+。"
 
 # ---- 1) 依赖 ----
 if [[ ! -d "$ROOT/node_modules/@deepseek-ai/dsh" ]]; then
@@ -99,6 +99,16 @@ node "$ROOT/scripts/verify-workspace-links.mjs" || die "\
 workspace 链接缺失（@aemeath/* 无法解析）。
   这会让构建报 'Cannot find module @aemeath/dsh-plugin-common' 之类的错。
   修复：在仓库根执行 npm install（不要在 profiles/* 里装依赖）。"
+
+# shell 可移植性自检：macOS 自带 bash 3.2 对 `$VAR` 紧跟非 ASCII 的写法
+# 会把该字符的首字节吃进变量名（真机踩过：`$PORT）` → `PORT\xef: unbound variable`）。
+# 这个检查在每次启动时跑一遍，代价可忽略，但能挡住整类问题。
+say "检查 shell 可移植性…"
+# 注意：下面的提示文字里**不要**写出「$VAR 紧跟全角括号」的实例，
+# 否则会被这个检查自己抓到（检查器无法区分"示例"和"真实用法"）。
+node "$ROOT/scripts/verify-shell-portability.mjs" || die "\
+脚本里有变量引用后面紧跟非 ASCII 字符的写法，macOS 的 bash 3.2 会解析错。
+  修复：给变量加花括号。例如把 port=\$PORT） 改成 port=\${PORT}）。"
 
 # lecture 插件必须已构建（client bundle 是前端本体）。
 #
@@ -144,7 +154,7 @@ if [[ ! -e "$LINK" && ! -L "$LINK" ]]; then
   if [[ ! -L "$LINK" ]]; then
     # 链接没建成：绝不留下一个复制品冒充链接
     [[ -e "$LINK" ]] && rm -rf "$LINK"
-    die "无法创建符号链接 $LINK。
+    die "无法创建符号链接 ${LINK}。
   macOS/Linux 上不该出现这个错误；若你在 Windows 的 Git Bash 里跑，
   请改用 scripts\\dsh.ps1（PowerShell 版）。"
   fi
@@ -214,7 +224,7 @@ fi
 for rel in "${AE_PKGS[@]}"; do
   name="$(basename "$rel")"
   tgt="$ROOT/packages/$rel"
-  if [[ ! -e "$tgt" ]]; then warn "找不到 $tgt，跳过"; continue; fi
+  if [[ ! -e "$tgt" ]]; then warn "找不到 ${tgt}，跳过"; continue; fi
   ln -sfn "$tgt" "$AE_SCOPE/$name"
 done
 
@@ -269,7 +279,7 @@ say "  脚本指纹=$SELF_SUM  路径=$SCRIPT_PATH"
 if command -v git >/dev/null 2>&1 && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   GIT_SUM="$(git -C "$ROOT" show "HEAD:scripts/lecture-mac.sh" 2>/dev/null | (shasum -a 256 2>/dev/null || sha256sum 2>/dev/null) | cut -c1-16)"
   if [ -n "$GIT_SUM" ] && [ "$GIT_SUM" != "$SELF_SUM" ]; then
-    warn "脚本与 git HEAD **不一致**（工作区=$SELF_SUM  HEAD=$GIT_SUM）"
+    warn "脚本与 git HEAD **不一致**（工作区=$SELF_SUM  HEAD=${GIT_SUM}）"
     warn "  你可能改过这个文件，或 git pull 没有完整更新。"
     warn "  建议：git status scripts/lecture-mac.sh   看差异；"
     warn "        git checkout -- scripts/lecture-mac.sh   还原成仓库版本"
@@ -281,7 +291,7 @@ if [[ -z "${PORT:-}" ]]; then
   die "PORT 在启动前丢失了——这是脚本 bug，请把上面这几行发给我。"
 fi
 
-say "启动课堂记录模式（profile=lecture, port=$PORT）"
+say "启动课堂记录模式（profile=lecture, port=${PORT}）"
 say "浏览器会自动打开；没打开就手动访问终端里打印的带 token 的地址。"
 echo
 exec "$DSH_BIN" --profile lecture --port "$PORT" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"

@@ -9,7 +9,9 @@
   "scripts": {
     "build": "node scripts/verify-workspace-links.mjs && node scripts/build-workspaces.mjs",
     "build:common": "npm run build -w @aemeath/dsh-plugin-common",
-    "verify:links": "node scripts/verify-workspace-links.mjs"
+    "verify:links": "node scripts/verify-workspace-links.mjs",
+    "verify:shell": "node scripts/verify-shell-portability.mjs",
+    "verify": "node scripts/verify-workspace-links.mjs && node scripts/verify-shell-portability.mjs"
   },
   "engines": {
     "node": ">=22.13"

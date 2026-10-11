@@ -17,7 +17,7 @@
 
 set -uo pipefail
 
-# 双击运行时 cwd 是 $HOME，必须自己定位到脚本所在目录。
+# 双击运行时 cwd 是 ${HOME}，必须自己定位到脚本所在目录。
 #
 # ⚠️ 本文件在**仓库根目录**（不是 scripts/ 里），所以 ROOT 就是脚本所在目录本身。
 #    早先这里写了 `ROOT="$(cd .. && pwd)"` —— 那是按"脚本在 scripts/ 里"写的，
@@ -77,7 +77,7 @@ command -v node >/dev/null 2>&1 || die_gui "找不到 Node.js。
   · 或终端执行：brew install node"
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-[ "$NODE_MAJOR" -ge 20 ] 2>/dev/null || die_gui "Node 版本过低（当前 $NODE_MAJOR）。需要 20 或更新版本。"
+[ "$NODE_MAJOR" -ge 20 ] 2>/dev/null || die_gui "Node 版本过低（当前 ${NODE_MAJOR}）。需要 20 或更新版本。"
 
 echo "Node: $(node -v)"
 echo
