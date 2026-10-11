@@ -128,14 +128,32 @@ try {
     assert.match(md, /转动惯量是质量按距离平方加权/);
   });
 
-  await ta('强制留白为空 → capture 拒绝（不填不继续）', async () => {
+  // ⚠️ 契约在真机反馈后**改过方向**：
+  //    早先是"留白不填 → 拒绝记录"（下面这条断言原本就是测它）。 
+  //    但用户反馈：模型看到两个参数必填 + 描述写"必须同时给出"，
+  //    于是**模型自己编了理解和疑问**填进去 ——
+  //    "模型错误理解为模型需要给出它的理解和疑问"。
+  //
+  //    留白是**用户的**，模型代笔会让主动回忆完全失效。
+  //    现在：记录照收（不阻断记笔记），缺失时返回 ask_user 让模型回问用户。
+  await ta('留白为空 → 仍然记录，但提示要问用户（模型不得代笔）', async () => {
     const bad = await dispatch(a, 'lecture_capture', {
       raw: '= 只有速记',
       my_understanding: '   ',
       my_question: '',
     }, SESSION);
-    assert.equal(bad.ok, false);
-    assert.match(String(bad.data.error), /强制留白/);
+    assert.equal(bad.ok, true, '不该再拒绝记录 —— 拒绝会逼模型自己编留白');
+    assert.deepEqual(bad.data.blanks_missing, ['[我的理解]', '[我的疑问]']);
+    assert.match(String(bad.data.ask_user), /缺/);
+    assert.match(String(bad.data.ask_user), /我不能替你写/);
+  });
+
+  await ta('留白缺失的块也照样落盘（可在 GUI 里看到待补）', async () => {
+    const st = await dispatch(a, 'lecture_status', {}, SESSION);
+    assert.equal(st.ok, true);
+    assert.ok(st.data.chunk_count >= 1);
+    // 留白没填 → blanks_ok 应为 false（提醒还存在未补的留白）
+    assert.equal(st.data.blanks_ok, false);
   });
 
   await ta('同进程会话结束（flush 不再清态）后可继续记录', async () => {
@@ -153,7 +171,9 @@ try {
     await flush(a, SESSION);
     const st = await dispatch(a, 'lecture_status', {}, SESSION);
     assert.equal(st.ok, true, JSON.stringify(st));
-    assert.equal(st.data.chunk_count, 3);
+    // 4 块（不是 3）：上面那个"留白为空"的块现在**也会落盘**了 ——
+    // 契约改成"记录照收 + 回问用户"之后，它不再被拒绝。
+    assert.equal(st.data.chunk_count, 4);
   });
 
   // 重启语义：新进程（新 apply）里内存态为空 —— 已知限制：不猜单元，capture 明确失败；
@@ -172,16 +192,16 @@ try {
       my_question: '为什么需要对称轴',
     }, SESSION);
     assert.equal(cap.ok, true, JSON.stringify(cap));
-    // u01 在前面的阶段已落盘 3 块 → 恢复后序号接续为 3（不是从 0 重来）
-    assert.equal(cap.data.chunk_seq, 3);
-    assert.equal(cap.data.chunk_count, 4);
+    // u01 在前面的阶段已落盘 4 块 → 恢复后序号接续为 4（不是从 0 重来）
+    assert.equal(cap.data.chunk_seq, 4);
+    assert.equal(cap.data.chunk_count, 5);
   });
 
   await ta('恢复后 status 报同一单元（不新建单元）', async () => {
     const st = await dispatch(b, 'lecture_status', {}, SESSION);
     assert.equal(st.ok, true, JSON.stringify(st));
     assert.equal(st.data.unit_id, 'u01');
-    assert.equal(st.data.chunk_count, 4);
+    assert.equal(st.data.chunk_count, 5);
   });
 
   await ta('显式新 start 才切换到新单元（u02）', async () => {

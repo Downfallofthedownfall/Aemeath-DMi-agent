@@ -519,39 +519,75 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     defineTool({
       name: 'lecture_capture',
       description:
-        '记录一段课堂速记。用标记语法：# 主题、= 公式、? 疑问、! 重点、> 例子、--- 分块。' +
-        '必须同时给出 [我的理解] 与 [我的疑问]（强制留白，不填不继续）。' +
+        '记录一段课堂速记（**只记录用户说的内容**）。用标记语法：# 主题、= 公式、? 疑问、! 重点、> 例子、--- 分块。' +
+        '\n\n' +
+        '⚠️ 留白（[我的理解] / [我的疑问]）**只能由用户本人写**，你绝对不能代笔：' +
+        '这两栏是"主动回忆"的核心，你替用户写就等于把练习做掉了。' +
+        '\n\n' +
+        '所以调用本工具时：' +
+        '\n  · 用户**已经说了**自己的理解/疑问 → 填进对应参数；' +
+        '\n  · 用户**没说** → **不要编**，留空即可（工具会接受并返回需要追问的提示），' +
+        '然后用一句话问用户"这段你自己的理解是什么？哪里还没搞懂？"，等用户回答后再补传。' +
+        '\n\n' +
         '系统会在后台把速记规范化（公式补 LaTeX），加工结果不会显示在对话里。',
       parameters: {
         raw: { type: 'string', required: true, description: '原始速记文本（可用 --- 分多个块）' },
-        my_understanding: { type: 'string', required: true, description: '[我的理解]：用自己的话说这段讲了什么' },
-        my_question: { type: 'string', required: true, description: '[我的疑问]：还没搞懂的地方' },
+        // 注意：**不能写 required**（类型只接受 required: true 或省略）。
+        // 这两个留白**可选**是故意的 —— 见上面的说明：模型不得代笔。
+        my_understanding: {
+          type: 'string',
+          description:
+            '[我的理解]：**必须原样引用用户自己说过的话**。用户没说就留空，不要自行总结、不要代写。',
+        },
+        my_question: {
+          type: 'string',
+          description: '[我的疑问]：同上，**只能来自用户本人**。用户没提就留空。',
+        },
       },
       output: { schema: { type: 'json' }, render: renderJson },
-      execute: async (args: { raw: string; my_understanding: string; my_question: string }, exec) => {
+      execute: async (args: { raw: string; my_understanding?: string; my_question?: string }, exec) => {
         const sid = exec.agent?.session?.id ?? 'default';
         const cur = activeOf(sid);
         if (!cur) return fail('尚未开始课堂（请先调用 lecture_session_start）');
-        // 强制留白（D3/原版提示词）：不填不继续
+        const understanding = (args.my_understanding ?? '').trim();
+        const question = (args.my_question ?? '').trim();
+        // 留白缺失时**照样落盘**，只是标记为未完成并提示追问。
+        //
+        // 为什么不再"不填不继续"：早先把这两个参数设成 required 且描述写"必须同时给出"，
+        // 模型于是**自己编了理解与疑问**填进去 —— 用户明确反馈了这个错误
+        //（"模型错误理解为模型需要给出它的理解和疑问"）。
+        // 留白是**用户的**，模型代笔会让主动回忆完全失效。
+        // 正确做法：记录照收，缺失就**回问用户**，由用户补齐。
         const missing: string[] = [];
-        if (!args.my_understanding.trim()) missing.push('[我的理解]');
-        if (!args.my_question.trim()) missing.push('[我的疑问]');
-        if (missing.length) {
-          return fail(`强制留白未填：${missing.join('、')}。请先写下你自己的理解与疑问再继续。`, { missing });
-        }
+        if (!understanding) missing.push('[我的理解]');
+        if (!question) missing.push('[我的疑问]');
         const seq = nextSeq(cur.chunks);
         const chunk: RawChunk = {
           seq,
           raw: args.raw,
-          my_understanding: args.my_understanding.trim(),
-          my_question: args.my_question.trim(),
+          my_understanding: understanding,
+          my_question: question,
           created_at: Date.now(),
         };
         cur.chunks.push(chunk);
         persist(cur);
         // 后台转录（D3）：不阻塞、结果只落后端
         if (transcribeEnabled) void runTranscribe(cur, chunk);
-        return ok({ chunk_seq: seq, chunk_count: cur.chunks.length, note: '已记录（后台规范化中，结果不回显）' });
+        return ok({
+          chunk_seq: seq,
+          chunk_count: cur.chunks.length,
+          note: '已记录（后台规范化中，结果不回显）',
+          // 缺留白时把"该问用户什么"明确交回去，模型照着问即可，不要自己编答案。
+          ...(missing.length
+            ? {
+                blanks_missing: missing,
+                ask_user:
+                  `这段已记下，但还缺 ${missing.join('、')} —— ` +
+                  '这是要**你自己**写的（主动回忆），我不能替你写。' +
+                  '能用自己的话说说这段讲了什么、哪里还没搞懂吗？说完我补记进去。',
+              }
+            : {}),
+        });
       },
     }),
   );

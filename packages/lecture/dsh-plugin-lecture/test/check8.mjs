@@ -314,4 +314,62 @@ t('profile 声明的每个 @aemeath 依赖都指向真实存在的包', () => {
   }
 });
 
+console.log('\n[留白只能由用户写（模型不得代笔）]');
+
+// 真机反馈："模型错误理解为模型需要给出它的理解和疑问"。
+// 根因：my_understanding / my_question 被设成 required，描述还写"必须同时给出"，
+// 模型于是自己编了填进去 —— 主动回忆直接失效。
+// 契约：留白**可选**（模型不填），缺失时返回 ask_user 让模型**回问用户**。
+const hostSrcForBlanks = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+
+t('lecture_capture 的留白参数不是必填', () => {
+  const seg = hostSrcForBlanks.match(/name: 'lecture_capture'[\s\S]{0,2600}?execute:/);
+  assert.ok(seg, '找不到 lecture_capture 定义');
+  // 这一段里不该出现 required: true 出现在留白参数上
+  const myU = seg[0].match(/my_understanding:\s*\{[\s\S]{0,300}?\}/);
+  assert.ok(myU, '找不到 my_understanding 参数定义');
+  assert.ok(!/required:\s*true/.test(myU[0]), 'my_understanding 不该是必填（会逼模型自己编）');
+});
+
+t('留白缺失时返回 ask_user（让模型回问用户，而不是自己写）', () => {
+  assert.match(hostSrcForBlanks, /blanks_missing/, '应返回 blanks_missing');
+  assert.match(hostSrcForBlanks, /ask_user/, '应返回 ask_user 提示话术');
+  assert.match(hostSrcForBlanks, /我不能替你写/, '话术里要明确"不能替你写"');
+});
+
+t('留白不再"不填不继续"（记录照收）', () => {
+  // 不该再有"缺失就 return fail"的逻辑
+  const seg = hostSrcForBlanks.match(/name: 'lecture_capture'[\s\S]{0,4000}?\n    \}\),/);
+  assert.ok(seg, '找不到 lecture_capture 主体');
+  assert.ok(
+    !/if \(missing\.length\) \{\s*return fail/.test(seg[0]),
+    '留白缺失不该再阻断记录（那会逼模型自己编留白）',
+  );
+});
+
+console.log('\n[三栏工作台]');
+
+const wbSrc = readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8');
+
+t('工作台是三栏结构（左课程 / 中笔记 / 右符号+复盘）', () => {
+  assert.match(wbSrc, /lec-wb-nav/, '应有左栏');
+  assert.match(wbSrc, /lec-wb-main/, '应有中栏');
+  assert.match(wbSrc, /lec-wb-side/, '应有右栏');
+});
+
+t('符号键盘常驻右栏（不再藏在折叠按钮后面）', () => {
+  // 真机反馈"没看到按钮"：早先它在一个 .lec-symbtn 折叠按钮后面。
+  assert.match(wbSrc, /right === 'symbols' \? <SymbolPanel \/>/, '右栏应直接渲染 SymbolPanel');
+  assert.ok(!/lec-symbtn/.test(wbSrc), '不该再依赖折叠按钮才能看到符号键盘');
+});
+
+t('工作台两种模式都铺满（不是挤在侧栏里）', () => {
+  assert.match(stylesSrc, /\[data-workbench="1"\]\s*\{[\s\S]{0,240}?position:\s*fixed/, '工作台应 fixed 铺满');
+});
+
+t('工作台栏底色是不透明实色（否则主 agent 会透出来）', () => {
+  assert.match(stylesSrc, /--aem-nav-bg:\s*light-dark\(#[0-9a-fA-F]{6},\s*#[0-9a-fA-F]{6}\)/, '栏底色应是实色');
+  assert.ok(!/lec-wb-nav\s*\{[\s\S]{0,240}?color-mix/.test(stylesSrc), '左栏底色不该用 color-mix（半透明会透出底层）');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

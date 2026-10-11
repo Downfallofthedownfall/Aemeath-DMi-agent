@@ -18,7 +18,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { LectureMode } from './lecture-mode.tsx';
+import { Workbench } from './workbench.tsx';
 import { injectLectureStyles } from './styles.ts';
 
 export const name = 'aemeath-lecture-client';
@@ -83,7 +83,7 @@ function detectStandalone(): boolean {
 
 /** 独立窗口里的根组件：整窗铺满的课堂界面。 */
 function StandaloneApp(): JSX.Element {
-  return <LectureMode standalone onClose={() => shellLecture()?.close()} />;
+  return <Workbench standalone onClose={() => shellLecture()?.close()} />;
 }
 
 /**
@@ -168,7 +168,7 @@ export function apply(ctx: ClientContext): void {
       return () => window.removeEventListener(LECTURE_OPEN_EVENT, onOpen);
     }, []);
     if (!open) return null;
-    return createPortal(<LectureMode onClose={() => setOpen(false)} />, document.body);
+    return createPortal(<Workbench onClose={() => setOpen(false)} />, document.body);
   }
 
   ctx.slots.inject('shell.overlay', () =>

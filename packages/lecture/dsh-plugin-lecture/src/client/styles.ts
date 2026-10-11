@@ -30,6 +30,8 @@ const CSS = `
   --aem-accent-2: light-dark(#f08bab, #e05a85);
   --aem-accent-soft: light-dark(#fdeef4, rgba(240, 139, 171, 0.16));
   --aem-surface: light-dark(#ffffff, var(--dsw-alias-bg-layer-1));
+  /* 工作台栏底色：**必须实色**（半透明会让底层主 agent 透出来，真机截图见过） */
+  --aem-nav-bg: light-dark(#fdf4f8, #1f1f21);
   --aem-ink: var(--dsw-alias-label-primary);
   --aem-ink-soft: var(--dsw-alias-label-secondary);
   --aem-ink-dim: var(--dsw-alias-label-tertiary);
@@ -402,6 +404,216 @@ const CSS = `
 
 @media (prefers-reduced-motion: reduce) {
   .${LECTURE_CLASS} { animation: none; }
+}
+
+/* ============================================================
+   学习工作台（三栏）—— [data-workbench="1"] 时启用
+   ============================================================
+   布局：左栏课程导航（可收起） / 中栏笔记主体 / 右栏符号+复盘。
+   独立窗口模式下三栏铺满整窗；嵌在主 agent 里时也尽量给宽（见上面对 width 的覆盖）。
+*/
+
+/* 工作台是一个**独立工作区**，不是"右侧边栏"。
+   ⚠️ 真机截图发现：早先嵌在主 agent 里时只覆盖了一部分，
+   左边还露着会话列表/插件/工作区，右边露着输入框 ——
+   用户的原话是"这和主 agent 前端一模一样不行啊，只保留 lecture 里面需要的东西"。
+   一个三栏工作台挤在侧栏里既放不下、也仍然"长得像主 agent"。
+   所以：**两种模式都铺满**，只是一个在独立窗口里、一个做全屏浮层。 */
+.${LECTURE_CLASS}[data-workbench="1"] {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-left: none;
+  box-shadow: none;
+  animation: aem-lec-in 0.16s ease-out;
+  z-index: 2147482500;
+}
+.${LECTURE_CLASS}[data-workbench="1"][data-standalone="1"] { z-index: 2147483000; }
+
+.${LECTURE_CLASS} .lec-wb {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+/* —— 左栏：课程 / 单元 ——
+   ⚠️ 背景必须**不透明**（半透明的 color-mix 会让底层主 agent 透出来 ——
+   真机截图看到左栏左上角露出"插件/工作区"，就是这里漏了实色底）。 */
+.${LECTURE_CLASS} .lec-wb-nav {
+  flex: 0 0 232px;
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--aem-line);
+  padding: 6px 0 14px;
+  background: var(--aem-nav-bg);
+}
+.${LECTURE_CLASS} .lec-wb-navhead {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  padding: 6px 12px 8px;
+}
+.${LECTURE_CLASS} .lec-course { margin-bottom: 10px; }
+.${LECTURE_CLASS} .lec-course-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 4px 12px;
+  color: var(--aem-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.${LECTURE_CLASS} .lec-course-sem {
+  font-weight: 400;
+  opacity: 0.5;
+  margin-left: 6px;
+  font-size: 11px;
+}
+.${LECTURE_CLASS} .lec-unit {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: calc(100% - 12px);
+  margin: 1px 6px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--aem-ink);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.${LECTURE_CLASS} .lec-unit:hover { background: color-mix(in srgb, var(--aem-accent) 12%, transparent); }
+.${LECTURE_CLASS} .lec-unit[data-active="1"] {
+  background: color-mix(in srgb, var(--aem-accent) 20%, transparent);
+  font-weight: 600;
+}
+.${LECTURE_CLASS} .lec-unit-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.${LECTURE_CLASS} .lec-unit-meta { flex: none; font-size: 10.5px; opacity: 0.5; }
+
+/* —— 中栏：笔记主体 —— */
+.${LECTURE_CLASS} .lec-wb-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 10px 16px 40px;
+}
+.${LECTURE_CLASS} .lec-notehead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--aem-line);
+  margin-bottom: 12px;
+}
+.${LECTURE_CLASS} .lec-notehead-t { font-size: 15px; font-weight: 700; }
+.${LECTURE_CLASS} .lec-notehead-d { font-size: 12px; opacity: 0.55; }
+.${LECTURE_CLASS} .lec-notechunks { display: flex; flex-direction: column; gap: 12px; }
+.${LECTURE_CLASS} .lec-note {
+  border: 1px solid var(--aem-line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--aem-ink) 2%, transparent);
+}
+.${LECTURE_CLASS} .lec-note-num { font-size: 10.5px; opacity: 0.45; margin-bottom: 4px; }
+.${LECTURE_CLASS} .lec-note-blanks { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.${LECTURE_CLASS} .lec-blank {
+  display: flex;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.${LECTURE_CLASS} .lec-blank > b { flex: none; width: 60px; opacity: 0.75; font-weight: 700; }
+.${LECTURE_CLASS} .lec-blank > span { flex: 1 1 auto; min-width: 0; }
+/* 留白未填：明显但不刺眼（提示用户回对话里补） */
+.${LECTURE_CLASS} .lec-blank[data-empty="1"] > span { opacity: 0.42; font-style: italic; }
+
+/* 开课卡片（中栏） */
+.${LECTURE_CLASS} .lec-startbox {
+  max-width: 460px;
+  margin: 24px auto 0;
+  padding: 18px;
+  border: 1px solid var(--aem-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--aem-accent) 6%, transparent);
+}
+.${LECTURE_CLASS} .lec-wb-h { font-size: 15px; font-weight: 700; margin-bottom: 12px; }
+
+/* 空状态（中栏大字版） */
+.${LECTURE_CLASS} .lec-empty-big {
+  max-width: 520px;
+  margin: 60px auto 0;
+  text-align: center;
+  line-height: 1.9;
+}
+.${LECTURE_CLASS} .lec-empty-h { font-size: 22px; font-weight: 700; margin-bottom: 14px; opacity: 0.9; }
+.${LECTURE_CLASS} .lec-empty-big p { margin: 8px 0; font-size: 13.5px; }
+
+/* —— 右栏：符号键盘 / 复盘 —— */
+.${LECTURE_CLASS} .lec-wb-side {
+  flex: 0 0 300px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--aem-line);
+  background: var(--aem-nav-bg);
+}
+.${LECTURE_CLASS} .lec-sidetabs {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px 0;
+}
+.${LECTURE_CLASS} .lec-sidetab {
+  flex: 1 1 0;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--aem-ink);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  opacity: 0.65;
+}
+.${LECTURE_CLASS} .lec-sidetab:hover { opacity: 0.95; }
+.${LECTURE_CLASS} .lec-sidetab[data-active="1"] {
+  opacity: 1;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--aem-accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--aem-accent) 35%, transparent);
+}
+.${LECTURE_CLASS} .lec-sidetab:disabled { opacity: 0.3; cursor: default; }
+.${LECTURE_CLASS} .lec-sidebody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+/* 顶栏小按钮 */
+.${LECTURE_CLASS} .lec-btn-tiny {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--aem-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--aem-ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.${LECTURE_CLASS} .lec-btn-tiny:hover {
+  border-color: var(--aem-accent);
+  color: var(--aem-accent);
 }
 `;
 
