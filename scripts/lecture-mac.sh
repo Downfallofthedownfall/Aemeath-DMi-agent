@@ -163,6 +163,30 @@ else
   say "profile 链接已存在：$LINK"
 fi
 
+# ---- 2.5) 同步 agent presets（关键！）----
+#
+# dsh 的 agent preset 不在 profile 里，而在 **$DSH_HOME/.agent-presets/**。
+# 不复制过去，profile 里写的 `default: physicist` 就会指不到东西，
+# 创建会话时报：
+#     agent-preset/not-found: Unknown agent preset: physicist
+#
+# 这是 Windows 上 dsh.ps1 做的事（scripts/dsh.ps1:21-27），
+# mac 脚本早先漏了 —— 症状是"能启动、但一创建会话就报 unknown preset"。
+#
+# 注意用**复制**而不是符号链接：preset 是数据（yaml），
+# 复制一份更稳（链接会让 .agent-presets 里出现仓库路径，移动仓库就断）。
+PRESET_SRC="$ROOT/profiles/aemeath/agent-presets"
+PRESET_DST="$DSH_HOME/.agent-presets"
+if [[ -d "$PRESET_SRC" ]]; then
+  rm -rf "$PRESET_DST"
+  mkdir -p "$PRESET_DST"
+  cp -R "$PRESET_SRC"/. "$PRESET_DST"/
+  say "agent presets 已同步：$(ls "$PRESET_DST" 2>/dev/null | tr '\n' ' ')"
+else
+  warn "找不到 agent presets 源目录：$PRESET_SRC"
+  warn "  创建会话时可能报 'Unknown agent preset: physicist'。"
+fi
+
 # ---- 3) 关键：@deepseek-ai 与 @aemeath 都必须是指向仓库的链接 ----
 # 这是 dsh.ps1 在 Windows 上做的事的 mac 等价物。
 # 若 profile 里真有独立副本，会出现两套模块实例（见文件头 ②）。

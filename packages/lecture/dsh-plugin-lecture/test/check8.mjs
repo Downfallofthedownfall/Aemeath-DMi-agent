@@ -49,18 +49,31 @@ t('活代码里没有硬编码的深色背景（#141821）', () => {
   assert.ok(!stripComments(bundle).includes('#141821'), '出现 #141821');
 });
 
-t('standalone 底色引用宿主变量而非写死', () => {
-  assert.match(
-    stylesSrc,
-    /--aem-standalone-bg:[^;]*var\(--dsw-alias-bg-base\)/,
-    '应定义 --aem-standalone-bg 并引用 --dsw-alias-bg-base',
-  );
+// ⚠️ 这里的契约在真机反馈后**改过一次方向**，值得记下来：
+//
+//   第一版要求"底色引用 --dsw-alias-bg-base"，理由是"要跟随主题、不要写死"。
+//   但那个变量在某些主题下**带透明度** → 面板半透明 → 底下的对话内容透出来
+//   （真机截图能看到"探索未至之境"穿透面板）。
+//
+//   真正的契约是：**底色必须不透明**。"跟随主题"只适用于强调色，
+//   不适用于面板底色 —— 底色透明就是 bug。
+//
+//   所以现在断言：底色是**不带 alpha 的实色**（6 位 hex 或 rgb()，而不是 rgba()/color-mix）。
+const OPAQUE_HEX = /#[0-9a-fA-F]{6}\b/;
+
+t('--aem-standalone-bg 是不透明实色（不能带 alpha）', () => {
+  const m = stylesSrc.match(/--aem-standalone-bg:\s*([^;]+);/);
+  assert.ok(m, '找不到 --aem-standalone-bg 定义');
+  assert.ok(OPAQUE_HEX.test(m[1]), `应是 6 位 hex 实色，实际：${m[1].trim()}`);
+  assert.ok(!/color-mix|rgba\(/.test(m[1]), '不该用 color-mix/rgba（会带透明度）');
 });
 
-t('--aem-bg 暗色分支引用宿主变量（不是纯硬编码）', () => {
-  const m = stylesSrc.match(/--aem-bg:\s*light-dark\(([\s\S]*?)\);\n/);
+t('--aem-bg 的暗色分支是不透明实色', () => {
+  const m = stylesSrc.match(/--aem-bg:\s*light-dark\(([\s\S]*?)\n\s*\);/);
   assert.ok(m, '找不到 --aem-bg 的 light-dark 定义');
-  assert.ok(m[1].includes('--dsw-alias-bg-base'), '暗色分支应引用 --dsw-alias-bg-base');
+  const dark = m[1].split(',\n').slice(1).join(','); // 暗色分支（第二段）
+  assert.ok(OPAQUE_HEX.test(dark), `暗色分支应是实色，实际：${dark.trim().slice(0, 80)}`);
+  assert.ok(!/color-mix/.test(m[1]), '不该用 color-mix（宿主变量可能带透明度）');
 });
 
 t('挂载点背景走 --dsw-alias-bg-base', () => {
@@ -180,6 +193,53 @@ t('CI 下 esbuild 失败不再静默保留旧 bundle', () => {
   const b = readFileSync(join(root, 'build-client.mjs'), 'utf-8');
   assert.match(b, /AEMEATH_BUILD_STRICT|process\.env\.CI/, '应有严格模式开关');
   assert.match(b, /lib\/client\.js \*\*未更新\*\*/, '降级时必须显著提示 bundle 未更新');
+});
+
+// ============================================================
+// 产品流程：界面必须能自己开课
+//
+// 背景（真机反馈）：早先只能靠对话里叫 agent 调 lecture_session_start 建课，
+// 于是打开课堂界面只看到"还没有课程"，既没输入框也不知道下一步 —— 死路。
+// ============================================================
+
+console.log('\n[界面可自主开课]');
+
+const httpSrc2 = readFileSync(join(root, 'src/http.ts'), 'utf-8');
+
+t('HTTP 桥提供 start 动作（界面能自己建课）', () => {
+  assert.match(httpSrc2, /action === 'start'/, 'HTTP 桥应有 start 动作');
+  assert.match(httpSrc2, /onStartSession/, 'deps 应有 onStartSession');
+});
+
+t('工具与 HTTP 共用同一条开课路径（不分叉）', () => {
+  assert.match(hostSrc, /const startSession = \(/, '应有 startSession 共用函数');
+  assert.match(hostSrc, /onStartSession: async/, 'HTTP 侧应调用它');
+  // 工具侧也必须走同一条路径
+  const toolStart = hostSrc.match(/name: 'lecture_session_start'[\s\S]{0,2000}?startSession\(/);
+  assert.ok(toolStart, 'lecture_session_start 工具也应调用 startSession');
+});
+
+console.log('\n[侧栏定位：开课 + 查阅，不重复输入]');
+
+const lecMode = readFileSync(join(root, 'src/client/lecture-mode.tsx'), 'utf-8');
+
+t('侧栏页签为 开课 / 笔记 / 复盘', () => {
+  assert.match(lecMode, /type Tab = 'start' \| 'notes' \| 'review'/, '页签定义应为 start/notes/review');
+});
+
+t('侧栏不再有速记输入框（记录发生在主界面对话）', () => {
+  // CapturePanel 已移除；不该再有 lec-shorthand 这类输入
+  assert.ok(!/function CapturePanel/.test(lecMode), 'CapturePanel 应已移除');
+  assert.ok(!/lec-shorthand/.test(lecMode), '侧栏不该再有速记输入框');
+});
+
+t('符号键盘改为复制到剪贴板', () => {
+  const sym = readFileSync(join(root, 'src/client/symbol-palette.tsx'), 'utf-8');
+  assert.match(sym, /navigator\.clipboard/, '应使用 Clipboard API');
+  assert.match(sym, /execCommand\('copy'\)/, '应有降级路径');
+  // 去注释后再找：注释里会提到 insertSymbol 解释历史，那是应该保留的
+  const symLive = stripComments(sym);
+  assert.ok(!/insertSymbol\(/.test(symLive), '活代码里不该再插入到输入框（侧栏没有输入框了）');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

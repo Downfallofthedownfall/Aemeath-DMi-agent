@@ -245,10 +245,27 @@ export interface LectureHttpDeps {
   store: LectureStore;
   /** 写入快照：前端提交的速记块（服务端负责落盘 + 触发后台转录）。 */
   onSubmitChunk: (courseId: string, unitId: string, chunk: { raw: string; my_understanding: string; my_question: string }) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * 开始一节课（创建课程 + 单元，并把该会话的"当前课堂"指向它）。
+   *
+   * 为什么前端需要这个：早先只能靠**对话里叫 agent 调 lecture_session_start**
+   * 来建课，于是用户点开课堂界面只看到一句"还没有课程"，
+   * 既没有输入框也不知道下一步做什么 —— 死路。
+   * 现在界面自己就能开课。
+   */
+  onStartSession: (input: {
+    courseId: string;
+    title: string;
+    courseTitle?: string;
+    semester?: string;
+    moduleCode?: string;
+    date?: string;
+  }) => Promise<{ ok: boolean; error?: string; course_id?: string; unit_id?: string; date?: string }>;
   /** 复盘操作（推进状态机）。 */
   onReview: (action: string, payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
   /** 日志。 */
   log: (msg: string) => void;
+  /** 警告。 */
   warn: (msg: string) => void;
 }
 
@@ -333,6 +350,30 @@ export async function handleLectureHttp(
       const parsed = JSON.parse(raw || '{}') as Record<string, unknown>;
       const action = String(parsed.action ?? '');
       log(`POST action=${action}`);
+
+      if (action === 'start') {
+        // 界面自己开课（不再要求用户先去对话里调工具）。
+        const courseId = String(parsed.course_id ?? '').trim().slice(0, 64);
+        const title = String(parsed.title ?? '').trim().slice(0, 200);
+        if (!courseId || !title) {
+          jsonError(res, 400, 'course_id 和 title 都是必填的');
+          return;
+        }
+        const r = await deps.onStartSession({
+          courseId,
+          title,
+          courseTitle: parsed.course_title ? String(parsed.course_title).slice(0, 200) : undefined,
+          semester: parsed.semester ? String(parsed.semester).slice(0, 64) : undefined,
+          moduleCode: parsed.module_code ? String(parsed.module_code).slice(0, 64) : undefined,
+          date: parsed.date ? String(parsed.date).slice(0, 32) : undefined,
+        });
+        if (!r.ok) {
+          jsonError(res, 400, r.error ?? '开课失败');
+          return;
+        }
+        json(res, 200, { ok: true, course_id: r.course_id, unit_id: r.unit_id, date: r.date });
+        return;
+      }
 
       if (action === 'chunk') {
         const course = String(parsed.course_id ?? '').slice(0, 64);

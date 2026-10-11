@@ -15,7 +15,7 @@
 //
 // 数据来源：同源代理 /aemeath/api/lecture（前端不持有 token）。
 // ============================================================
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { ReviewPanel } from './review-panel.tsx';
 import { LECTURE_CLASS } from './styles.ts';
@@ -78,7 +78,7 @@ const API = '/aemeath/api/lecture';
 
 // ---------- 主组件 ----------
 
-type Tab = 'capture' | 'review' | 'courses';
+type Tab = 'start' | 'notes' | 'review';
 
 /**
  * @param standalone 是否跑在**独立窗口**里。
@@ -86,13 +86,20 @@ type Tab = 'capture' | 'review' | 'courses';
  *   false → 主窗口里的侧边面板（可收成窄条）
  */
 export function LectureMode({ onClose, standalone = false }: { onClose: () => void; standalone?: boolean }): JSX.Element {
-  const [tab, setTab] = useState<Tab>('capture');
+  // 页签：开课 / 查阅 / 复盘。
+  //
+  // ⚠️ 产品设计的修正（真机反馈后）：
+  //    早先侧栏把"速记输入"也包了进来，但**开课只能靠对话里调工具**，
+  //    于是第一次打开只看到一句"还没有课程"，既没有输入框也不知道下一步 —— 死路。
+  //    现在：**侧栏负责开课与查阅**，实际记笔记在主界面的对话里（agent 调 lecture_capture）。
+  const [tab, setTab] = useState<Tab>('start');
   const [collapsed, setCollapsed] = useState(false);
   const [courses, setCourses] = useState<CourseView[]>([]);
   const [courseId, setCourseId] = useState<string>('');
   const [unitId, setUnitId] = useState<string>('');
   const [chunks, setChunks] = useState<RawChunk[]>([]);
   const [loading, setLoading] = useState(false);
+  const [symOpen, setSymOpen] = useState(false);
 
   const refreshCourses = useCallback(async () => {
     const d = await getJson<{ ok: boolean; courses: CourseView[] }>(`${API}?action=courses`);
@@ -127,10 +134,16 @@ export function LectureMode({ onClose, standalone = false }: { onClose: () => vo
   const currentCourse = useMemo(() => courses.find((c) => c.course_id === courseId) ?? null, [courses, courseId]);
   const currentUnit = useMemo(() => currentCourse?.units.find((u) => u.id === unitId) ?? null, [currentCourse, unitId]);
 
-  const onSubmitted = useCallback(async () => {
-    await loadUnit(courseId, unitId);
-    await refreshCourses();
-  }, [courseId, unitId, loadUnit, refreshCourses]);
+  /** 开课成功后：刷新列表、选中新单元、跳到「笔记」页。 */
+  const onStarted = useCallback(
+    async (newCourseId: string, newUnitId: string) => {
+      await refreshCourses();
+      setCourseId(newCourseId);
+      setUnitId(newUnitId);
+      setTab('notes');
+    },
+    [refreshCourses],
+  );
 
   // —— 收起态：只留一条窄边，点它展开（仅面板模式用；独立窗口不收） ——
   if (collapsed && !standalone) {
@@ -169,8 +182,18 @@ export function LectureMode({ onClose, standalone = false }: { onClose: () => vo
 
       {/* 页签（独立一行） */}
       <div className="lec-tabs">
-        <button type="button" className="lec-tab" data-active={tab === 'capture' ? '1' : '0'} onClick={() => setTab('capture')}>
-          记录
+        <button type="button" className="lec-tab" data-active={tab === 'start' ? '1' : '0'} onClick={() => setTab('start')}>
+          开课
+        </button>
+        <button
+          type="button"
+          className="lec-tab"
+          data-active={tab === 'notes' ? '1' : '0'}
+          onClick={() => setTab('notes')}
+          disabled={courses.length === 0}
+          title={courses.length ? '查阅已记录的笔记' : '还没有课程'}
+        >
+          笔记
         </button>
         <button
           type="button"
@@ -182,14 +205,12 @@ export function LectureMode({ onClose, standalone = false }: { onClose: () => vo
         >
           复盘
         </button>
-        <button type="button" className="lec-tab" data-active={tab === 'courses' ? '1' : '0'} onClick={() => setTab('courses')}>
-          课程
-        </button>
       </div>
 
       <div className="lec-body">
-        {/* 课程 / 单元选择（紧凑下拉，不占侧栏） */}
-        {tab !== 'courses' && courses.length > 0 ? (
+        {/* 课程 / 单元选择（紧凑下拉，不占侧栏）。
+            开课页不需要它（那里有专门的课程选择）。 */}
+        {tab !== 'start' && courses.length > 0 ? (
           <select
             className="lec-select"
             value={`${courseId}::${unitId}`}
@@ -216,18 +237,17 @@ export function LectureMode({ onClose, standalone = false }: { onClose: () => vo
           </select>
         ) : null}
 
-        {tab === 'capture' ? (
-          courses.length === 0 ? (
-            <div className="lec-empty">
-              还没有课程。
-              <br />
-              在对话里让爱弥斯调用 <code>lecture_session_start</code> 开始一节课，
-              然后回到这里记速记。
-            </div>
-          ) : !currentUnit ? (
-            <div className="lec-empty">这一讲还没有记录。先在对话里 lecture_session_start 开始。</div>
+        {tab === 'start' ? <StartPanel courses={courses} onStarted={onStarted} defaultCourseTitle={currentCourse?.title ?? ''} /> : null}
+
+        {tab === 'notes' ? (
+          currentUnit ? (
+            <NotesView courseId={courseId} unitId={unitId} chunks={chunks} loading={loading} />
           ) : (
-            <CapturePanel courseId={courseId} unitId={unitId} chunks={chunks} loading={loading} onSubmitted={onSubmitted} />
+            <div className="lec-empty">
+              还没有笔记。
+              <br />
+              先去「开课」创建一节课。
+            </div>
           )
         ) : null}
 
@@ -246,152 +266,212 @@ export function LectureMode({ onClose, standalone = false }: { onClose: () => vo
           )
         ) : null}
 
-        {tab === 'courses' ? <CoursesPanel courses={courses} /> : null}
+        {/* 数学符号键盘：折叠式，点符号**复制到剪贴板**（再到主界面对话框粘贴）。
+            放在开课/笔记两页都能拿到 —— 上课时随手要抄符号。 */}
+        {tab !== 'review' ? (
+          <div style={{ marginTop: 14 }}>
+            <button
+              type="button"
+              className="lec-symbtn"
+              data-open={symOpen ? '1' : '0'}
+              onClick={() => setSymOpen((v) => !v)}
+              title="数学符号（∫ √ 三角函数 ∑ 上下限 …）"
+            >
+              ∑ 符号键盘
+            </button>
+            {symOpen ? <SymbolPanel /> : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
 }
 
-// ---------- 速记面板 ----------
+// ---------- 开课 ----------
 
-function CapturePanel(props: {
-  courseId: string;
-  unitId: string;
-  chunks: RawChunk[];
-  loading: boolean;
-  onSubmitted: () => Promise<void>;
+/**
+ * 「开课」面板：直接在这里创建课程与本次课，不再绕道对话。
+ *
+ * 设计修正（真机反馈后）：早先只能靠对话里叫 agent 调 lecture_session_start，
+ * 于是用户打开课堂界面只看到"还没有课程"，既没有输入框也不知道下一步 —— 死路。
+ * 现在界面自己就能开课，开完自动跳到「笔记」。
+ */
+function StartPanel(props: {
+  courses: CourseView[];
+  onStarted: (courseId: string, unitId: string) => Promise<void>;
+  defaultCourseTitle: string;
 }): JSX.Element {
-  const { courseId, unitId, chunks, loading, onSubmitted } = props;
-  const rawRef = useRef<HTMLTextAreaElement | null>(null);
-  const understandingRef = useRef<HTMLTextAreaElement | null>(null);
-  const questionRef = useRef<HTMLTextAreaElement | null>(null);
+  const { courses, onStarted, defaultCourseTitle } = props;
+  // 已有课程时默认选"继续上一门"，只需填主题；没有课程时两个都要填。
+  const [mode, setMode] = useState<'new' | 'continue'>(courses.length ? 'continue' : 'new');
+  const [newCourseId, setNewCourseId] = useState('');
+  const [newCourseTitle, setNewCourseTitle] = useState('');
+  const [pickCourse, setPickCourse] = useState(courses[0]?.course_id ?? '');
+  const [title, setTitle] = useState('');
+  const [semester, setSemester] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [okMsg, setOkMsg] = useState('');
-  const [symOpen, setSymOpen] = useState(false);
-  // 实时留白缺口（**只提示、不阻断**）。
-  // 后端语义是"不填不继续"，但让用户敲完一大段才在提交时被拒很挫败；
-  // 这里在打字过程中就把缺口显示出来，仍允许继续输入。
-  const [gaps, setGaps] = useState<string[]>([]);
 
-  /** 重算留白缺口（不阻断输入，只驱动提示）。 */
-  const recomputeGaps = (): void => {
-    const raw = rawRef.current?.value ?? '';
-    const u = understandingRef.current?.value ?? '';
-    const q = questionRef.current?.value ?? '';
-    const next: string[] = [];
-    if (raw.trim()) {
-      // 只有当速记有内容时，留白缺失才算"缺口"（空表单不唠叨）
-      if (!u.trim()) next.push('我的理解');
-      if (!q.trim()) next.push('我的疑问');
+  // 课程列表异步加载完时，补正初值（首帧可能还是空数组）
+  useEffect(() => {
+    if (courses.length && !pickCourse) setPickCourse(courses[0]!.course_id);
+    if (!courses.length) setMode('new');
+  }, [courses, pickCourse]);
+
+  const start = async (): Promise<void> => {
+    const isNew = mode === 'new' || courses.length === 0;
+    const cid = isNew ? newCourseId.trim() : pickCourse;
+    const t = title.trim();
+    if (!cid) {
+      setErr('请填课程标识（例如 physik-1）');
+      return;
     }
-    setGaps(next);
-  };
-
-  const submit = async (): Promise<void> => {
-    const raw = rawRef.current?.value ?? '';
-    const understanding = understandingRef.current?.value ?? '';
-    const question = questionRef.current?.value ?? '';
-    const missing: string[] = [];
-    if (!raw.trim()) missing.push('速记内容');
-    if (!understanding.trim()) missing.push('[我的理解]');
-    if (!question.trim()) missing.push('[我的疑问]');
-    if (missing.length) {
-      setErr(`还差：${missing.join('、')}`);
-      setOkMsg('');
+    if (!t) {
+      setErr('请填本次课的主题（例如 第3讲 角动量）');
+      return;
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(cid)) {
+      setErr('课程标识只能用字母、数字、点、下划线、连字符（它会成为目录名）');
       return;
     }
     setBusy(true);
     setErr('');
-    setOkMsg('');
-    const r = await postJson<{ ok: boolean; error?: string }>(API, {
-      action: 'chunk',
-      course_id: courseId,
-      unit_id: unitId,
-      chunk: { raw, my_understanding: understanding, my_question: question },
+    const r = await postJson<{ ok: boolean; error?: string; course_id?: string; unit_id?: string }>(API, {
+      action: 'start',
+      course_id: cid,
+      title: t,
+      course_title: isNew ? newCourseTitle.trim() || cid : undefined,
+      semester: semester.trim() || undefined,
     });
     setBusy(false);
     if (!r?.ok) {
-      setErr(r?.error ?? '提交失败');
+      setErr(r?.error ?? '开课失败');
       return;
     }
-    if (rawRef.current) rawRef.current.value = '';
-    if (understandingRef.current) understandingRef.current.value = '';
-    if (questionRef.current) questionRef.current.value = '';
-    setGaps([]);
-    setOkMsg('已记录。加工在后台进行，结果不会显示——留给复盘时你自己先说。');
-    await onSubmitted();
+    setTitle('');
+    await onStarted(r.course_id ?? cid, r.unit_id ?? '');
   };
 
   return (
     <div>
       <p className="lec-hint">
-        标记语法：<span className="lec-chip"># 主题</span> <span className="lec-chip">= 公式</span>{' '}
-        <span className="lec-chip">? 疑问</span> <span className="lec-chip">! 重点</span>{' '}
-        <span className="lec-chip">&gt; 例子</span> <span className="lec-chip">--- 分块</span>
+        开一节课之后，就<b>在主界面的对话里</b>直接记笔记（爱弥斯会调用 <code>lecture_capture</code> 落盘）。
+        这个边栏负责开课与事后查阅。
       </p>
 
-      <textarea
-        ref={rawRef}
-        className="lec-input lec-shorthand"
-        onInput={recomputeGaps}
-        placeholder={'# 角动量定义\n= L = r⃗ × p⃗ = Iω\n! 定轴转动才可写成 Iω\n? 为什么必须有对称轴'}
-      />
-
-      <div className="lec-toolbar">
-        <button
-          type="button"
-          className="lec-symbtn"
-          data-open={symOpen ? '1' : '0'}
-          onClick={() => setSymOpen((v) => !v)}
-          title="数学符号（∫ √ 三角函数 ∑ 上下限 …）"
-        >
-          ∑ 符号
-        </button>
-        <span className="lec-hint" style={{ margin: 0 }}>
-          {symOpen ? '点符号插入到光标处；带插槽的按 Tab 跳下一个' : '打不出的符号从这里插'}
-        </span>
-      </div>
-      {symOpen ? <SymbolPanel /> : null}
-
-      <div className="lec-label">
-        <span className="lec-req">*</span>我的理解
-      </div>
-      <textarea
-        ref={understandingRef}
-        className="lec-input lec-small"
-        onInput={recomputeGaps}
-        placeholder="用自己的话说这段讲了什么"
-      />
-
-      <div className="lec-label">
-        <span className="lec-req">*</span>我的疑问
-      </div>
-      <textarea
-        ref={questionRef}
-        className="lec-input lec-small"
-        onInput={recomputeGaps}
-        placeholder="还没搞懂的地方（不填不继续）"
-      />
-
-      {/* 实时缺口提示（不阻断输入——后端仍会在提交时强制校验） */}
-      {gaps.length ? (
-        <div className="lec-hint" style={{ marginTop: 6 }}>
-          还差 <b>{gaps.join(' / ')}</b> —— 填了才能记录这一块（现在仍可继续写速记）
+      {courses.length > 0 ? (
+        <div className="lec-actions" style={{ marginTop: 4 }}>
+          <button
+            type="button"
+            className="lec-tab"
+            data-active={mode === 'continue' ? '1' : '0'}
+            onClick={() => setMode('continue')}
+          >
+            继续已有课程
+          </button>
+          <button type="button" className="lec-tab" data-active={mode === 'new' ? '1' : '0'} onClick={() => setMode('new')}>
+            新建课程
+          </button>
         </div>
       ) : null}
 
+      {mode === 'continue' && courses.length > 0 ? (
+        <>
+          <div className="lec-label">课程</div>
+          <select className="lec-select" value={pickCourse} onChange={(e) => setPickCourse(e.target.value)}>
+            {courses.map((c) => (
+              <option key={c.course_id} value={c.course_id}>
+                {c.title}（{c.units.length} 讲）
+              </option>
+            ))}
+          </select>
+        </>
+      ) : (
+        <>
+          <div className="lec-label">课程标识</div>
+          <input
+            className="lec-input"
+            value={newCourseId}
+            onChange={(e) => setNewCourseId(e.target.value)}
+            placeholder="physik-1"
+          />
+          <div className="lec-label">课程全名</div>
+          <input
+            className="lec-input"
+            value={newCourseTitle}
+            onChange={(e) => setNewCourseTitle(e.target.value)}
+            placeholder={defaultCourseTitle || 'Physik I'}
+          />
+          <div className="lec-label">学期</div>
+          <input className="lec-input" value={semester} onChange={(e) => setSemester(e.target.value)} placeholder="WiSe 2026" />
+        </>
+      )}
+
+      <div className="lec-label">
+        <span className="lec-req">*</span>本次课主题
+      </div>
+      <input
+        className="lec-input"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !busy) void start();
+        }}
+        placeholder="第3讲 角动量"
+      />
+
       <div className="lec-actions">
-        <button type="button" className="lec-btn" disabled={busy} onClick={() => void submit()}>
-          {busy ? '记录中…' : '记录这一块'}
+        <button type="button" className="lec-btn" disabled={busy} onClick={() => void start()}>
+          {busy ? '开课中…' : '开始这节课'}
         </button>
       </div>
 
       {err ? <div className="lec-warn">{err}</div> : null}
-      {okMsg ? <div className="lec-ok">{okMsg}</div> : null}
 
-      <div className="lec-label">
-        已记录 {chunks.length} 块{loading ? '（载入中…）' : ''}
+      {courses.length > 0 ? (
+        <>
+          <div className="lec-label">已有课程</div>
+          {courses.map((c) => (
+            <div key={c.course_id} className="lec-card">
+              <strong style={{ fontSize: 13 }}>{c.title}</strong>
+              <div className="lec-meta">
+                {c.course_id}
+                {c.semester ? ` · ${c.semester}` : ''} · {c.units.length} 讲
+              </div>
+            </div>
+          ))}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------- 笔记查阅 ----------
+
+/**
+ * 「笔记」面板：**只读**查阅已记录的速记块。
+ *
+ * 真机反馈定案：记笔记发生在主界面的对话里，侧栏不该再放一个重复的输入框
+ * （既让人困惑"到底在哪记"，也把侧栏塞满）。
+ */
+function NotesView(props: { courseId: string; unitId: string; chunks: RawChunk[]; loading: boolean }): JSX.Element {
+  const { chunks, loading, courseId, unitId } = props;
+  if (loading) return <div className="lec-hint">载入中…</div>;
+  if (chunks.length === 0) {
+    return (
+      <div className="lec-empty">
+        这一讲还没有笔记。
+        <br />
+        回到主界面的对话里，直接写下你听到的内容即可。
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="lec-notice">
+        共 {chunks.length} 块 · <code>{courseId}</code> / <code>{unitId}</code>
+        <br />
+        这里只是查阅。要补记，回主界面对话说。
       </div>
       {chunks.map((c) => (
         <div key={c.seq} className="lec-card">
@@ -407,57 +487,6 @@ function CapturePanel(props: {
           </div>
         </div>
       ))}
-      {chunks.length === 0 && !loading ? <div className="lec-hint">还没有速记块。</div> : null}
-    </div>
-  );
-}
-
-// ---------- 课程总览 ----------
-
-function CoursesPanel({ courses }: { courses: CourseView[] }): JSX.Element {
-  if (courses.length === 0) {
-    return (
-      <div className="lec-empty">
-        还没有课程。
-        <br />
-        在对话里让爱弥斯调用 <code>lecture_session_start</code> 开始一节课。
-      </div>
-    );
-  }
-  const total = courses.reduce((n, c) => n + c.units.length, 0);
-  const reviewed = courses.reduce((n, c) => n + c.units.filter((u) => u.reviewed).length, 0);
-  return (
-    <div>
-      <div className="lec-notice">
-        共 {courses.length} 门课程 · {total} 讲 · 已复盘 {reviewed} 讲
-        {total > 0 ? `（${Math.round((reviewed / total) * 100)}%）` : ''}
-      </div>
-      {courses.map((c) => {
-        const done = c.units.filter((u) => u.reviewed).length;
-        return (
-          <div key={c.course_id} className="lec-card">
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <strong style={{ fontSize: 13 }}>{c.title}</strong>
-              <span className="lec-hint" style={{ margin: 0 }}>
-                {done}/{c.units.length}
-              </span>
-            </div>
-            <div className="lec-meta">
-              {c.semester || '（未标学期）'}
-              {c.module_code ? ` · ${c.module_code}` : ''}
-            </div>
-            <ul style={{ margin: '7px 0 0', paddingLeft: 18, fontSize: 12, lineHeight: 1.8 }}>
-              {c.units.map((u) => (
-                <li key={u.id}>
-                  {u.date} · {u.title}
-                  {u.reviewed ? ' ✓' : ''}
-                  {u.blanks_ok ? '' : ' ⚠留白未齐'}
-                </li>
-              ))}
-            </ul>
-          </div>
-        );
-      })}
     </div>
   );
 }

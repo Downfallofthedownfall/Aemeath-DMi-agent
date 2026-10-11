@@ -58,6 +58,27 @@ if (-not (Test-Path "$root\packages\lecture\dsh-plugin-lecture\lib\client.js")) 
   if ($LASTEXITCODE -ne 0) { Die "构建失败。详见上方输出。" }
 }
 
+# ---- 同步 agent presets（关键！）----
+# dsh 的 agent preset 不在 profile 里，而在 $DSH_HOME\.agent-presets\。
+# 不复制过去，profile 里的 `default: physicist` 就指不到东西，创建会话时报：
+#     agent-preset/not-found: Unknown agent preset: physicist
+#
+# dsh.ps1 会做这件事，但本启动器**直接调 dsh.cmd**（为了自己抓 token URL），
+# 绕过了 dsh.ps1 —— 所以必须在这里补上。真机踩过。
+$presetSrc = "$root\profiles\aemeath\agent-presets"
+$presetDst = "$root\.dsh-home\.agent-presets"
+if (Test-Path $presetSrc) {
+  if (Test-Path $presetDst) { Remove-Item $presetDst -Recurse -Force -ErrorAction SilentlyContinue }
+  New-Item -ItemType Directory -Path $presetDst -Force | Out-Null
+  Copy-Item "$presetSrc\*" $presetDst -Recurse -Force
+  $names = (Get-ChildItem $presetDst -Directory | ForEach-Object { $_.Name }) -join ', '
+  Write-Host "agent presets 已同步：$names" -ForegroundColor DarkGray
+} else {
+  Write-Warning "找不到 agent presets 源目录：$presetSrc"
+  Write-Warning "创建会话时可能报 'Unknown agent preset: physicist'。"
+}
+Write-Host ""
+
 if ($SetupOnly) {
   Write-Host "装配完成（-SetupOnly，未启动）。" -ForegroundColor Green
   exit 0

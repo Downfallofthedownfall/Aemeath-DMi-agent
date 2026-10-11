@@ -1,96 +1,74 @@
 // ============================================================
-// client/symbol-palette.tsx — 数学符号面板（**折叠式**）
+// client/symbol-palette.tsx — 数学符号面板（**复制到剪贴板**）
 //
-// 形态（用户定案 2026-10-11）：默认收起，点输入框旁的「∑ 符号」才展开。
-// 展开后：
-//   · 顶部搜索框（符号多，搜索比翻分组快）
-//   · 分组可折叠（默认只展开上一次用过的那组，避免一次铺 250 个）
+// 形态（用户两轮定案）：
+//   2026-10-11：折叠式，默认收起，点「∑ 符号」才展开；分组可折叠。
+//   2026-10-12：**不再插入到某个输入框，而是复制到剪贴板**。
 //
-// 光标逻辑全部复用已在 check5.mjs 测过的纯函数
-// （insertSymbol / shiftSlots）——本文件只负责 DOM 与 React 状态。
+// 为什么改成复制：
+//   产品设计修正后，记笔记发生在**主界面的对话输入框**里，
+//   侧栏不再有自己的输入框（那样会让人困惑"到底在哪记"）。
+//   于是"插入到光标处"没有目标了 —— 复制到剪贴板是唯一合理的做法：
+//   点符号 → 切回对话输入框 → 粘贴。
+//
+// 插入逻辑仍然保留在 symbols.ts 的纯函数里（insertSymbol / shiftSlots），
+// 已有单测覆盖，将来若宿主开放输入框扩展可以复用。
 // ============================================================
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { SYMBOL_GROUPS, type MathSymbol, insertSymbol, shiftSlots } from '../symbols.ts';
-
-/** 记住最后聚焦的可编辑元素（点面板按钮时它已失焦）。 */
-let lastEditable: HTMLTextAreaElement | HTMLInputElement | null = null;
-
-function installFocusTracker(): () => void {
-  const onFocus = (e: FocusEvent): void => {
-    const el = e.target as HTMLElement | null;
-    if (!el) return;
-    if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
-      lastEditable = el;
-    }
-  };
-  document.addEventListener('focusin', onFocus);
-  return () => document.removeEventListener('focusin', onFocus);
-}
-
-/** 插入后要跳转的插槽（供 Tab 键使用）。 */
-interface PendingSlots {
-  el: HTMLTextAreaElement | HTMLInputElement;
-  slots: number[];
-  active: number;
-}
-
-let pending: PendingSlots | null = null;
-
-/**
- * Tab 键处理：若上一次插入留下了未走完的插槽，跳到下一个；
- * 否则返回 false（放行默认行为）。
- */
-function handleTab(shift: boolean): boolean {
-  if (!pending || !pending.slots.length) return false;
-  const el = pending.el;
-  const typedAt = el.selectionStart ?? 0;
-  const remaining = shift
-    ? pending.slots.slice(0, Math.max(0, pending.active - 1))
-    : pending.slots.slice(pending.active);
-  if (!remaining.length) {
-    pending = null;
-    return false;
-  }
-  const target = shift ? remaining[remaining.length - 1]! : remaining[0]!;
-  const pos = Math.max(target, typedAt);
-  el.setSelectionRange(pos, pos);
-  pending.active += shift ? -1 : 1;
-  if (!shift) pending.slots = shiftSlots(pending.slots, typedAt, 0);
-  return true;
-}
+import { SYMBOL_GROUPS, type MathSymbol } from '../symbols.ts';
 
 /** 最近用过的分组（localStorage；让面板下次打开时落在常用的那组）。 */
 const RECENT_KEY = 'aemeath-lecture-symbol-group';
 
+/** 复制到剪贴板：优先用 Clipboard API，失败回退到 execCommand。 */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* 降级 */
+  }
+  // 降级：临时 textarea + execCommand（老浏览器 / 无权限时）
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export function SymbolPanel(): JSX.Element {
   const [query, setQuery] = useState('');
+  const [copied, setCopied] = useState('');
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
-    // 默认只展开一个分组（上次用过的，否则第一个），避免一次铺开 250 个
     let last = '';
     try {
       last = localStorage.getItem(RECENT_KEY) ?? '';
     } catch {
-      /* 隐私模式/localStorage 不可用 */
+      /* 隐私模式 */
     }
     return new Set([last || SYMBOL_GROUPS[0]?.id || '']);
   });
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const timerRef = useRef<number | null>(null);
 
-  useEffect(() => installFocusTracker(), []);
+  // 卸载时清掉"已复制"提示的定时器
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
 
-  // Tab 键：捕获阶段拦截（textarea 内 Tab 默认会失焦）
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== 'Tab') return;
-      const el = document.activeElement;
-      if (!(el instanceof HTMLTextAreaElement)) return;
-      if (handleTab(e.shiftKey)) e.preventDefault();
-    };
-    document.addEventListener('keydown', onKey, true);
-    return () => document.removeEventListener('keydown', onKey, true);
-  }, []);
-
-  // 搜索时忽略分组折叠状态（直接给全部命中）
   const searching = query.trim().length > 0;
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -106,21 +84,16 @@ export function SymbolPanel(): JSX.Element {
     })).filter((g) => g.symbols.length > 0);
   }, [query]);
 
-  const onClick = (sym: MathSymbol, groupId: string): void => {
+  const onClick = async (sym: MathSymbol, groupId: string): Promise<void> => {
     try {
       localStorage.setItem(RECENT_KEY, groupId);
     } catch {
       /* 忽略 */
     }
-    const el = lastEditable;
-    if (!el) return;
-    const start = el.selectionStart ?? el.value.length;
-    const end = el.selectionEnd ?? start;
-    const r = insertSymbol(el.value, start, end, sym, { autoSpace: true });
-    el.value = r.text;
-    el.setSelectionRange(r.caret, r.caret);
-    el.focus();
-    pending = r.slots.length ? { el, slots: [...r.slots], active: r.activeSlot } : null;
+    const ok = await copyText(sym.insert);
+    setCopied(ok ? sym.label : '');
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => setCopied(''), 1600);
   };
 
   const toggleGroup = (id: string): void => {
@@ -148,6 +121,16 @@ export function SymbolPanel(): JSX.Element {
           </button>
         ) : null}
       </div>
+
+      {/* 用法提示 + 复制反馈 */}
+      <div className="lec-hint" style={{ margin: '6px 10px 0' }}>
+        {copied ? (
+          <span style={{ color: 'var(--aem-accent)', fontWeight: 600 }}>已复制 {copied} —— 到对话输入框粘贴</span>
+        ) : (
+          <>点符号即复制到剪贴板，然后到<b>主界面的对话输入框</b>粘贴</>
+        )}
+      </div>
+
       <div className="lec-sympanel-body">
         {groups.length === 0 ? <div className="lec-hint">没有匹配的符号。</div> : null}
         {groups.map((g) => {
@@ -157,10 +140,7 @@ export function SymbolPanel(): JSX.Element {
               <div className="lec-symgroup-name" onClick={() => toggleGroup(g.id)} title="点击展开 / 收起">
                 <span>{open ? '▾' : '▸'}</span>
                 {g.label}
-                <span style={{ opacity: 0.6 }}>
-                  （{g.symbols.length}
-                  {g.symbols.some((s) => s.kind === 'structured') ? ' · 含插槽' : ''}）
-                </span>
+                <span style={{ opacity: 0.6 }}>（{g.symbols.length}）</span>
               </div>
               {open ? (
                 <div className="lec-symgrid">
@@ -170,8 +150,9 @@ export function SymbolPanel(): JSX.Element {
                       type="button"
                       className="lec-sym"
                       data-structured={s.kind === 'structured' ? '1' : '0'}
-                      title={s.hint ?? s.label}
-                      onClick={() => onClick(s, g.id)}
+                      data-copied={copied === s.label ? '1' : '0'}
+                      title={s.hint ? `${s.label} — ${s.hint}\n点击复制：${s.insert}` : `点击复制：${s.insert}`}
+                      onClick={() => void onClick(s, g.id)}
                     >
                       {s.label}
                     </button>

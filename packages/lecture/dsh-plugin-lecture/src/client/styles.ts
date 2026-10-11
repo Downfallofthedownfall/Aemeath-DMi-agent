@@ -33,19 +33,18 @@ const CSS = `
   --aem-ink: var(--dsw-alias-label-primary);
   --aem-ink-soft: var(--dsw-alias-label-secondary);
   --aem-ink-dim: var(--dsw-alias-label-tertiary);
-  /* ⚠️ 不要硬编码背景色（也注意：本文件是 JS 模板字符串，注释里不能出现反引号）。
-     曾经把暗色分支写成 #16181d、又在挂载点写死同色，
-     结果**主题被钉死在深色**：宿主切亮色时课堂窗还是黑的。
-     正确做法：暗色分支引用宿主变量（--dsw-alias-bg-base 会随主题变），
-     并用 color-mix 加一点品牌粉调，保持 aemeath 的观感。 */
+  /* ⚠️ 面板必须**不透明**。
+     曾经写成 color-mix(... var(--dsw-alias-bg-base) ...)，看起来"跟随主题"，
+     但宿主的 bg-base 在某些主题下带透明度 → color-mix 的结果也半透明 →
+     底下的对话内容透出来（真机截图能看到"探索未至之境"穿透面板）。
+     所以暗色分支用一个**明确的实色**，并在最外层再兜一层不透明底。
+     （要跟随主题的只有"强调色"，底色必须是实色。） */
   --aem-bg: light-dark(
     linear-gradient(175deg, #fff8fb 0%, #fdeef5 55%, #fbe3ee 100%),
-    linear-gradient(175deg,
-      color-mix(in srgb, var(--dsw-alias-bg-base) 92%, var(--aem-accent) 8%) 0%,
-      var(--dsw-alias-bg-base) 100%)
+    #1b1b1c
   );
-  /* 独立窗口的不透明底色：跟随宿主主题，而不是写死深色 */
-  --aem-standalone-bg: light-dark(#fdeef5, var(--dsw-alias-bg-base));
+  /* 独立窗口的不透明底色（同样必须是实色，理由见上面的 --aem-bg） */
+  --aem-standalone-bg: light-dark(#fdeef5, #1b1b1c);
 
   /* —— 形态：右侧停靠面板（不是全屏层） —— */
   position: fixed;
@@ -273,6 +272,11 @@ const CSS = `
 }
 .${LECTURE_CLASS} .lec-sym:hover { background: var(--aem-accent-soft); border-color: var(--aem-accent-2); }
 .${LECTURE_CLASS} .lec-sym[data-structured="1"] { border-color: var(--aem-accent-2); font-weight: 600; }
+/* 刚复制过的符号：短暂高亮，给"点了有反应"的反馈 */
+.${LECTURE_CLASS} .lec-sym[data-copied="1"] {
+  background: linear-gradient(135deg, var(--aem-accent), var(--aem-accent-2));
+  color: #fff; border-color: transparent;
+}
 
 /* —— 按钮 —— */
 .${LECTURE_CLASS} .lec-btn {

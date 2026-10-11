@@ -428,6 +428,51 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   };
 
   // ============================================================
+  // 开课（工具与 HTTP 共用同一条路径）
+  // ============================================================
+
+  /**
+   * 开始一节课：确保课程存在 → 建单元 → 设为该会话的当前课堂 → 落磁盘指针。
+   *
+   * 为什么要抽出来：早先只有对话里的 `lecture_session_start` 工具能开课，
+   * 前端点开课堂界面只看到一句"还没有课程"，既没有输入框也不知道下一步 ——
+   * 死路。现在 HTTP 桥也走这条路径，界面自己就能开课。
+   * 两条路径**共用**这段逻辑，避免再次出现"工具能做、界面不能做"的分叉。
+   */
+  const startSession = (
+    sid: string,
+    args: {
+      courseId: string;
+      title: string;
+      courseTitle?: string;
+      semester?: string;
+      moduleCode?: string;
+      date?: string;
+      unitId?: string;
+    },
+  ): { course_id: string; unit_id: string; date: string; file: string } => {
+    const date = args.date || localDateString();
+    const index = store.ensureCourse(
+      args.courseId,
+      args.courseTitle || args.courseId,
+      args.semester ?? '',
+      args.moduleCode ?? '',
+    );
+    const unitId = args.unitId || `u${String(index.units.length + 1).padStart(2, '0')}`;
+    const file = `${date}-${unitId}.md`;
+    const unit: UnitMeta = { id: unitId, date, title: args.title, file, reviewed: false, has_summary: false };
+    store.upsertUnit(index.course_id, unit);
+    active.set(sid, { courseId: index.course_id, unitId, title: args.title, date, chunks: [] });
+    // 磁盘指针：进程重启后 capture 仍能接着记（见 activeOf 的恢复逻辑）。
+    // 按会话/归属分片 —— 多 profile 共用同一数据目录时不会互踩。
+    writePointer(sid, { course_id: index.course_id, unit_id: unitId, title: args.title, date, started_at: Date.now() });
+    // 检出别的 owner 的活跃指针（不阻断，只提醒）
+    warnForeignPointers(sid);
+    log(`课堂开始：${index.course_id}/${unitId}（${args.title}）`);
+    return { course_id: index.course_id, unit_id: unitId, date, file };
+  };
+
+  // ============================================================
   // 工具集
   // ============================================================
 
@@ -456,20 +501,16 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         unit_id?: string;
       }, exec) => {
         const sid = exec.agent?.session?.id ?? 'default';
-        const date = args.date || localDateString();
-        const index = store.ensureCourse(args.course_id, args.course_title || args.course_id, args.semester ?? '', args.module_code ?? '');
-        const unitId = args.unit_id || `u${String(index.units.length + 1).padStart(2, '0')}`;
-        const file = `${date}-${unitId}.md`;
-        const unit: UnitMeta = { id: unitId, date, title: args.title, file, reviewed: false, has_summary: false };
-        store.upsertUnit(index.course_id, unit);
-        active.set(sid, { courseId: index.course_id, unitId, title: args.title, date, chunks: [] });
-        // 磁盘指针：进程重启后 capture 仍能接着记（见 activeOf 的恢复逻辑）。
-        // 按会话/归属分片 —— 多 profile 共用同一数据目录时不会互踩。
-        writePointer(sid, { course_id: index.course_id, unit_id: unitId, title: args.title, date, started_at: Date.now() });
-        // 检出别的 owner 的活跃指针（不阻断，只提醒）
-        warnForeignPointers(sid);
-        log(`课堂开始：${index.course_id}/${unitId}（${args.title}）`);
-        return ok({ course_id: index.course_id, unit_id: unitId, date, file, chunk_count: 0 });
+        const r = startSession(sid, {
+          courseId: args.course_id,
+          title: args.title,
+          courseTitle: args.course_title,
+          semester: args.semester,
+          moduleCode: args.module_code,
+          date: args.date,
+          unitId: args.unit_id,
+        });
+        return ok({ course_id: r.course_id, unit_id: r.unit_id, date: r.date, file: r.file, chunk_count: 0 });
       },
     }),
   );
@@ -1036,11 +1077,34 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   })();
 
   if (webServer?.register) {
+    // 前端没有 dsh session，用 `web:<课程id>` 作为合成会话标识。
+    // 与下面 loadChunksFromFile 的 `web:${courseId}` 约定一致
+    //（courseIdOf 会把它解回课程 id）。
+    const webSid = (courseId: string): string => `web:${courseId}`;
+
     const handler = (req: Parameters<typeof handleLectureHttp>[0], res: Parameters<typeof handleLectureHttp>[1]): void => {
       void handleLectureHttp(req, res, {
         store,
         log,
         warn,
+        // 界面自己开课（与工具路径 startSession **同一套逻辑**）。
+        // 用合成会话 id，指针/恢复照样按 owner 分片，不会和对话侧的课堂互相覆盖。
+        onStartSession: async (input) => {
+          try {
+            const r = startSession(webSid(input.courseId), {
+              courseId: input.courseId,
+              title: input.title,
+              courseTitle: input.courseTitle,
+              semester: input.semester,
+              moduleCode: input.moduleCode,
+              date: input.date,
+            });
+            return { ok: true, course_id: r.course_id, unit_id: r.unit_id, date: r.date };
+          } catch (e) {
+            warn(`前端开课失败：${(e as Error).message}`);
+            return { ok: false, error: (e as Error).message };
+          }
+        },
         // 前端提交速记 → 与工具路径**同一套逻辑**（落盘 + 强制留白 + 后台转录）
         onSubmitChunk: async (courseId, unitId, chunk) => {
           try {
