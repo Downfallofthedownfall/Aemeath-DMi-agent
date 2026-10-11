@@ -548,4 +548,35 @@ t('记到已有课程时不覆盖该课的标题/学期', () => {
   assert.match(wb, /makingCourse \? newSemester/, 'semester 应仅在新建课程时传');
 });
 
+console.log('\n[可选依赖必须惰性解析（不能缓存 apply 时的 undefined）]');
+
+// 真机踩过：把 memory 从 aemeath-ui 的 inject 移出后，记忆工作区开始报
+// "memory service unavailable"，而 memory 插件其实好好地挂着。
+//
+// 根因：代码是 `const memory = ctx.get('memory')` —— 在 **apply 时求值一次**。
+//   有 inject 时，框架保证"memory 先就绪，ui 才 apply"，所以一次求值碰巧是对的；
+//   去掉 inject 后这个保证没了，apply 时 memory 可能还没注册 → 拿到 undefined
+//   并被**永久捕获**（闭包），此后每次请求都返回 503。
+//
+// 正确做法：把可选依赖包成函数，**每次用时现取**。
+t('aemeath-ui 不在 apply 时缓存 memory 服务', () => {
+  const raw = readFileSync(join(REPO_ROOT, 'packages/ui/dsh-plugin-ui/src/index.ts'), 'utf-8');
+  // 去注释后再找：注释里会**引用**旧写法解释历史，那是应该保留的
+  const uiSrc = stripComments(raw);
+  assert.ok(
+    !/const memory = ctx\.get\('memory'\)/.test(uiSrc),
+    '不该在 apply 时一次性取 memory（会永久缓存 undefined）',
+  );
+  assert.match(uiSrc, /const getMemory = \(\)/, '应有惰性 getter');
+  assert.match(uiSrc, /const memory = getMemory\(\)/, '使用处应现取');
+});
+
+t('惰性取值要能经得起"服务还不存在"', () => {
+  const uiSrc = readFileSync(join(REPO_ROOT, 'packages/ui/dsh-plugin-ui/src/index.ts'), 'utf-8');
+  const m = uiSrc.match(/const getMemory = \(\)[\s\S]{0,320}?\n  \};/);
+  assert.ok(m, '找不到 getMemory 主体');
+  assert.match(m[0], /try\s*\{/, 'ctx.get 可能抛错（服务未注册），要包起来');
+  assert.match(m[0], /catch/, '应有 catch 兜底');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

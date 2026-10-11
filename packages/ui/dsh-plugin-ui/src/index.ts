@@ -209,7 +209,18 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
   })();
 
   // memory 服务（host 侧运行时提供；类型用结构断言）
-  const memory = ctx.get('memory') as unknown as {
+  //
+  // ⚠️ 必须**每次请求时惰性取**，不能在这里取一次存起来。
+  //    真机踩过：早先是 `const memory = ctx.get('memory')` 在 apply 时求值一次，
+  //    而当时 memory 插件可能**还没注册完** → 拿到 undefined 并被永久捕获 →
+  //    记忆工作区一直报 "memory service unavailable"，
+  //    即使 memory 插件其实好好地挂着。
+  //
+  //    这正是我把 memory 从 inject 里移出去（改成可选依赖）之后暴露的：
+  //    以前 inject 保证了"memory 先就绪，ui 才 apply"，所以一次求值也碰巧是对的；
+  //    去掉那个保证后，一次求值的时机就不再可靠。
+  //    惰性取同时满足两边：不硬依赖，也不会拿到过期的 undefined。
+  type MemoryFace = {
     list(): Array<{ key: string; rec: Record<string, unknown> }>;
     stats(): { active: number; dormant: number; byPreset: Record<string, number>; byScope: Record<string, number> };
     softDelete(idPrefix: string): Promise<boolean>;
@@ -236,7 +247,16 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
     };
     /** T3 手动触发一次空闲整合（autoDream）；null = 被闸门拦下或失败（旧洞察不变）。 */
     dreamNow?(): Promise<{ version: number; last_run_at: number; clusters: unknown[]; conflicts: unknown[] } | null>;
-  } | undefined;
+  };
+
+  /** 每次请求时重新解析 memory 服务（理由见上面的长注释：不能缓存 apply 时的 undefined）。 */
+  const getMemory = (): MemoryFace | undefined => {
+    try {
+      return ctx.get('memory') as unknown as MemoryFace | undefined;
+    } catch {
+      return undefined;
+    }
+  };
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // 无 CORS 头：端点仅服务同源前端（S3 修复；跨源读取/写入由浏览器同源策略拦截）
@@ -573,6 +593,8 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
 
   // —— 记忆管理端点（M5 F2）：GET list/stats + POST delete（无 CORS；POST 校验 Origin）——
   async function handleMemory(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // 每次请求现取（不要用 apply 时缓存的那个 —— 那时可能还没注册，见 getMemory 的注释）
+    const memory = getMemory();
     if (!memory) {
       jsonError(res, 503, 'memory.unavailable', 'memory service unavailable');
       return;
