@@ -215,7 +215,7 @@
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config:
     default: aemeath
-    selectedDefault: physicist
+    selectedDefault: aemeath
 
 # —— 声明 aemeath / physicist 两个 preset 本体 ——
 #
@@ -272,8 +272,26 @@
               maxBytes: 65536
 
 # —— 禁用与爱弥斯无关的官方 UI 插件（去掉 dsh 开发工具痕迹）——
+#
+# ⚠️⚠️ `ui-agent-preset` **不能禁用**（真机踩过两次）：
+#
+#   它看起来像"dsh 开发工具"，其实是**人格选择器的唯一提供者**：
+#     · conversation.hero.agentPreset      —— 欢迎屏上方的人格模态
+#     · conversation.session.header.actions —— 会话头部操作
+#     · byId.agentPreset                   —— 会话列表每行的人格标签
+#                                            （历史记录里显示"学霸/小爱同学"）
+#   以及 settings.section。
+#
+#   禁用它之后的两个症状（用户先报第一个、后报第二个）：
+#     ① "preset 按钮点不了" —— 切换人格的 UI 根本不存在；
+#     ② "前端上方模态锁在学霸" / "历史记录模态显示也没有" ——
+#        槽位没人建，aemeath-ui 往 `conversation.hero.agentPreset` 的注册
+#        全部落空；会话列表读的 `byId.agentPreset` 也没人填。
+#
+#   当时禁用的理由写的是"去掉 dsh 开发工具痕迹" ——
+#   但它提供的正是我们**需要**的那个 UI。已改为启用。
 - id: ui-agent-preset
-  disabled: true
+  disabled: false
 - id: ui-jobs
   disabled: true
 - id: ui-skill

@@ -644,4 +644,36 @@ t('四份 persona 都说明"记住"由系统自动处理、不要写文件', () 
   }
 });
 
+console.log('\n[ui-agent-preset 不能被禁用（人格选择器的唯一提供者）]');
+
+// 真机踩过两次，症状看起来无关，其实是同一个原因：
+//   ① "preset 按钮点不了"
+//   ② "前端上方模态锁在学霸" + "历史记录模态显示也没有"
+//
+//   主 profile 里把 `ui-agent-preset` 标了 `disabled: true`，
+//   理由是"去掉 dsh 开发工具痕迹" —— 但它正是：
+//     · conversation.hero.agentPreset      欢迎屏上方的人格模态
+//     · conversation.session.header.actions 会话头部操作
+//     · byId.agentPreset                    会话列表每行的人格标签
+//   禁用它 → 槽位没人建 → aemeath-ui 往 hero 槽位的注册全部落空，
+//   会话列表读的 `byId.agentPreset` 也没人填。
+t('主 profile 没有禁用 ui-agent-preset', () => {
+  const prof = readFileSync(join(REPO_ROOT, 'profiles/aemeath/cordis.patch.yml'), 'utf-8');
+  // 找到该行及其后的 disabled 字段
+  const m = prof.match(/- id: ui-agent-preset\s*\n(?:\s*#[^\n]*\n)*\s*disabled:\s*(\w+)/);
+  assert.ok(m, '应能找到 ui-agent-preset 的 disabled 字段');
+  assert.equal(m[1], 'false', 'ui-agent-preset 必须启用（否则人格选择器消失）');
+});
+
+t('aemeath-ui 依赖的 hero 槽位由该插件提供', () => {
+  const hero = readFileSync(join(REPO_ROOT, 'packages/ui/dsh-plugin-ui/src/client/hero.tsx'), 'utf-8');
+  assert.match(hero, /conversation\.hero\.agentPreset/, 'aemeath-ui 应往该槽位注册');
+  // 提供方是官方插件，路径固定
+  const provider = join(REPO_ROOT, 'node_modules/@deepseek-ai/dsh-client-ui-agent-preset/lib/client.js');
+  if (existsSync(provider)) {
+    const t = readFileSync(provider, 'utf-8');
+    assert.match(t, /conversation\.hero\.agentPreset/, '提供方应定义该槽位');
+  }
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);
