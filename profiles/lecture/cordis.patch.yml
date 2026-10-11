@@ -1,0 +1,135 @@
+# ============================================================
+# profiles/lecture/cordis.patch.yml — 课堂记录模式（Lecture Mode）
+#
+# 定位（docs/lecture-mode-plan.md）：
+#   · D1  Aemeath 的拓展 app，底层复用 dsh + persona 设计
+#   · D2  **不深度嵌入** agent harness：不接 memory 召回 / worldbook 注入 /
+#         retriever / curriculum / workflow（不调 compute）
+#   · D10 只保证 lecture 在 mac 可用；主 agent 保持 Windows 全面性，不改造
+#   · D13 课堂内非阻塞（dsh steer 插队输入）
+#   · P3  带前端（web-app bundle，见 package.json 的 bundles）
+#
+# **macOS 零 Python**：下面刻意不挂任何 mcp-* 服务。原因见 plan §3：
+#   mcp-tts    硬编码 D:\index-tts\.venv\Scripts\python.exe（Windows/mac 都不通用）
+#   mcp-control 依赖 pywin32（Windows 专有）
+#   mcp-vision  torch + ultralytics + easyocr（数 GB）
+#   mcp-sympy   需 Python；且 lecture 不调 compute（D2）
+# 去掉了这些，mac 上只剩 Node + dsh + DeepSeek key。
+#
+# 用法：
+#   .\scripts\dsh.ps1 --profile lecture --port 3082
+#   → 浏览器/桌面壳打开后，点侧边栏「课堂」胶囊，或 lecture 独立入口
+#
+# 注：web-app bundle 已提供 storage 三件套与 Web 层，
+#     故本文件**不再** insert storage（那是 headless profile 才需要的）。
+# ============================================================
+
+# —— agent preset 注册表：lecture 用 physicist 人格（复用 aemeath persona 设计，D1）——
+- id: agent-preset-registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
+  config:
+    default: physicist
+    selectedDefault: physicist
+
+# —— Aemeath 插件：**只挂 common（persona）与 lecture** ——
+- insert:
+    - id: aemeath-common
+      name: '@aemeath/dsh-plugin-common'
+      config:
+        defaultPreset: 'physicist'
+        oocRulesEnabled: true
+        oocLlmEnabled: false
+        personas:
+          physicist:
+            file: 'profiles/aemeath/personas/physicist.md'
+          aemeath:
+            file: 'profiles/aemeath/personas/aemeath.md'
+        oocRules:
+          physicist:
+            forbidPatterns:
+              - '嘤嘤嘤'
+              - '人家'
+              - '好哒'
+              - '喵~'
+              - 'Ciallo'
+          aemeath:
+            forbidPatterns:
+              - '根据研究'
+              - '科学表明'
+              - '数据显示'
+
+    # —— Lecture Mode 插件（host 半区：工具 + HTTP 桥；client 半区：全屏界面）——
+    - id: aemeath-lecture
+      name: '@aemeath/dsh-plugin-lecture'
+      config:
+        defaultPreset: 'physicist'
+        enabled: true
+        # D11：数据目录放 physicist 里 → retriever 可直接消费
+        dataDir: 'packages/library/physicist/lectures'
+        # D3：课堂内 LLM 转录员（加工只落后端，前端不剧透）
+        transcribe: true
+        # D7：握手导出目录（改成你的局域网共享目录即可）
+        handoffDir: 'packages/library/physicist/lectures'
+        # 复盘完成后自动导出为讲义，供主 agent 的 retriever 检索
+        exportToNotes: false
+        notesDir: 'packages/library/physicist/notes'
+        llm:
+          # 留空 → 运行时回退到 ctx.credentials（.credentials.yaml / DEEPSEEK_API_KEY）
+          apiKey: ''
+          baseUrl: 'https://api.deepseek.com'
+          model: 'deepseek-v4-flash'
+
+# —— 重新启用文件系统工具（课堂速记要落盘到 packages/library/...）——
+- id: tool-fs
+  disabled: false
+- id: tool-fs-search
+  disabled: false
+
+# —— 重新启用 skill 机制（保持与主 profile 一致的联网搜索行为指南）——
+- id: skill-filesystem
+  disabled: false
+- id: tool-skill
+  disabled: false
+
+# —— 禁用与课堂记录无关的官方 UI 插件（保持界面精简）——
+- id: ui-agent-preset
+  disabled: true
+- id: ui-jobs
+  disabled: true
+- id: ui-skill
+  disabled: true
+- id: ui-subagent
+  disabled: true
+- id: ui-goal
+  disabled: true
+- id: ui-workflow-run
+  disabled: true
+- id: ui-plan
+  disabled: true
+- id: ui-trajectory
+  disabled: true
+- id: ui-deliverables
+  disabled: true
+- id: ui-cordis
+  disabled: true
+- id: ui-settings-plugin-inventory
+  disabled: true
+
+# —— 权限预设：本地交互场景 = 沙箱全开 + 弹窗确认（与主 profile 一致）——
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: ask
+
+# —— 恢复网络搜索工具（物理学习偶尔要查实时信息）——
+- id: tool-web
+  disabled: false

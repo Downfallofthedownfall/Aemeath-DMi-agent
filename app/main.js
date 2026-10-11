@@ -18,7 +18,7 @@
 // 打包（C1）：extraResources 携带 scripts/profiles/packages/package*.json，
 //   首次运行在 resources 下自动 npm ci 补齐 dsh CLI 与插件依赖。
 // ============================================================
-const { app, BrowserWindow, ipcMain, shell, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, session, screen, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
@@ -33,6 +33,14 @@ const DSH_SCRIPT = path.join(REPO_ROOT, 'scripts', 'dsh.ps1');
 const APP_ORIGIN = `http://${HOST}:${PORT}`;
 
 let mainWindow = null;
+// 课堂记录模式的**独立窗口**。
+// 为什么必须开第二个 BrowserWindow（而不是在宿主 Web UI 里做面板）：
+//   dsh 的 Web UI 只开放 sidebar/conversation/details/shell.overlay 四个座位，
+//   插件**没有能力**开新 OS 窗口（记忆工作区当初也因此退而做全屏层）。
+//   用户要的是"可以摆到屏幕边上、不跟主窗口重叠"的真窗口 —— 只有壳能做到。
+let lectureWindow = null;
+// 记住认证 URL：主窗口启动时拿到，开课堂窗口时复用（同一 token）。
+let authedUrlForChildren = null;
 let dshProc = null;
 let isQuitting = false;
 
@@ -79,19 +87,32 @@ function isDshService(port) {
 /**
  * 等待服务就绪。返回：
  *   'ready'    端口开放且身份校验通过（是 dsh）
- *   'foreign'  端口开放但被非 dsh 进程占用
+ *   'foreign'  端口开放但**持续**被非 dsh 进程占用
  *   'timeout'  超时未就绪
+ *
+ * ⚠️ 真机踩过：早先版本在端口一开放时就**一次性**判定身份，
+ * 失败即 return 'foreign'。但 dsh 的端口先于"能正确响应 HTTP"开放：
+ * 那段启动窗口里 `isDshService` 会因连接重置/空响应返回 false，
+ * 于是被误判成"外来进程"——用户看到的是"检测到 3081 上的不是 Aemeath 服务"，
+ * 而实际上那正是刚要起来的 dsh（手动再点一次往往就好了，典型的竞态）。
+ *
+ * 现在改为：身份校验失败**不算终局**，在超时预算内持续重试；
+ * 只有超时仍不是 dsh 才判定 'foreign'（真正的占用）。
+ * 这样既保留 C24 的防护意图，又不会把启动竞态误报成占用。
  */
 async function waitForService(port, timeoutMs) {
   const start = Date.now();
+  let sawOpenPort = false;
   while (Date.now() - start < timeoutMs) {
     if (await portOpen(port)) {
+      sawOpenPort = true;
       if (await isDshService(port)) return 'ready';
-      return 'foreign';
+      // 端口开着但身份还没确认：可能是 dsh 正在启动 → 继续等，不立刻判死
     }
     await new Promise((r) => setTimeout(r, 500));
   }
-  return 'timeout';
+  // 超时：端口确实一直开着但始终不是 dsh → 才认定为外来占用
+  return sawOpenPort ? 'foreign' : 'timeout';
 }
 
 // ===== 首次运行依赖引导（C1：打包后 resources 无 node_modules，自动 npm ci）=====
@@ -315,9 +336,141 @@ function createWindow(loadUrl) {
     cb(['clipboard-read', 'clipboard-sanitized-write'].includes(permission));
   });
 
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    // 课堂窗是主窗口的**辅助窗**：主窗口关了它也不该独自留着
+    // （否则 window-all-closed 不触发、应用退不出去）。
+    closeLectureWindow();
+  });
 
   mainWindow.loadURL(loadUrl);
+}
+
+// ============================================================
+// 课堂记录模式：独立窗口
+// ============================================================
+
+/** 课堂窗口的位置/尺寸记忆（存在 userData 下的小 JSON）。 */
+function lectureStatePath() {
+  return path.join(app.getPath('userData'), 'lecture-window.json');
+}
+
+function loadLectureState() {
+  try {
+    const raw = fs.readFileSync(lectureStatePath(), 'utf-8');
+    const s = JSON.parse(raw);
+    if (typeof s?.width === 'number' && typeof s?.height === 'number') return s;
+  } catch {
+    /* 首次运行 / 文件损坏：用默认值 */
+  }
+  return null;
+}
+
+function saveLectureState(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    const b = win.getBounds();
+    fs.writeFileSync(lectureStatePath(), JSON.stringify({ ...b, maximized: win.isMaximized() }), 'utf-8');
+  } catch {
+    /* 忽略：位置记忆失败不该影响使用 */
+  }
+}
+
+/**
+ * 打开（或聚焦）课堂记录窗口。
+ *
+ * 复用规则：已有窗口 → 直接 focus（单例，符合"工具窗"直觉）。
+ * 无认证 URL（比如复用了外部 dsh 实例）→ 返回 false，由调用方提示。
+ */
+function openLectureWindow() {
+  if (lectureWindow && !lectureWindow.isDestroyed()) {
+    if (lectureWindow.isMinimized()) lectureWindow.restore();
+    lectureWindow.focus();
+    return true;
+  }
+  if (!authedUrlForChildren) return false;
+
+  // 默认摆到主窗口右侧（不重叠）——这正是用户要的"放在边上"。
+  const saved = loadLectureState();
+  let bounds = { width: 460, height: 860 };
+  if (saved) {
+    bounds = { x: saved.x, y: saved.y, width: saved.width, height: saved.height };
+  } else if (mainWindow && !mainWindow.isDestroyed()) {
+    const mb = mainWindow.getBounds();
+    const disp = screen.getDisplayMatching(mb).workArea;
+    // 优先贴主窗口右边缘；放不下则贴屏幕右侧
+    const w = 460;
+    let x = mb.x + mb.width - w;
+    if (x + w > disp.x + disp.width) x = disp.x + disp.width - w - 12;
+    bounds = { x, y: mb.y, width: w, height: mb.height };
+  }
+
+  lectureWindow = new BrowserWindow({
+    ...bounds,
+    minWidth: 360,
+    minHeight: 420,
+    // 课堂窗是辅助窗：标题栏用原生（简单、可拖），不抢主窗口的品牌样式
+    title: '课堂记录 · Aemeath',
+    // 首帧底色跟随系统主题（加载完由前端 --dsw-alias-bg-base 接管）。
+    // 写死颜色会让亮色主题下启动瞬间闪一下深色。
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#151517' : '#fdeef5',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // ⚠️ 用 additionalArguments 而不是 URL query 自报"我是课堂窗口"。
+      //    踩过的坑：dsh 的认证流程会 `303 → ./` 把 URL 重写成裸路径，
+      //    query 上的标记会被丢掉（实测 location.search 变成空）。
+      //    additionalArguments 在**渲染进程启动前**就注入到 process.argv，
+      //    preload 可同步读出并挂到 window 上 —— 任何跳转都丢不掉。
+      additionalArguments: ['--aemeath-lecture-window=1'],
+    },
+  });
+
+  if (saved?.maximized) lectureWindow.maximize();
+
+  // 同一套安全策略（与主窗口一致）：只允许本地源；外链走系统浏览器
+  lectureWindow.webContents.on('will-navigate', (e, url) => {
+    try {
+      if (new URL(url).origin !== APP_ORIGIN) e.preventDefault();
+    } catch {
+      e.preventDefault();
+    }
+  });
+  lectureWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://')) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  // ⚠️ 课堂窗口靠 **URL query** 自报身份，而不是 did-finish-load 里 executeJavaScript：
+  //    标记必须在客户端插件 apply() 之前就可见，而 executeJavaScript 是在页面加载完成后
+  //    才 push 进去的 —— 插件那时已经决定渲染面板还是整窗了（真机踩到：窗口里显示的是
+  //    主 agent 界面，因为 standalone 判定拿到 false）。
+  //    query 是同步可读的、先于任何脚本执行，没有竞态。
+  lectureWindow.on('resize', () => saveLectureState(lectureWindow));
+  lectureWindow.on('move', () => saveLectureState(lectureWindow));
+  lectureWindow.once('ready-to-show', () => lectureWindow.show());
+  lectureWindow.on('closed', () => {
+    lectureWindow = null;
+    // 通知主窗口：入口按钮状态复位
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('shell:lecture-window', { open: false });
+    }
+  });
+
+  // 身份标记走 webPreferences.additionalArguments（见上面的注释），
+  // 这里只加载普通认证 URL —— URL 会被 dsh 的认证流程重写，不能承载标记。
+  lectureWindow.loadURL(authedUrlForChildren);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('shell:lecture-window', { open: true });
+  }
+  return true;
+}
+
+function closeLectureWindow() {
+  if (lectureWindow && !lectureWindow.isDestroyed()) lectureWindow.close();
 }
 
 // ===== IPC =====
@@ -338,6 +491,20 @@ ipcMain.handle('shell:get-info', () => ({
   version: '2.0.0-m0',
 }));
 
+// ===== 课堂记录窗口（独立窗口）=====
+// 渲染进程（侧边栏「课堂」按钮）经此请求开窗；**不在 Web UI 内做面板**。
+ipcMain.handle('shell:lecture-open', () => {
+  const ok = openLectureWindow();
+  return { ok, reason: ok ? '' : 'no-auth-url' };
+});
+ipcMain.handle('shell:lecture-close', () => {
+  closeLectureWindow();
+  return { ok: true };
+});
+ipcMain.handle('shell:lecture-is-open', () => ({
+  open: !!(lectureWindow && !lectureWindow.isDestroyed()),
+}));
+
 // ===== 生命周期 =====
 app.whenReady().then(async () => {
   const depsOk = await ensureDshCli();
@@ -349,6 +516,8 @@ app.whenReady().then(async () => {
     const authed = await waitForAuthUrl(8000);
     if (authed) {
       console.log('[shell] 加载认证 URL');
+      // 课堂窗口复用同一 token（同源、同会话）
+      authedUrlForChildren = authed;
       createWindow(authed);
     } else {
       // 拿不到 token：要么是复用了外部已有实例（其 token 我们无从获取），

@@ -1,0 +1,99 @@
+{
+  "name": "@aemeath/dsh-plugin-lecture",
+  "version": "0.1.0",
+  "description": "Aemeath 课堂记录模式（Lecture Mode）：课堂采集 → 后端加工（不回显前端）→ 课后五步人工复盘 → 生成结构化摘要 → 单向握手回主 agent。独立于主 agent 的 memory/worldbook/retriever 链路。",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./store": {
+      "types": "./lib/store.d.ts",
+      "default": "./lib/store.js"
+    },
+    "./transcriber": {
+      "types": "./lib/transcriber.d.ts",
+      "default": "./lib/transcriber.js"
+    },
+    "./review": {
+      "types": "./lib/review.d.ts",
+      "default": "./lib/review.js"
+    },
+    "./handoff": {
+      "types": "./lib/handoff.d.ts",
+      "default": "./lib/handoff.js"
+    },
+    "./symbols": {
+      "types": "./lib/symbols.d.ts",
+      "default": "./lib/symbols.js"
+    },
+    "./http": {
+      "types": "./lib/http.d.ts",
+      "default": "./lib/http.js"
+    },
+    "./client": {
+      "types": "./src/client/index.tsx",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/*.js",
+    "lib/*.d.ts",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node build-client.mjs",
+    "build:client": "node build-client.mjs",
+    "typecheck:client": "tsc -p tsconfig.client.json",
+    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs && node test/check7.mjs && node test/check8.mjs"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.2.0-rc.2",
+    "@aemeath/dsh-plugin-common": "file:../../../packages/shared/dsh-plugin-common",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-client-ui-layout": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.0-rc.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.2.0-rc.2",
+    "@aemeath/dsh-plugin-common": "file:../../../packages/shared/dsh-plugin-common",
+    "@deepseek-ai/dsh-client-ui-layout": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.0",
+    "esbuild": "^0.24.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.6.0"
+  }
+}

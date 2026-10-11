@@ -1,0 +1,17 @@
+{
+  "name": "dsh-profile-lecture",
+  "private": true,
+  "description": "Lecture Mode 独立 profile — 课堂记录模式（可脱离主 agent 在 macOS 上运行，零 Python 依赖）",
+  "dependencies": {
+    "@aemeath/dsh-plugin-common": "file:../../packages/shared/dsh-plugin-common",
+    "@aemeath/dsh-plugin-lecture": "file:../../packages/lecture/dsh-plugin-lecture"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}

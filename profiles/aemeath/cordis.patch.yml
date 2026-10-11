@@ -109,6 +109,33 @@
         modulhandbuchFile: 'packages/library/physicist/modulhandbuch.json'
         currentSemester: ''
         injectTokens: 800
+    # —— Lecture Mode 课堂记录模式（D9：可从主 agent 内启动）——
+    #    为什么挂在主 profile：用户要求"主程序前端里要有入口"。
+    #    挂上后侧边栏出现「课堂」胶囊按钮（client 半区注册 sidebar.footer.action），
+    #    点击打开 shell.overlay 全屏课堂界面。
+    #
+    #    与独立 lecture profile 的关系：**同一份插件、同一份数据目录**，
+    #    不是两套实现。独立 profile 的优势是"可脱离主 agent 在 mac 上跑"；
+    #    主 profile 里挂上则是"在 Windows 全面版里也能用"。
+    #
+    #    隔离性说明（D2）：本插件不注入 memory 召回 / worldbook / retriever /
+    #    curriculum / workflow 的任何注入链——它在主 profile 里只是**多了几个
+    #    工具 + 一个 overlay 界面**，不会污染主 agent 的对话上下文。
+    #    唯一的交互是 lecture_import_handoff（握手接收侧），那是显式的人工动作。
+    - id: aemeath-lecture
+      name: '@aemeath/dsh-plugin-lecture'
+      config:
+        defaultPreset: 'physicist'
+        enabled: true
+        dataDir: 'packages/library/physicist/lectures'
+        transcribe: true
+        handoffDir: 'packages/library/physicist/lectures'
+        exportToNotes: false
+        notesDir: 'packages/library/physicist/notes'
+        llm:
+          apiKey: ''
+          baseUrl: 'https://api.deepseek.com'
+          model: 'deepseek-v4-flash'
     # —— M5 前端 UI 插件（browser 半区经 dsh.client 声明进入 __DSH_BOOT__）——
     - id: aemeath-ui
       name: '@aemeath/dsh-plugin-ui'
@@ -268,7 +295,7 @@
 - id: ui-theme
   name: "@deepseek-ai/dsh-client-ui-theme"
   config:
-    preference: dark
+    preference: light
 
 # 2026-08-17：重新启用官方 models 设置页（用户要求加回 dsh 自带 responses/messages 接口）——
 # 我们的「爱弥斯」设置页只做 API key 快捷填写，模型/provider 配置回到官方 Models 页
