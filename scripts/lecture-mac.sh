@@ -24,7 +24,7 @@ set -euo pipefail
 
 # 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
 # （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
-LECTURE_MAC_VERSION="2026-10-12.6"
+LECTURE_MAC_VERSION="2026-10-12.7"
 
 # ---- 路径 ----
 # ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
@@ -163,28 +163,34 @@ else
   say "profile 链接已存在：$LINK"
 fi
 
-# ---- 2.5) 同步 agent presets（关键！）----
+# ---- 2.5) 校验 profile 一定是**链接**，不是副本 ----
 #
-# dsh 的 agent preset 不在 profile 里，而在 **$DSH_HOME/.agent-presets/**。
-# 不复制过去，profile 里写的 `default: physicist` 就会指不到东西，
-# 创建会话时报：
-#     agent-preset/not-found: Unknown agent preset: physicist
+# ⚠️ 这是真机上真正咬人的坑，而且有两层：
 #
-# 这是 Windows 上 dsh.ps1 做的事（scripts/dsh.ps1:21-27），
-# mac 脚本早先漏了 —— 症状是"能启动、但一创建会话就报 unknown preset"。
+#   第一层：DSH 0.2.0 里 agent preset 是 **profile patch 里的一个插件条目**
+#          （`@deepseek-ai/dsh-agent-preset`，见 dsh-web-app/presets/*.patch.yml），
+#          **不是**扫 `$DSH_HOME/.agent-presets/` 目录 —— 那是 0.1.1 的机制，
+#          0.2.0 的运行时里根本没有 ".agent-presets" 这个字符串。
+#          所以早先"复制 preset 目录"的做法完全无效，却让人以为已经处理好了。
 #
-# 注意用**复制**而不是符号链接：preset 是数据（yaml），
-# 复制一份更稳（链接会让 .agent-presets 里出现仓库路径，移动仓库就断）。
-PRESET_SRC="$ROOT/profiles/aemeath/agent-presets"
-PRESET_DST="$DSH_HOME/.agent-presets"
-if [[ -d "$PRESET_SRC" ]]; then
-  rm -rf "$PRESET_DST"
-  mkdir -p "$PRESET_DST"
-  cp -R "$PRESET_SRC"/. "$PRESET_DST"/
-  say "agent presets 已同步：$(ls "$PRESET_DST" 2>/dev/null | tr '\n' ' ')"
+#   第二层（更隐蔽）：$DSH_HOME/profiles/<name> 若是**真实目录副本**而不是链接，
+#          那么在仓库里改 profile **dsh 读不到**，它读的是那份旧副本。
+#          症状：改了配置、重启了、还是老样子 —— 让人怀疑"是不是没生效"，
+#          实际是"改的地方和读的地方不是同一个文件"。
+#
+# 所以这里强制校验：$DSH_HOME/profiles/lecture 必须是指向仓库的链接。
+# 上面第 2 步已经建了链接；这里只做**确认**（万一被别的操作换成副本）。
+if [[ -L "$LINK" ]]; then
+  # 顺带确认 preset 声明真的在（防止 profile 内容被改坏）
+  if ! grep -q 'dsh-agent-preset' "$SRC/cordis.patch.yml" 2>/dev/null; then
+    warn "profile 里没有 @deepseek-ai/dsh-agent-preset 声明 ——"
+    warn "  创建会话时会报 'Unknown agent preset: physicist'。"
+    warn "  请检查 profiles/lecture/cordis.patch.yml 里的 preset-physicist 条目。"
+  fi
 else
-  warn "找不到 agent presets 源目录：$PRESET_SRC"
-  warn "  创建会话时可能报 'Unknown agent preset: physicist'。"
+  warn "$LINK 不是符号链接（可能是旧副本）——"
+  warn "  在仓库里改 profile 将不会生效（dsh 读的是副本）。"
+  warn "  修复：删除它后重跑本脚本。"
 fi
 
 # ---- 3) 关键：@deepseek-ai 与 @aemeath 都必须是指向仓库的链接 ----
@@ -267,15 +273,25 @@ done
 say "@aemeath 逐包链接：$(ls "$AE_SCOPE" 2>/dev/null | tr '\n' ' ')"
 
 # ---- 4) API key 检查（不打印内容）----
+#
+# ⚠️ 真机踩过：用户明明在设置里填了 key，这里却报"没有找到凭据"。
+#    原因是 `grep -q "deepseek"` **区分大小写**，而凭据文件里写的是
+#    `DEEPSEEK_API_KEY`（全大写）→ 匹配不上 → 误报。
+#    现在用 -i（忽略大小写），并同时认几种可能的写法。
+CRED_FILE="$DSH_HOME/.credentials.yaml"
 if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
   say "检测到 DEEPSEEK_API_KEY（环境变量）"
-elif [[ -f "$DSH_HOME/.credentials.yaml" ]] && grep -q "deepseek" "$DSH_HOME/.credentials.yaml" 2>/dev/null; then
-  say "检测到 $DSH_HOME/.credentials.yaml 中的凭据"
+elif [[ -f "$CRED_FILE" ]] && grep -qiE 'deepseek' "$CRED_FILE" 2>/dev/null; then
+  say "检测到 $CRED_FILE 中的 DeepSeek 凭据"
+elif [[ -f "$CRED_FILE" ]] && grep -qiE 'api[_-]?key|token' "$CRED_FILE" 2>/dev/null; then
+  # 有凭据但没写 deepseek 字样（例如只写 provider 名）——不武断说"没有"
+  say "检测到 $CRED_FILE 中有凭据（未能确认是否为 DeepSeek）"
 else
   warn "没有找到 DeepSeek 凭据 —— 课堂内的 LLM 转录会不可用（速记仍能记，只是不做规范化加工）。"
   warn "设置方式（任一）："
-  warn "  export DEEPSEEK_API_KEY=sk-xxxx        # 写进 ~/.zshrc 可持久"
-  warn "  或在 dsh 的设置里配置 provider 凭据"
+  warn "  启动后点左下角「设置」→ Models 里填（推荐）"
+  warn "  或 export DEEPSEEK_API_KEY=sk-xxxx     # 写进 ~/.zshrc 可持久"
+  warn "  凭据文件位置：$CRED_FILE"
 fi
 
 if [[ "$SETUP_ONLY" == "1" ]]; then

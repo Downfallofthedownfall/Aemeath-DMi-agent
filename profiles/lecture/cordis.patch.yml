@@ -31,6 +31,35 @@
     default: physicist
     selectedDefault: physicist
 
+# —— 声明 physicist preset 本体 ——
+#
+# ⚠️ 这是真机踩过的坑：注册表只是"选哪个 preset"，**preset 本身必须被声明**。
+#    早先这里只配了 registry 指向 `physicist`，却没有任何地方定义它，
+#    于是创建会话时报：
+#        agent-preset/not-found: Unknown agent preset: physicist
+#
+#    DSH 0.2.0 的机制（见 dsh-web-app/presets/standard.patch.yml）：
+#      preset = 一个 `@deepseek-ai/dsh-agent-preset` 条目，
+#      config 里写 id / order / plugins。
+#    **不是**扫 `.agent-presets/` 目录 —— 那是 0.1.1 的机制，
+#    scripts/dsh.ps1 的注释已过时（0.2.0 的运行时里根本没有这个字符串）。
+#
+#    plugins 与 profiles/aemeath/agent-presets/physicist/agent.cordis.yml 保持一致：
+#    persona 由 @aemeath/dsh-plugin-common 按 preset 挂载，这里只放基础指令。
+- insert:
+    - id: preset-physicist
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: physicist
+        name: 爱弥斯-拉贝尔学部学霸
+        description: 物理学习模式：引导式讲解、推导、复盘（课堂记录用）
+        order: 20
+        plugins:
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
 # —— Aemeath 插件：**只挂 common（persona）与 lecture** ——
 - insert:
     - id: aemeath-common

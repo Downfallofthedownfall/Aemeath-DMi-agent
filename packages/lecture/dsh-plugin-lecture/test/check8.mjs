@@ -242,4 +242,36 @@ t('符号键盘改为复制到剪贴板', () => {
   assert.ok(!/insertSymbol\(/.test(symLive), '活代码里不该再插入到输入框（侧栏没有输入框了）');
 });
 
+console.log('\n[profile 必须声明 preset 本体]');
+
+// 背景（真机踩过两次）：
+//   ① 只配了 agent-preset-registry 指向 physicist，却没声明 physicist 本体
+//      → 创建会话报 `agent-preset/not-found: Unknown agent preset: physicist`
+//   ② $DSH_HOME/profiles/lecture 是**真实目录副本**而非链接
+//      → 在仓库里改 profile，dsh 读的是旧副本，改了"没生效"
+//
+// DSH 0.2.0 的机制：preset = profile patch 里的一个
+// `@deepseek-ai/dsh-agent-preset` 条目（见 dsh-web-app/presets/standard.patch.yml）。
+// **不是**扫 .agent-presets 目录（那是 0.1.1 的机制）。
+
+// root = packages/lecture/dsh-plugin-lecture → 仓库根是 ../../..
+const REPO_ROOT = join(root, '..', '..', '..');
+const LECTURE_PROFILE = join(REPO_ROOT, 'profiles/lecture/cordis.patch.yml');
+
+t('lecture profile 声明了 @deepseek-ai/dsh-agent-preset', () => {
+  const p = readFileSync(LECTURE_PROFILE, 'utf-8');
+  assert.match(p, /@deepseek-ai\/dsh-agent-preset/, '应声明 dsh-agent-preset 条目');
+});
+
+t('registry 指向的 preset 必须真的被声明', () => {
+  const p = readFileSync(LECTURE_PROFILE, 'utf-8');
+  // registry 说 default: physicist，就必须有 config.id = physicist 的声明，
+  // 否则创建会话报 agent-preset/not-found（真机踩过）。
+  const m = p.match(/default:\s*(\w+)/);
+  assert.ok(m, 'registry 应有 default');
+  const wanted = m[1];
+  const declared = new RegExp(`id:\\s*${wanted}\\b`).test(p);
+  assert.ok(declared, `registry 默认 ${wanted}，但 profile 里没有 id: ${wanted} 的 preset 声明`);
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);
