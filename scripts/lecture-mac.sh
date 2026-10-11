@@ -22,19 +22,38 @@
 # ============================================================
 set -euo pipefail
 
+# 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
+# （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
+LECTURE_MAC_VERSION="2026-10-12.2"
+
 # ---- 路径 ----
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
+#    支持被 source / 被 bash 调用 / 直接执行三种方式。
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 cd "$ROOT"
 
 DSH_HOME="${DSH_HOME:-$ROOT/.dsh-home}"
 export DSH_HOME
 
-PORT=3083
-SETUP_ONLY=0
+# ---- 参数 ----
+# ⚠️ 真机踩过：报 `line 235: PORT: unbound variable`。
+#    第 235 行只是**第一个用到 PORT 的地方**，赋值在更上面；
+#    在 set -u 下一旦那个赋值没生效，错误就报在后面，指向误导性的行号。
+#    所以这里：
+#      ① 用 :- 兜底（即使前面的赋值因为任何原因没跑到，也不会 unbound）
+#      ② 解析参数时校验 --port 后面确实有值（`--port` 裸着用会让 $2 报 unbound）
+PORT="${PORT:-3083}"
+SETUP_ONLY="${SETUP_ONLY:-0}"
 EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --port) PORT="$2"; shift 2 ;;
+    --port)
+      if [[ -z "${2:-}" ]]; then
+        echo "✗ --port 后面需要跟一个端口号，例如 --port 4000" >&2
+        exit 2
+      fi
+      PORT="$2"; shift 2 ;;
     --setup-only) SETUP_ONLY=1; shift ;;
     *) EXTRA_ARGS+=("$1"); shift ;;
   esac
@@ -43,6 +62,8 @@ done
 say()  { printf '\033[36m[lecture-mac]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[lecture-mac] ⚠ %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31m[lecture-mac] ✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+say "脚本版本 $LECTURE_MAC_VERSION  ·  port=$PORT  ·  DSH_HOME=$DSH_HOME"
 
 # ---- 0) 平台门禁 ----
 # 本脚本靠符号链接把 profile 接到 $DSH_HOME。Windows 的 Git Bash 通常
