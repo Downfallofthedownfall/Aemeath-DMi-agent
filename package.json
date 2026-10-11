@@ -7,7 +7,7 @@
     "packages/**"
   ],
   "scripts": {
-    "build": "node scripts/verify-workspace-links.mjs && npm run build --workspaces --if-present",
+    "build": "node scripts/verify-workspace-links.mjs && node scripts/build-workspaces.mjs",
     "build:common": "npm run build -w @aemeath/dsh-plugin-common",
     "verify:links": "node scripts/verify-workspace-links.mjs"
   },

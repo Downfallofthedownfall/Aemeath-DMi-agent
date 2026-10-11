@@ -79,10 +79,28 @@ workspace 链接缺失（@aemeath/* 无法解析）。
   这会让构建报 'Cannot find module @aemeath/dsh-plugin-common' 之类的错。
   修复：在仓库根执行 npm install（不要在 profiles/* 里装依赖）。"
 
-# lecture 插件必须已构建（client bundle 是前端本体）
-if [[ ! -f "$ROOT/packages/lecture/dsh-plugin-lecture/lib/client.js" ]]; then
-  say "构建 lecture 插件…"
-  npm run build -w @aemeath/dsh-plugin-lecture || die "构建 lecture 插件失败"
+# lecture 插件必须已构建（client bundle 是前端本体）。
+#
+# ⚠️ 关键：必须先构建**依赖**（@aemeath/dsh-plugin-common）。
+#    它的类型声明在 lib/*.d.ts，而 **packages/**/lib/ 被 gitignore**
+#    （.gitignore:198）—— 全新 clone 里根本不存在。
+#    于是 tsc 编译 lecture 时会报：
+#        src/index.ts:33 error TS2307: Cannot find module '@aemeath/dsh-plugin-common'
+#    这条错看着像"链接缺失"，实际是"依赖没构建"，很容易误诊
+#    （真机上我先按链接问题查了半天）。
+#    所以这里用 `npm run build`（构建全部 workspace，按依赖顺序），
+#    而不是只 build lecture。
+COMMON_LIB="$ROOT/packages/shared/dsh-plugin-common/lib/index.d.ts"
+LECTURE_LIB="$ROOT/packages/lecture/dsh-plugin-lecture/lib/client.js"
+if [[ ! -f "$COMMON_LIB" || ! -f "$LECTURE_LIB" ]]; then
+  say "构建 workspace（含 lecture 的依赖 —— 类型声明是构建产物，不在 git 里）…"
+  npm run build || die "\
+构建失败。
+  若报 'Cannot find module @aemeath/dsh-plugin-common'，先确认依赖已构建：
+      npm run build -w @aemeath/dsh-plugin-common
+  若报 'Cannot find module @aemeath/...'（连包目录都找不到），那是链接问题：
+      npm install        # 必须在仓库根，不要在 profiles/* 里
+  详情见 docs/lecture-devlog.md 的 workspace 链接章节。"
 fi
 
 # ---- 2) 用符号链接把真实 profile 落到 $DSH_HOME/profiles/lecture ----
