@@ -130,64 +130,86 @@ $env:DSH_HOME = "$PWD\.dsh-home"
 
 ---
 
-## macOS 上怎么跑（一步一步）
+## macOS 上怎么跑
 
-课堂场景用手提电脑，所以这条路径是实际要用的。**全程只需要 Node + DeepSeek key，零 Python。**
+### 先搞清楚一件事：mac 上**没有**主 agent，这是设计如此
 
-### 第 0 步：确认前提
+| | Windows | macOS |
+|---|---|---|
+| 主 agent（记忆 / 人格 / 解题 / SymPy…） | ✅ 有 | ❌ **没有，也不打算做**（D10） |
+| **课堂记录** | ✅ 有 | ✅ **有 —— 这就是 mac 上你唯一要用的东西** |
+
+课堂记录是**独立**的：它自己就是一个完整界面（自己的对话 + 速记 + 复盘），
+**不需要**主 agent 在旁边。
+
+> ⚠️ 如果你在 mac 上照着文档跑 `cd app && npm start`、或者找"侧边栏的课堂按钮"——
+> 那些都是 **Windows** 的步骤，mac 上不存在。这就是以前看不懂的原因：
+> 我把两件事混在一起写了。
+
+### 就一条命令
 
 ```bash
-node -v          # 需要 v20 或更高
-git --version
+cd <你的仓库目录>
+git pull                 # 拉最新代码
+./lecture-launch.command
 ```
 
-没有 Node 就 `brew install node`（或从 [nodejs.org](https://nodejs.org) 装）。
-
-### 第 1 步：拿到仓库
-
-lecture 的配置里用的是**仓库相对路径**（`profiles/aemeath/personas/physicist.md`、
-`packages/library/physicist/lectures`），所以需要整个仓库，不能只拷插件目录。
+如果提示 `Permission denied`，先给一次执行权限再重试：
 
 ```bash
-git clone <你的仓库地址> Aemeath-DMi-agent
-cd Aemeath-DMi-agent
+chmod +x lecture-launch.command
 ```
 
-### 第 2 步：一条命令装配 + 启动
+**双击这个文件也一样**（Finder 里双击 = 运行）。
+
+### 会发生什么
+
+1. 检查 Node（不够会说人话，不是抛一句看不懂的错）
+2. 首次运行装依赖 + 构建（几分钟），之后是秒级
+3. 启动服务，**浏览器自动打开**（带 token，不用手输）
+4. 界面左下角有「课堂」入口
+
+**终端窗口不要关** —— 关了服务就停了。
+
+### 进去之后
+
+1. 在对话里让爱弥斯调 `lecture_session_start`
+   （例如"开始记录 Physik I 第 3 讲角动量"）
+2. 左下角「课堂」→ 写速记
+3. 课后切「复盘」页签，走五步
+
+### 配 DeepSeek key（可选）
+
+课堂内的 LLM 转录（把速记规范化、补公式）需要 key。
+
+**推荐：启动后点左下角「设置」→ Models 填。** 这是 dsh 自带的页面，
+会写进 `$DSH_HOME/.credentials.yaml`，**改完不用重启**。
+
+或者终端里跑一次（持久）：
 
 ```bash
-chmod +x scripts/lecture-mac.sh     # 首次
-./scripts/lecture-mac.sh
-```
-
-这个脚本会依次：
-
-1. 检查 Node 版本（不够会明确告诉你，而不是抛一句莫名其妙的错）
-2. 在仓库根跑 `npm install`（首次）
-3. 构建 lecture 插件
-4. 把 `profiles/lecture` **符号链接**到 `$DSH_HOME/profiles/lecture`
-5. 把 profile 的 `@deepseek-ai` / `@aemeath` 链接到仓库
-   （**关键**：不这么做会有两套模块实例，工具调度器直接报错）
-6. 检查 DeepSeek 凭据，没有就提醒（速记仍可用，只是不做 LLM 加工）
-7. 启动，端口默认 3083
-
-想换端口：`./scripts/lecture-mac.sh --port 4000`
-只想装配不启动：`./scripts/lecture-mac.sh --setup-only`
-
-### 第 3 步：配 DeepSeek key
-
-课堂内的 LLM 转录（把速记规范化、补公式）需要 key。三选一：
-
-```bash
-# ① 环境变量（推荐，写进 ~/.zshrc 可持久）
 echo 'export DEEPSEEK_API_KEY=sk-你的key' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-② 或在 dsh 的设置界面里配置 provider 凭据
-③ 或写 `$DSH_HOME/.credentials.yaml`
+> **不填也能用**：速记照记、留白照填、复盘照做，只是不做后台规范化
+> （`=` 公式行不会被规整成标准 LaTeX）。日志里会看到
+> `⚠ LLM 无 apiKey，跳过`。
 
-> 没有 key 也能用：速记照记、留白照填、复盘照做，只是不做后台规范化。
+优先级（高 → 低）：环境变量 → `.credentials.yaml` → `.env` 文件。
+
+### 想要"更技术"的入口
+
+`lecture-launch.command` 是**日常入口**（双击、自动开浏览器、出错弹窗）。
+若要在终端里手动控制：
+
+```bash
+./scripts/lecture-mac.sh                 # 前台运行，日志直接打在终端
+./scripts/lecture-mac.sh --port 4000     # 换端口
+./scripts/lecture-mac.sh --setup-only    # 只装配不启动
+```
+
+两者共用同一套装配逻辑，区别只是体验。
 
 ### 第 4 步：用起来
 
