@@ -1,0 +1,44 @@
+# ============================================================
+# .gitattributes — 行尾与二进制处理
+#
+# 为什么需要：仓库主要在 Windows 上开发（core.autocrlf 常为 true），
+# 但有 shell 脚本要在 macOS/Linux 上跑。
+# **带 CRLF 的 .sh 在 mac 上会直接报 `bad interpreter: ^M`** ——
+# 这是"在 Windows 上看着没问题、到 mac 上就挂"的典型坑，
+# 靠人工注意不可靠，所以在这里钉死。
+# ============================================================
+
+# 所有文本文件默认按 LF 存储（工作区可保持平台习惯）
+* text=auto
+
+# 明确要求 LF 的文件类型
+*.sh          text eol=lf
+*.bash        text eol=lf
+*.mjs         text eol=lf
+*.js          text eol=lf
+*.ts          text eol=lf
+*.tsx         text eol=lf
+*.json        text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+*.md          text eol=lf
+
+# PowerShell 脚本在 Windows 上用 CRLF 更稳（部分老版本对 LF 的 .ps1 报错）
+*.ps1         text eol=crlf
+
+# 二进制：不要做任何行尾转换
+*.png         binary
+*.jpg         binary
+*.jpeg        binary
+*.gif         binary
+*.webp        binary
+*.ico         binary
+*.woff        binary
+*.woff2       binary
+*.ttf         binary
+*.zip         binary
+*.pdf         binary
+
+# 语言统计：把生成物排除掉，别污染 GitHub 的 language bar
+package-lock.json  linguist-generated=true
+*.min.js           linguist-generated=true

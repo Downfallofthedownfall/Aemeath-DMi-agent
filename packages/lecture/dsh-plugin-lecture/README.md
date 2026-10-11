@@ -1,4 +1,4 @@
-﻿# Lecture Mode · 课堂记录模式
+# Lecture Mode · 课堂记录模式
 
 > Aemeath 的**独立拓展 app**：课堂上采集速记 → 后端 LLM 加工（不回显）→ 课后五步人工复盘
 > → 生成结构化摘要 → 把课程进度与短板**单向**同步回主 agent。
@@ -127,6 +127,116 @@ $env:DSH_HOME = "$PWD\.dsh-home"
 ```
 
 > ⚠️ **改了代码要重启 dsh** —— 插件加载器不监视文件，没有热重载。
+
+---
+
+## macOS 上怎么跑（一步一步）
+
+课堂场景用手提电脑，所以这条路径是实际要用的。**全程只需要 Node + DeepSeek key，零 Python。**
+
+### 第 0 步：确认前提
+
+```bash
+node -v          # 需要 v20 或更高
+git --version
+```
+
+没有 Node 就 `brew install node`（或从 [nodejs.org](https://nodejs.org) 装）。
+
+### 第 1 步：拿到仓库
+
+lecture 的配置里用的是**仓库相对路径**（`profiles/aemeath/personas/physicist.md`、
+`packages/library/physicist/lectures`），所以需要整个仓库，不能只拷插件目录。
+
+```bash
+git clone <你的仓库地址> Aemeath-DMi-agent
+cd Aemeath-DMi-agent
+```
+
+### 第 2 步：一条命令装配 + 启动
+
+```bash
+chmod +x scripts/lecture-mac.sh     # 首次
+./scripts/lecture-mac.sh
+```
+
+这个脚本会依次：
+
+1. 检查 Node 版本（不够会明确告诉你，而不是抛一句莫名其妙的错）
+2. 在仓库根跑 `npm install`（首次）
+3. 构建 lecture 插件
+4. 把 `profiles/lecture` **符号链接**到 `$DSH_HOME/profiles/lecture`
+5. 把 profile 的 `@deepseek-ai` / `@aemeath` 链接到仓库
+   （**关键**：不这么做会有两套模块实例，工具调度器直接报错）
+6. 检查 DeepSeek 凭据，没有就提醒（速记仍可用，只是不做 LLM 加工）
+7. 启动，端口默认 3083
+
+想换端口：`./scripts/lecture-mac.sh --port 4000`
+只想装配不启动：`./scripts/lecture-mac.sh --setup-only`
+
+### 第 3 步：配 DeepSeek key
+
+课堂内的 LLM 转录（把速记规范化、补公式）需要 key。三选一：
+
+```bash
+# ① 环境变量（推荐，写进 ~/.zshrc 可持久）
+echo 'export DEEPSEEK_API_KEY=sk-你的key' >> ~/.zshrc
+source ~/.zshrc
+```
+
+② 或在 dsh 的设置界面里配置 provider 凭据
+③ 或写 `$DSH_HOME/.credentials.yaml`
+
+> 没有 key 也能用：速记照记、留白照填、复盘照做，只是不做后台规范化。
+
+### 第 4 步：用起来
+
+启动后终端会打印一个**带 token 的地址**，形如：
+
+```
+http://127.0.0.1:3083/?token=xxxxx
+```
+
+浏览器一般会自动打开；没打开就手动复制这个地址（**必须带 token**，裸访问会 401）。
+
+进去之后：
+
+1. 在对话里让爱弥斯调用 `lecture_session_start`（例如"开始记录 Physik I 第 3 讲角动量"）
+2. 左侧「记录」页签写速记，按标记语法：
+   `# 主题` / `= 公式` / `? 疑问` / `! 重点` / `> 例子` / `--- 分块`
+3. **必须填**「我的理解」和「我的疑问」才能记录（服务端强制，前端也会实时提示）
+4. 打不出的符号点「∑ 符号」—— 250 个符号，分组可折叠，支持搜索
+5. 课后切「复盘」页签，走五步：回忆 → 对照 → 补漏 → 候选 → 确认
+
+### 数据在哪
+
+```
+packages/library/physicist/lectures/<course-id>/
+```
+
+markdown 是主数据（人可读、可 git），JSON 是索引与加工中间态。
+
+### 常见问题
+
+**Q：`ln -s` 报错 / 脚本说"无法创建符号链接"**
+macOS 上不该发生。若你在 Windows 的 Git Bash 里跑，请改用
+`.\scripts\dsh.ps1 --profile lecture --port 3083`（脚本会直接拒绝并提示）。
+
+**Q：工具调度器报 `Cannot read properties of undefined (reading 'prepare')`**
+profile 里出现了**独立副本**的 `@deepseek-ai`（通常是误在 `profiles/*/` 里跑过 `npm install`）。
+重跑 `./scripts/lecture-mac.sh --setup-only` 会把它修回链接。
+
+> ⚠️ **永远不要在 `profiles/*/` 里跑 `npm install`** —— npm 的 reify 会顺着链接
+> 把仓库根的 `@deepseek-ai` 删空。装依赖一律在仓库根。
+
+**Q：改了配置/代码没生效**
+插件加载器不监视文件，**没有热重载**。重启脚本即可。
+
+**Q：和 Windows 上的记录会不会打架**
+数据目录是共享的，但课堂指针按 `profile|sessionId` 分片，
+不会互相覆盖（`_active.<hash>.json`）。若检测到别的设备的活跃指针会 warn 提示。
+跨设备汇总走握手：mac 导出 `handoff.json` → 传到 Windows → 主 agent 的
+`lecture_import_handoff` 导入（默认 `dry_run`，先看会写什么再真写）。
 
 ---
 
