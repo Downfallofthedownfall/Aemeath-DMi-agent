@@ -487,4 +487,65 @@ t('lecture-launch.command 启动 dsh 时带上 DSH_HOME', () => {
   assert.match(cmd, /export DSH_HOME/, '应 export 出去（子进程要能看到）');
 });
 
+console.log('\n[删除功能（真机反馈：测试笔记删不掉）]');
+
+// 早先 8 个工具、6 个 HTTP 动作里**一个删的都没有** ——
+// 测试数据清不掉，正式数据就容易被搅浑。
+t('HTTP 桥提供 delete 动作（单元 + 课程两种范围）', () => {
+  const httpSrc = readFileSync(join(root, 'src/http.ts'), 'utf-8');
+  assert.match(httpSrc, /action === 'delete'/, '应有 delete 动作');
+  assert.match(httpSrc, /scope === 'course'/, '应支持删整门课');
+  assert.match(httpSrc, /deleteUnit/, '应调用 store.deleteUnit');
+  assert.match(httpSrc, /deleteCourse/, '应调用 store.deleteCourse');
+});
+
+t('store 真的实现删除，并清理旁挂文件', () => {
+  const storeSrc = readFileSync(join(root, 'src/store.ts'), 'utf-8');
+  assert.match(storeSrc, /deleteUnit\(/, '应有 deleteUnit');
+  assert.match(storeSrc, /deleteCourse\(/, '应有 deleteCourse');
+  // 删单元要连 .raw.json / .summary.json 等一起清，否则残留会让"删不干净"
+  assert.match(storeSrc, /\.raw\.json/, '应清理加工结果');
+  assert.match(storeSrc, /\.summary\.json/, '应清理摘要');
+  // 删单元不该把整门课目录删掉（可能还有别的讲）
+  const m = storeSrc.match(/deleteUnit\([\s\S]{0,900}?\n  \}/);
+  assert.ok(m, '找不到 deleteUnit 主体');
+  assert.ok(!/rmSync\(this\.courseDir/.test(m[0]), 'deleteUnit 不该删除整个课程目录');
+});
+
+t('删除后清理内存态与磁盘指针（否则"删了又冒出来"）', () => {
+  const httpSrc = readFileSync(join(root, 'src/http.ts'), 'utf-8');
+  assert.match(httpSrc, /onAfterDelete/, 'HTTP 侧应有删除后的清理钩子');
+  assert.match(hostSrcForBlanks, /onAfterDelete: \(scope, courseId, unitId\)/, 'host 应实现该钩子');
+  assert.match(hostSrcForBlanks, /active\.delete\(sid\)/, '应清掉 active 里的课堂状态');
+  assert.match(hostSrcForBlanks, /clearPointer\(sid\)/, '应清掉磁盘指针');
+});
+
+t('UI 有删除入口且二次确认', () => {
+  const wb = readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8');
+  assert.match(wb, /deleteUnit|deleteCourse/, '工作台应有删除函数');
+  assert.match(wb, /window\.confirm/, '删除不可逆，必须二次确认');
+  assert.match(wb, /lec-del/, '应有删除按钮');
+});
+
+console.log('\n[必须能新建课程（不只是小节）]');
+
+// 真机反馈："大的课程章节也加不了，只能加小节"。
+// 根因：开课表单里的"课程标识"输入框只在**一门课都没有**时显示
+//（!hasCourses 分支），有了第一门课后就只能往它里面加小节。
+t('开课表单在已有课程时仍能新建课程', () => {
+  const wb = readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8');
+  assert.match(wb, /newCourseMode/, '应有"新建课程 / 记到已有课程"的切换状态');
+  assert.match(wb, /新建一门课程/, '应有显式的"新建课程"入口');
+  // 关键：课程标识输入框的条件不能再只是 !hasCourses
+  const m = wb.match(/\{!hasCourses \|\| newCourseMode \? \(/);
+  assert.ok(m, '课程标识输入框的条件应包含 newCourseMode（否则有课后就再也建不了新课）');
+});
+
+t('记到已有课程时不覆盖该课的标题/学期', () => {
+  const wb = readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8');
+  // course_title / semester 只在 makingCourse 时传
+  assert.match(wb, /makingCourse \? newCourseTitle/, 'course_title 应仅在新建课程时传');
+  assert.match(wb, /makingCourse \? newSemester/, 'semester 应仅在新建课程时传');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

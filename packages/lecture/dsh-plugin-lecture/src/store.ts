@@ -194,6 +194,53 @@ export class LectureStore {
   }
 
   // ============================================================
+  // 删除
+  //
+  // 为什么要有（真机反馈）：用户记了一堆测试笔记删不掉 ——
+  // 早先 8 个工具、6 个 HTTP 动作里**一个删的都没有**，
+  // 只能手改 markdown 和 index.json。测试数据清不掉，正式数据就容易被搅浑。
+  //
+  // 设计取舍：
+  //   · **物理删除文件**，不是软删/回收站 —— 课堂数据是用户自己的笔记，
+  //     软删会留下一堆看不见的残渣，反而让人不敢删。
+  //   · 但**单独删单元时保留课程目录**（可能还有别的讲）。
+  //   · 删课程 = 删整个目录（连 index.json 和讲义导出）。
+  //   · 所有路径都过 safeCourseId / safeUnitId，绝不接受 `..` 之类。
+  // ============================================================
+
+  /** 删除一讲（markdown + 加工结果 + 候选 + 摘要 + 复盘状态），并从 index 移除。 */
+  deleteUnit(courseId: string, unitId: string): boolean {
+    const index = this.readIndex(courseId);
+    if (!index) return false;
+    const i = index.units.findIndex((u) => u.id === unitId);
+    if (i === -1) return false;
+    const unit = index.units[i]!;
+
+    // ① 讲义的 markdown 本体
+    const md = this.unitFile(courseId, unit);
+    if (existsSync(md)) rmSync(md, { force: true });
+
+    // ② 同目录下的旁挂文件：<unit>.raw.json / .candidates.json / .summary.json / .review.json
+    const dir = this.courseDir(courseId);
+    for (const suffix of ['.raw.json', '.candidates.json', '.summary.json', '.review.json']) {
+      const f = join(dir, `${safeUnitId(unit.id)}${suffix}`);
+      if (existsSync(f)) rmSync(f, { force: true });
+    }
+
+    // ③ 从 index 移除
+    index.units.splice(i, 1);
+    this.writeIndex(index);
+    return true;
+  }
+
+  /** 删除整门课程（连同目录下所有文件）。 */
+  deleteCourse(courseId: string): boolean {
+    if (!this.readIndex(courseId)) return false;
+    rmSync(this.courseDir(courseId), { recursive: true, force: true });
+    return true;
+  }
+
+  // ============================================================
   // 课堂记录 markdown
   // ============================================================
 

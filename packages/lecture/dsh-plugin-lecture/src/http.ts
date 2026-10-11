@@ -263,6 +263,13 @@ export interface LectureHttpDeps {
   }) => Promise<{ ok: boolean; error?: string; course_id?: string; unit_id?: string; date?: string }>;
   /** 复盘操作（推进状态机）。 */
   onReview: (action: string, payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  /**
+   * 删除之后的清理钩子（host 侧清内存态与磁盘指针）。
+   *
+   * 为什么需要：只删文件的话，`active` 里还留着"正在记这一讲"，
+   * 后续 capture 会往**已删除**的单元里写 —— 表现为"删了又冒出来"。
+   */
+  onAfterDelete?: (scope: 'unit' | 'course', courseId: string, unitId?: string) => void;
   /** 日志。 */
   log: (msg: string) => void;
   /** 警告。 */
@@ -372,6 +379,42 @@ export async function handleLectureHttp(
           return;
         }
         json(res, 200, { ok: true, course_id: r.course_id, unit_id: r.unit_id, date: r.date });
+        return;
+      }
+
+      if (action === 'delete') {
+        // 删除（真机反馈：用户测试笔记删不掉）。
+        // scope: 'unit'（默认，删一讲）| 'course'（删整门课）
+        const scope = String(parsed.scope ?? 'unit');
+        const course = String(parsed.course_id ?? '').trim().slice(0, 64);
+        if (!course) {
+          jsonError(res, 400, 'course_id required');
+          return;
+        }
+        if (scope === 'course') {
+          const done = deps.store.deleteCourse(course);
+          if (!done) {
+            jsonError(res, 404, `课程不存在: ${course}`);
+            return;
+          }
+          deps.log(`删除课程：${course}`);
+          deps.onAfterDelete?.('course', course);
+          json(res, 200, { ok: true, scope: 'course', course_id: course });
+          return;
+        }
+        const unit = String(parsed.unit_id ?? '').trim().slice(0, 64);
+        if (!unit) {
+          jsonError(res, 400, 'unit_id required（或 scope=course 删整门课）');
+          return;
+        }
+        const done = deps.store.deleteUnit(course, unit);
+        if (!done) {
+          jsonError(res, 404, `单元不存在: ${course}/${unit}`);
+          return;
+        }
+        deps.log(`删除单元：${course}/${unit}`);
+        deps.onAfterDelete?.('unit', course, unit);
+        json(res, 200, { ok: true, scope: 'unit', course_id: course, unit_id: unit });
         return;
       }
 

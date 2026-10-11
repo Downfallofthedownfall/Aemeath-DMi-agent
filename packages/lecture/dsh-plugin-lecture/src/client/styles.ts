@@ -499,6 +499,39 @@ const CSS = `
 .${LECTURE_CLASS} .lec-unit-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .${LECTURE_CLASS} .lec-unit-meta { flex: none; font-size: 10.5px; opacity: 0.5; }
 
+/* —— 删除按钮 ——
+   平时几乎不可见（避免误点），悬停该行才显形并变红。
+   真机反馈：早先**完全没有删除入口**，测试笔记只能手改文件。 */
+.${LECTURE_CLASS} .lec-unit-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.${LECTURE_CLASS} .lec-unit-row .lec-unit { flex: 1 1 auto; }
+.${LECTURE_CLASS} .lec-del {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-right: 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--aem-ink);
+  opacity: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: opacity 0.12s ease-out;
+}
+.${LECTURE_CLASS} .lec-unit-row:hover .lec-del,
+.${LECTURE_CLASS} .lec-course-name:hover .lec-del { opacity: 0.5; }
+.${LECTURE_CLASS} .lec-del:hover { opacity: 1; background: #e05a85; color: #fff; }
+.${LECTURE_CLASS} .lec-del:disabled { opacity: 0.25; cursor: default; }
+/* 课程级的删除按钮浮在课程名右侧 */
+.${LECTURE_CLASS} .lec-del-course { float: right; margin-right: 8px; margin-top: -2px; }
+
 /* —— 中栏：笔记主体 —— */
 .${LECTURE_CLASS} .lec-wb-main {
   flex: 1 1 auto;

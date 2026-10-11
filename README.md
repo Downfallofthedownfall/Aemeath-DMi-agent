@@ -1,4 +1,4 @@
-﻿# 🤖 Aemeath-DMi Agent v2 · physicist · 物理学习 Copilot
+# 🤖 Aemeath-DMi Agent v2 · physicist · 物理学习 Copilot
 
 > **定位 / Positioning**: A physics-study Copilot trained on real lecture notes, past Altklausur exams, and weekly usage logs from Universität Hamburg's Physik I / Math I — plus a companion desktop pet (爱弥斯 / Aemeath) as the attention gateway. One engine, two skins.
 >
@@ -84,6 +84,21 @@ python packages\benchmark\run_benchmark.py --limit 5
 # Memory admin endpoint (token is printed in the startup log)
 curl.exe -H "Authorization: Bearer <token>" http://127.0.0.1:18895/memory/stats
 ```
+
+### 🍎 macOS — Lecture Mode only
+
+**There is no main agent on macOS, by design.** The physics Copilot (memory,
+persona, retriever, Electron shell) is Windows-only. On a Mac you run **Lecture
+Mode**, which is fully standalone and needs zero Python.
+
+```bash
+cd ~/aemeath-dmi-agent
+./lecture-launch.command        # or double-click it in Finder
+```
+
+📖 **Full guide: [使用说明-课堂模式-macOS.md](使用说明-课堂模式-macOS.md)**
+covers startup (and why you must use `.command`, not `.sh`), macOS's missing
+Node in PATH, the daily workflow, where data lives, and troubleshooting.
 
 Equivalent manual install steps (bash):
 

@@ -84,6 +84,10 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
   const [starting, setStarting] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newCourseId, setNewCourseId] = useState('');
+  const [newCourseTitle, setNewCourseTitle] = useState('');
+  const [newSemester, setNewSemester] = useState('');
+  /** 开课时是"新建一门课"还是"记到已有课"。有课程时默认后者。 */
+  const [newCourseMode, setNewCourseMode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -119,26 +123,38 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
   const currentCourse = useMemo(() => courses.find((c) => c.course_id === courseId) ?? null, [courses, courseId]);
   const currentUnit = useMemo(() => currentCourse?.units.find((u) => u.id === unitId) ?? null, [currentCourse, unitId]);
 
-  /** 开一节新课（在最上面那门课程下）。 */
+  /**
+   * 开一节新课。
+   *
+   * 两种模式（真机反馈："大的课程章节也加不了"）：
+   *   · 记到已有课程 → 用当前选中的 courseId，只建单元
+   *   · 新建一门课程 → 用表单里的 course_id 建课程，再建第一个单元
+   */
   const startLecture = async (): Promise<void> => {
     const t = newTitle.trim();
     if (!t) {
       setErr('请填这次课的主题');
       return;
     }
-    setBusy(true);
-    setErr('');
-    const cid = courseId || newCourseId.trim();
+    const makingCourse = !hasCourses || newCourseMode;
+    const cid = makingCourse ? newCourseId.trim() : courseId;
     if (!cid) {
-      setBusy(false);
-      setErr('先选一门课程，或填一个新课程标识');
+      setErr(makingCourse ? '请填课程标识（例如 physik-2）' : '先选一门课程');
       return;
     }
+    if (makingCourse && !/^[A-Za-z0-9._-]+$/.test(cid)) {
+      setErr('课程标识只能用字母、数字、点、下划线、连字符（它会成为目录名）');
+      return;
+    }
+    setBusy(true);
+    setErr('');
     const r = await postJson<{ ok: boolean; error?: string; course_id?: string; unit_id?: string }>(API, {
       action: 'start',
       course_id: cid,
       title: t,
-      course_title: courses.some((c) => c.course_id === cid) ? undefined : newCourseId.trim() || cid,
+      // 只在**新建课程**时传课程元数据；记到已有课程时传了会覆盖已有标题
+      course_title: makingCourse ? newCourseTitle.trim() || undefined : undefined,
+      semester: makingCourse ? newSemester.trim() || undefined : undefined,
     });
     setBusy(false);
     if (!r?.ok) {
@@ -146,13 +162,72 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
       return;
     }
     setNewTitle('');
+    setNewCourseId('');
+    setNewCourseTitle('');
+    setNewSemester('');
     await refresh();
     if (r.course_id) setCourseId(r.course_id);
     if (r.unit_id) setUnitId(r.unit_id);
     setStarting(false);
+    setNewCourseMode(false);
   };
 
   const hasCourses = courses.length > 0;
+
+  // ── 删除 ──
+  // 真机反馈：测试笔记删不掉（早先一个删除入口都没有）。
+  // 删除是**不可逆**的，所以一律二次确认；确认文案写清"删什么、删多少"。
+  const [deleting, setDeleting] = useState('');
+
+  const deleteUnit = async (course: string, unit: string, unitTitle: string): Promise<void> => {
+    if (!window.confirm(`删除「${unitTitle}」？\n\n这一讲的速记、加工结果、复盘记录都会一并删除，无法撤销。`)) return;
+    setDeleting(unit);
+    const r = await postJson<{ ok: boolean; error?: string }>(API, {
+      action: 'delete',
+      scope: 'unit',
+      course_id: course,
+      unit_id: unit,
+    });
+    setDeleting('');
+    if (!r?.ok) {
+      setErr(r?.error ?? '删除失败');
+      return;
+    }
+    // 删掉的正是当前选中项 → 清空选择，让界面回到"还没有选中"的状态
+    if (course === courseId && unit === unitId) {
+      setUnitId('');
+      setChunks([]);
+    }
+    await refresh();
+  };
+
+  const deleteCourse = async (course: string, title: string, unitCount: number): Promise<void> => {
+    if (
+      !window.confirm(
+        `删除整门课程「${title}」？\n\n` +
+          `包括 ${unitCount} 讲的全部笔记、加工结果与复盘记录，无法撤销。`,
+      )
+    ) {
+      return;
+    }
+    setDeleting(course);
+    const r = await postJson<{ ok: boolean; error?: string }>(API, {
+      action: 'delete',
+      scope: 'course',
+      course_id: course,
+    });
+    setDeleting('');
+    if (!r?.ok) {
+      setErr(r?.error ?? '删除失败');
+      return;
+    }
+    if (course === courseId) {
+      setCourseId('');
+      setUnitId('');
+      setChunks([]);
+    }
+    await refresh();
+  };
 
   return (
     <div className={LECTURE_CLASS} data-standalone={standalone ? '1' : '0'} data-workbench="1">
@@ -196,6 +271,19 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 <div className="lec-course-name" title={c.course_id}>
                   {c.title}
                   {c.semester ? <span className="lec-course-sem">{c.semester}</span> : null}
+                  {/* 删整门课（悬停才明显，避免误点） */}
+                  <button
+                    type="button"
+                    className="lec-del lec-del-course"
+                    title={`删除整门课程「${c.title}」`}
+                    disabled={deleting === c.course_id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void deleteCourse(c.course_id, c.title, c.units.length);
+                    }}
+                  >
+                    ✕
+                  </button>
                 </div>
                 {c.units.length === 0 ? (
                   <div className="lec-hint" style={{ padding: '2px 10px 6px' }}>
@@ -203,24 +291,34 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                   </div>
                 ) : null}
                 {c.units.map((u) => (
-                  <button
-                    key={u.id}
-                    type="button"
-                    className="lec-unit"
-                    data-active={c.course_id === courseId && u.id === unitId ? '1' : '0'}
-                    onClick={() => {
-                      setCourseId(c.course_id);
-                      setUnitId(u.id);
-                    }}
-                    title={`${u.date} · ${u.chunk_count} 块`}
-                  >
-                    <span className="lec-unit-title">{u.title}</span>
-                    <span className="lec-unit-meta">
-                      {u.date.slice(5)}
-                      {u.chunk_count ? ` · ${u.chunk_count}` : ''}
-                      {u.reviewed ? ' ✓' : ''}
-                    </span>
-                  </button>
+                  <div key={u.id} className="lec-unit-row">
+                    <button
+                      type="button"
+                      className="lec-unit"
+                      data-active={c.course_id === courseId && u.id === unitId ? '1' : '0'}
+                      onClick={() => {
+                        setCourseId(c.course_id);
+                        setUnitId(u.id);
+                      }}
+                      title={`${u.date} · ${u.chunk_count} 块`}
+                    >
+                      <span className="lec-unit-title">{u.title}</span>
+                      <span className="lec-unit-meta">
+                        {u.date.slice(5)}
+                        {u.chunk_count ? ` · ${u.chunk_count}` : ''}
+                        {u.reviewed ? ' ✓' : ''}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="lec-del"
+                      title={`删除「${u.title}」这一讲`}
+                      disabled={deleting === u.id}
+                      onClick={() => void deleteUnit(c.course_id, u.id, u.title)}
+                    >
+                      ✕
+                    </button>
+                  </div>
                 ))}
               </div>
             ))}
@@ -232,22 +330,69 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
           {starting ? (
             <div className="lec-startbox">
               <div className="lec-wb-h">开始新的一节课</div>
-              {!hasCourses ? (
+
+              {/* 真机反馈："大的课程章节也加不了，只能加小节" ——
+                  早先这里只在**一门课都没有**时才显示"新建课程"表单，
+                  有一门课后就永远只能往那门课里加小节。
+                  现在改成显式二选一：记到已有课程 / 新建一门课程。 */}
+              {hasCourses ? (
+                <div className="lec-actions" style={{ marginTop: 0 }}>
+                  <button
+                    type="button"
+                    className="lec-tab"
+                    data-active={newCourseMode ? '0' : '1'}
+                    onClick={() => setNewCourseMode(false)}
+                  >
+                    记到已有课程
+                  </button>
+                  <button
+                    type="button"
+                    className="lec-tab"
+                    data-active={newCourseMode ? '1' : '0'}
+                    onClick={() => setNewCourseMode(true)}
+                  >
+                    新建一门课程
+                  </button>
+                </div>
+              ) : null}
+
+              {!hasCourses || newCourseMode ? (
                 <>
                   <div className="lec-label">课程标识（英文/数字，会做文件夹名）</div>
                   <input
                     className="lec-input"
                     value={newCourseId}
                     onChange={(e) => setNewCourseId(e.target.value)}
-                    placeholder="physik-1"
+                    placeholder="physik-2"
+                  />
+                  <div className="lec-label">课程全名</div>
+                  <input
+                    className="lec-input"
+                    value={newCourseTitle}
+                    onChange={(e) => setNewCourseTitle(e.target.value)}
+                    placeholder="Physik II"
+                  />
+                  <div className="lec-label">学期</div>
+                  <input
+                    className="lec-input"
+                    value={newSemester}
+                    onChange={(e) => setNewSemester(e.target.value)}
+                    placeholder="WiSe 2026"
                   />
                 </>
               ) : (
-                <div className="lec-hint">
-                  记到课程 <b>{currentCourse?.title ?? courseId}</b> 下。
-                  （要换课程请先在左栏选中）
-                </div>
+                <>
+                  <div className="lec-label">记到哪门课</div>
+                  <select className="lec-select" value={courseId} onChange={(e) => setCourseId(e.target.value)}>
+                    {courses.map((c) => (
+                      <option key={c.course_id} value={c.course_id}>
+                        {c.title}（{c.units.length} 讲）
+                      </option>
+                    ))}
+                  </select>
+                </>
               )}
+
               <div className="lec-label">这次课讲什么</div>
               <input
                 className="lec-input"

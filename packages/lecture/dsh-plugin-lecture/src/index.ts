@@ -1234,6 +1234,22 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             return { ok: false, error: (e as Error).message };
           }
         },
+        // 删除后清理内存态与磁盘指针。
+        //
+        // 为什么必须做：只删文件的话，`active` 里还留着"正在记这一讲"，
+        // 后续 lecture_capture 会往一个**已经不存在**的单元里写 ——
+        // 表现为"删了又冒出来"，比删不掉更让人困惑。
+        onAfterDelete: (scope, courseId, unitId) => {
+          for (const [sid, cur] of active) {
+            const hitCourse = cur.courseId === courseId;
+            const hitUnit = scope === 'course' || cur.unitId === unitId;
+            if (hitCourse && hitUnit) {
+              active.delete(sid);
+              clearPointer(sid);
+              log(`删除后清理课堂状态：${sid} → ${courseId}/${cur.unitId}`);
+            }
+          }
+        },
         // 前端复盘操作 → 复用状态机（与工具路径同一套 ReviewMachine）
         onReview: async (op, payload) => {
           const courseId = String(payload.course_id ?? '');
