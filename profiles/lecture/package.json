@@ -4,7 +4,8 @@
   "description": "Lecture Mode 独立 profile — 课堂记录模式（可脱离主 agent 在 macOS 上运行，零 Python 依赖）",
   "dependencies": {
     "@aemeath/dsh-plugin-common": "file:../../packages/shared/dsh-plugin-common",
-    "@aemeath/dsh-plugin-lecture": "file:../../packages/lecture/dsh-plugin-lecture"
+    "@aemeath/dsh-plugin-lecture": "file:../../packages/lecture/dsh-plugin-lecture",
+    "@aemeath/dsh-plugin-ui": "file:../../packages/ui/dsh-plugin-ui"
   },
   "dsh": {
     "profile": {

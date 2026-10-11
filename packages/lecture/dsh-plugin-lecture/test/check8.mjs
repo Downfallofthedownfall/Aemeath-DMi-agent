@@ -12,7 +12,7 @@
 // 不需要起浏览器（CI 里也跑得动）。
 // ============================================================
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -243,7 +243,6 @@ t('符号键盘改为复制到剪贴板', () => {
 });
 
 console.log('\n[profile 必须声明 preset 本体]');
-
 // 背景（真机踩过两次）：
 //   ① 只配了 agent-preset-registry 指向 physicist，却没声明 physicist 本体
 //      → 创建会话报 `agent-preset/not-found: Unknown agent preset: physicist`
@@ -272,6 +271,47 @@ t('registry 指向的 preset 必须真的被声明', () => {
   const wanted = m[1];
   const declared = new RegExp(`id:\\s*${wanted}\\b`).test(p);
   assert.ok(declared, `registry 默认 ${wanted}，但 profile 里没有 id: ${wanted} 的 preset 声明`);
+});
+
+console.log('\n[profile 挂的每个 @aemeath 插件都必须在依赖里声明]');
+
+// 背景（真机踩过三次同类问题）：
+//   profiles/lecture/cordis.patch.yml 里写 `name: '@aemeath/xxx'`，
+//   必须在 profiles/lecture/package.json 的 dependencies 里也声明，
+//   否则 mac 脚本不会给它建链接 → 模块解析失败。
+//
+//   反过来更隐蔽：如果 `profiles/lecture/node_modules/@aemeath/xxx` 是
+//   **真实目录副本**（误跑 npm install 留下的）而不是链接，
+//   那么在仓库里改 packages/ 下的代码**不会生效** ——
+//   症状是"改了、重启了、还是老样子"，极难联想。
+//   真机踩过：加了 aemeath-ui 却看不到设计语言，就是因为它没被声明为依赖、
+//   而 profile 里恰好躺着一份旧副本。
+
+t('cordis.patch.yml 挂的每个 @aemeath 插件都在 package.json 里声明', () => {
+  const cfg = readFileSync(LECTURE_PROFILE, 'utf-8');
+  const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'profiles/lecture/package.json'), 'utf-8'));
+  const declared = new Set(Object.keys(pkg.dependencies || {}));
+
+  const used = new Set();
+  for (const m of cfg.matchAll(/name:\s*'(@aemeath\/[^']+)'/g)) used.add(m[1]);
+
+  const missing = [...used].filter((n) => !declared.has(n));
+  assert.deepEqual(
+    missing,
+    [],
+    `这些插件在 cordis.patch.yml 里挂了，但 package.json 没声明：${missing.join(', ')}\n` +
+      '  → mac 脚本不会给它们建链接，加载会失败。',
+  );
+});
+
+t('profile 声明的每个 @aemeath 依赖都指向真实存在的包', () => {
+  const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'profiles/lecture/package.json'), 'utf-8'));
+  for (const [name, spec] of Object.entries(pkg.dependencies || {})) {
+    if (!name.startsWith('@aemeath/')) continue;
+    const rel = String(spec).replace(/^file:/, '');
+    const dir = join(REPO_ROOT, 'profiles/lecture', rel);
+    assert.ok(existsSync(join(dir, 'package.json')), `${name} 指向的目录不存在：${rel}`);
+  }
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

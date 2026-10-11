@@ -60,7 +60,16 @@
             config:
               maxBytes: 65536
 
-# —— Aemeath 插件：**只挂 common（persona）与 lecture** ——
+# —— Aemeath 插件：persona + 前端设计语言 + lecture ——
+#
+# ⚠️ 真机踩过：早先这里**只挂了 common 与 lecture**，
+#    于是课堂模式打开是**原版 dsh 的样子** —— 没有 aemeath 设计语言。
+#    用户的原话："我不是说要有自己的前端和 aemeath 设计语言"。
+#
+#    `@aemeath/dsh-plugin-ui` 才是外观的载体（D8）：
+#      styles/de-dsh.ts（去掉 dsh 开发工具痕迹）、brand.tsx、hero.tsx、
+#      theme.ts、mode-switch.tsx、sessions.tsx、workspace-selector.tsx …
+#    不挂它 = 原版 dsh。**persona 与外观是两件独立的事，缺哪个都不对。**
 - insert:
     - id: aemeath-common
       name: '@aemeath/dsh-plugin-common'
@@ -86,6 +95,14 @@
               - '根据研究'
               - '科学表明'
               - '数据显示'
+
+    # —— 前端 UI 插件（aemeath 设计语言；browser 半区经 dsh.client 进入 __DSH_BOOT__）——
+    - id: aemeath-ui
+      name: '@aemeath/dsh-plugin-ui'
+      config:
+        locale: ''
+        ttsEnabled: false
+        ttsVolume: 1
 
     # —— Lecture Mode 插件（host 半区：工具 + HTTP 桥；client 半区：全屏界面）——
     - id: aemeath-lecture
