@@ -78,7 +78,13 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
+  "peerDependenciesMeta": {
+    "@aemeath/dsh-plugin-memory": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@aemeath/dsh-plugin-memory": "file:../../../packages/memory/dsh-plugin-memory",
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials": "^0.2.0-rc.2",

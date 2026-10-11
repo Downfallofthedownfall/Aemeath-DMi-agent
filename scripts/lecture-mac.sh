@@ -69,6 +69,16 @@ if [[ ! -d "$ROOT/node_modules/@deepseek-ai/dsh" ]]; then
   npm install || die "npm install 失败。请检查网络或代理后重试。"
 fi
 
+# 关键：workspace 的 @aemeath/* 链接必须可解析。
+# 它们的**声明**在根 package.json（devDependencies），由 npm install 建立链接。
+# 若这里失败，后面构建会报一串看不懂的 TS2307 —— 与其让用户猜，
+# 不如在这里用一句能懂的话拦住（真机踩过：全新 clone 到 mac 必挂）。
+say "检查 workspace 链接…"
+node "$ROOT/scripts/verify-workspace-links.mjs" || die "\
+workspace 链接缺失（@aemeath/* 无法解析）。
+  这会让构建报 'Cannot find module @aemeath/dsh-plugin-common' 之类的错。
+  修复：在仓库根执行 npm install（不要在 profiles/* 里装依赖）。"
+
 # lecture 插件必须已构建（client bundle 是前端本体）
 if [[ ! -f "$ROOT/packages/lecture/dsh-plugin-lecture/lib/client.js" ]]; then
   say "构建 lecture 插件…"

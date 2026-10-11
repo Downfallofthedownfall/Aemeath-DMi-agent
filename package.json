@@ -7,13 +7,22 @@
     "packages/**"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "build:common": "npm run build -w @aemeath/dsh-plugin-common"
+    "build": "node scripts/verify-workspace-links.mjs && npm run build --workspaces --if-present",
+    "build:common": "npm run build -w @aemeath/dsh-plugin-common",
+    "verify:links": "node scripts/verify-workspace-links.mjs"
   },
   "engines": {
     "node": ">=22.13"
   },
   "devDependencies": {
+    "@aemeath/dsh-plugin-common": "file:packages/shared/dsh-plugin-common",
+    "@aemeath/dsh-plugin-curriculum": "file:packages/curriculum/dsh-plugin-curriculum",
+    "@aemeath/dsh-plugin-lecture": "file:packages/lecture/dsh-plugin-lecture",
+    "@aemeath/dsh-plugin-memory": "file:packages/memory/dsh-plugin-memory",
+    "@aemeath/dsh-plugin-retriever": "file:packages/retriever/dsh-plugin-retriever",
+    "@aemeath/dsh-plugin-ui": "file:packages/ui/dsh-plugin-ui",
+    "@aemeath/dsh-plugin-workflow": "file:packages/workflow/dsh-plugin-workflow",
+    "@aemeath/dsh-plugin-worldbook": "file:packages/worldbook/dsh-plugin-worldbook",
     "@deepseek-ai/cordis-plugin-group": "^1.0.1",
     "@deepseek-ai/dsh": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-anonymous-user-id": "^0.2.0-rc.2",
