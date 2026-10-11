@@ -24,7 +24,7 @@ set -euo pipefail
 
 # 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
 # （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
-LECTURE_MAC_VERSION="2026-10-12.2"
+LECTURE_MAC_VERSION="2026-10-12.3"
 
 # ---- 路径 ----
 # ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
@@ -252,6 +252,34 @@ fi
 # ---- 5) 启动 ----
 DSH_BIN="$ROOT/node_modules/.bin/dsh"
 [[ -x "$DSH_BIN" ]] || die "找不到 $DSH_BIN —— 请先在仓库根跑 npm install"
+
+# ⚠️ 自检：真机上有过 `line 256: PORT?: unbound variable`，
+#    报错行指向这里，但 PORT 早在开头就无条件赋值过、并且成功打印过。
+#    bash 的报错格式是 `PORT: unbound variable`（**名字后面没有问号**），
+#    所以 `PORT?` 这个写法说明脚本文件本身和预期不一致
+#    （本地改动 / 换行符 / 编辑器插入的字符）。
+#    与其继续猜，不如把关键变量的实际状态和文件指纹都打出来。
+say "启动前自检："
+say "  PORT=${PORT:-<未设置>}  SETUP_ONLY=${SETUP_ONLY:-<未设置>}  EXTRA_ARGS=${#EXTRA_ARGS[@]} 个"
+say "  shell=$BASH_VERSION  （若为空说明不是 bash）"
+say "  bash=$BASH  ·  uname=$(uname -s)"
+# 文件指纹：比对"你跑的文件"和"git 里应有的文件"是否一致
+SELF_SUM="$( (shasum -a 256 "$SCRIPT_PATH" 2>/dev/null || sha256sum "$SCRIPT_PATH" 2>/dev/null) | cut -c1-16 )"
+say "  脚本指纹=$SELF_SUM  路径=$SCRIPT_PATH"
+if command -v git >/dev/null 2>&1 && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  GIT_SUM="$(git -C "$ROOT" show "HEAD:scripts/lecture-mac.sh" 2>/dev/null | (shasum -a 256 2>/dev/null || sha256sum 2>/dev/null) | cut -c1-16)"
+  if [ -n "$GIT_SUM" ] && [ "$GIT_SUM" != "$SELF_SUM" ]; then
+    warn "脚本与 git HEAD **不一致**（工作区=$SELF_SUM  HEAD=$GIT_SUM）"
+    warn "  你可能改过这个文件，或 git pull 没有完整更新。"
+    warn "  建议：git status scripts/lecture-mac.sh   看差异；"
+    warn "        git checkout -- scripts/lecture-mac.sh   还原成仓库版本"
+  else
+    say "  与 git HEAD 一致"
+  fi
+fi
+if [[ -z "${PORT:-}" ]]; then
+  die "PORT 在启动前丢失了——这是脚本 bug，请把上面这几行发给我。"
+fi
 
 say "启动课堂记录模式（profile=lecture, port=$PORT）"
 say "浏览器会自动打开；没打开就手动访问终端里打印的带 token 的地址。"
