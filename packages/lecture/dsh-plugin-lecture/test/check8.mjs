@@ -579,4 +579,69 @@ t('惰性取值要能经得起"服务还不存在"', () => {
   assert.match(m[0], /catch/, '应有 catch 兜底');
 });
 
+console.log('\n[人格必须跟随会话，不能被全局默认锁死]');
+
+// 真机踩过（"人格锁死在 physicist，在会话里选小爱同学也没用"）：
+//
+//   personaTextFor 里写的是：
+//       currentRole() ?? resolvePresetCompat(ctx, agent.session) ?? config.defaultPreset
+//   而 currentRole() 返回 **ctx.agentPresets.defaultId（全局默认）** ——
+//   它一旦有值就短路，按会话解析的那一项**永远轮不到**。
+//   症状：所有会话都用全局默认人格，会话里选什么 preset 都不生效。
+//
+//   正确顺序：会话级 → 全局默认 → 配置默认。
+t('角色解析以"会话级"优先（不能被全局默认短路）', () => {
+  const src = readFileSync(join(REPO_ROOT, 'packages/shared/dsh-plugin-common/src/index.ts'), 'utf-8');
+  const live = stripComments(src);
+
+  // 必须存在这个 helper，且顺序正确
+  const helper = live.match(/const roleForAgent = \(session[^)]*\)[^;]*;/);
+  assert.ok(helper, '应有统一的角色解析 helper（避免多处顺序不一致）');
+  const body = helper[0];
+  const iSession = body.indexOf('resolvePresetCompat');
+  const iGlobal = body.indexOf('currentRole()');
+  assert.ok(iSession >= 0, 'helper 里应读会话级 preset');
+  assert.ok(iGlobal >= 0, 'helper 里应回退全局默认');
+  assert.ok(iSession < iGlobal, '会话级必须排在全局默认**之前**（否则全局默认会短路）');
+
+  // 旧的错误顺序不能出现在活代码里
+  assert.ok(
+    !/currentRole\(\)\s*\?\?\s*resolvePresetCompat/.test(live),
+    '不该再有 `currentRole() ?? resolvePresetCompat(...)`（全局默认会短路会话级）',
+  );
+});
+
+t('人格段与日志用同一个解析函数（避免日志误导）', () => {
+  const src = readFileSync(join(REPO_ROOT, 'packages/shared/dsh-plugin-common/src/index.ts'), 'utf-8');
+  const live = stripComments(src);
+  // 至少两处**调用**（人格段 + 挂载日志），外加定义本身。
+  // 用 `= roleForAgent(agent.session)` 精确匹配调用，避免把定义算进来。
+  const calls = (live.match(/= roleForAgent\(agent\.session\)/g) || []).length;
+  assert.ok(calls >= 2, `人格段与日志都应调用 roleForAgent（实际 ${calls} 处）`);
+});
+
+console.log('\n[persona 必须说明"记住"由系统处理]');
+
+// 真机反馈：用户说"记住它"，agent 去写 md 文件了。
+// 根因：memory 插件**没有给 agent 工具**（只有 /memory 斜杠命令），
+// 靠触发动词（"记住/记一下"…）自动总结落库；
+// 而 persona 只说"不要输出记忆格式"，没说"系统会自动记住，你不用动手"。
+t('四份 persona 都说明"记住"由系统自动处理、不要写文件', () => {
+  const files = [
+    'profiles/aemeath/personas/physicist.md',
+    'profiles/aemeath/personas/aemeath.md',
+    'profiles/aemeath/personas/physicist.en.md',
+    'profiles/aemeath/personas/aemeath.en.md',
+  ];
+  for (const f of files) {
+    const t = readFileSync(join(REPO_ROOT, f), 'utf-8');
+    const zh = f.endsWith('.md') && !f.endsWith('.en.md');
+    const needles = zh ? ['自动', '不要', '写文件'] : ['automatically', 'do **not** write files'];
+    for (const n of needles) {
+      assert.ok(t.includes(n), `${f} 应说明「${n}」（否则 agent 会去写文件）`);
+    }
+    assert.ok(!/写文件.{0,6}建笔记/.test(t) || zh, `${f} 语言与内容应一致`);
+  }
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

@@ -797,11 +797,33 @@ export function apply(ctx: Context, config: CommonConfig): void {
   const mountedAgentPersonas = new Set<string>();
 
   /**
-   * 实时角色：前端选择写入的 preset 默认值；读不到则回退。
+   * ⚠️⚠️ 真机踩过（"人格锁死在 physicist，在会话里选小爱同学也没用"）：
+   *
+   *   早先 personaTextFor 写的是：
+   *       currentRole() ?? resolvePresetCompat(ctx, agent.session) ?? config.defaultPreset
+   *   而 `currentRole()` 返回的是 **ctx.agentPresets.defaultId（全局默认）**。
+   *   它一旦有值就短路，**后面按会话解析的那一项永远轮不到** ——
+   *   于是所有会话都用全局默认人格，在会话里选什么 preset 都不生效。
+   *
+   *   正确顺序必须是「**会话 → 全局 → 配置**」：
+   *     · resolvePresetCompat  读 sessionProjections.stateOf(session,'agentPreset')
+   *       —— DSH 0.2.0 的权威来源，含"会话中途切换"的记录；
+   *     · currentRole()        读 registry 的 defaultId —— 会话还没选过时兜底；
+   *     · config.defaultPreset —— 服务缺失时的最后兜底。
+   *
+   *   统一走这个 helper，避免两处调用点再次不一致。
+   */
+  const roleForAgent = (session: unknown): string | undefined =>
+    resolvePresetCompat(ctx, session) ?? currentRole() ?? config.defaultPreset;
+
+  /**
+   * 全局默认角色：设置页写的 preset 默认值；读不到则回退。
    * DSH 0.2.0：行 id 由 'agent-presets' 改为 'agent-preset-registry'，其
    * `selectedDefault` 是 volatile 字段（官方实现：
    * `get defaultId() { return this.config.selectedDefault.get() ?? this.config.default }`）。
    * 这里直接问 ctx.agentPresets 服务的 defaultId（权威且支持热更新）。
+   *
+   * ⚠️ 这是**全局**默认，不是"当前会话的角色" —— 会话内的角色要用 roleForAgent()。
    */
   const currentRole = (): string | undefined => {
     try {
@@ -822,7 +844,8 @@ export function apply(ctx: Context, config: CommonConfig): void {
   /** 按 role+locale 解析人格文本（结果缓存；switch 后新 role 会 cache-miss 重新读文件）。 */
   const personaTextCache = new Map<string, string>();
   const personaTextFor = (agent: { id: string; session: unknown }): string => {
-    const role = currentRole() ?? resolvePresetCompat(ctx, agent.session) ?? config.defaultPreset;
+    // 顺序：会话级 → 全局默认 → 配置默认（见 roleForAgent 的注释）
+    const role = roleForAgent(agent.session);
     const persona = config.personas?.[role ?? ''];
     if (!persona) return '';
     const locale = currentLocale(ctx);
@@ -850,7 +873,11 @@ export function apply(ctx: Context, config: CommonConfig): void {
       return;
     }
     if (Object.keys(config.personas ?? {}).length === 0) return;
-    const role = currentRole() ?? resolvePresetCompat(ctx, agent.session) ?? config.defaultPreset;
+    // ⚠️ 这里**原来也是 currentRole() 在前** —— 同一个 bug 的第二处。
+    //    它只影响日志，所以没被发现；但如果只修 personaTextFor 而不修这里，
+    //    日志会显示"role=physicist"而实际用了 aemeath，排查时会误导。
+    //    统一走 roleForAgent()。
+    const role = roleForAgent(agent.session);
     const persona = config.personas?.[role ?? ''];
     log(`人格路由: agent=${agent.id} role=${role || '(未解析→' + (config.defaultPreset ?? '无') + ')'} defaultPreset=${config.defaultPreset} personaFile=${persona?.file ?? '(未匹配，等实时角色)'}`);
     try {
