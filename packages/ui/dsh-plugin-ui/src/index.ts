@@ -36,8 +36,20 @@ export const name = 'aemeath-ui';
 // memory 本来就是**可选**的：下面用的是 ctx.get('memory')，
 // 取不到时返回 undefined，各处已有判空（memory.unavailable / 503 降级）。
 // 所以把它从 inject 里去掉，改成运行时按需取。
-export const inject = ['webServer', 'settings'];
-
+//
+// ⚠️ `agentPresets` 是**另一回事**：它**必须**在 inject 里，否则访问就抛错。
+//
+//   cordis 规则：读 `ctx.<service>` 之前，该服务名必须在 inject 数组里，
+//   否则报 `cannot get property "agentPresets" without inject`。
+//   registry 用 `super(ctx, 'agentPresets')` 注册，所以名字是 `agentPresets`。
+//
+//   真机症状：GET /aemeath/api/settings **完全不返回** preset 键
+//   （抛错被 catch 静默吃掉）→ 前端读不到当前角色、写进去的也读不回来。
+//
+//   那为什么不担心 lecture profile？因为它**不挂 agent-preset-registry** ——
+//   但 lecture profile 也**不用这套设置桥**（它自己的界面不读角色设置）。
+//   若将来 lecture 也需要，应改用可选的 ctx.inject 回调而不是顶层 inject。
+export const inject = ['webServer', 'settings', 'agentPresets'];
 /**
  * DSH 0.2.0：settings 不再由插件「注册命名空间」，而是把可编辑字段声明为插件
  * 自己 Config 上的 volatile 引用；框架据此生成设置页并写回 profile patch。
@@ -273,17 +285,70 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
           /* namespace 未登记：跳过 */
         }
       }
+      // —— 当前默认角色（人格）——
+      //
+      // ⚠️⚠️ 真机踩过（"顶部模态锁死 + 切换无效"）：这一整块早先写在一个
+      //     大 try 里，任何一步抛错都被 `catch {}` 吃掉 → GET **完全不返回**
+      //     agent-preset-registry 键 → 前端读不到 → 界面用 localStorage 兜底
+      //     显示一个值，而切换写入后再读回又是空的。
+      //
+      //     实测：GET 只返回 7 个 aemeath-* 键，preset 相关的键一个都没有。
+      //
+      //     现在**逐级降级**，每级单独 try，任一级失败不影响下一级，
+      //     且失败时打日志（不再静默）：
+      //       ① ctx.agentPresets.defaultId  —— dsh 0.2.0 权威且支持热更新
+      //       ② readSetting(...).selectedDefault —— 用户选择的 volatile 字段
+      //       ③ readSetting(...).default   —— profile 里的兜底值
+      // —— 当前默认角色（人格）——
+      //
+      // ⚠️⚠️ 真机踩过（"顶部模态锁死 + 历史标签为空 + 切换无效"），
+      //     根因是 **`agentPresets` 不在 inject 里**：
+      //
+      //   cordis 规则：读 `ctx.<service>` 之前，服务名必须在 inject 数组里，
+      //   否则抛 `cannot get property "agentPresets" without inject`。
+      //   早先这里是裸的 `ctx.agentPresets` + 一个大 try/catch →
+      //   每次都抛错、被静默吃掉 → GET **完全不返回** preset 键 →
+      //   前端读不到当前角色（退回 localStorage 显示旧值），写入的也读不回来。
+      //
+      //   修法：把 `agentPresets` 加进顶层 inject（见文件头的说明）。
+      //
+      //   这里保留**逐级降级**是有意义的（服务缺失时不至于整个端点 500）：
+      //     ① ctx.agentPresets.defaultId          —— 权威且支持热更新
+      //     ② readSetting(...).selectedDefault     —— 用户选择的 volatile 字段
+      //     ③ readSetting(...).default             —— profile 里的兜底值
+      let resolved = '';
+      const presetTrace: string[] = [];
       try {
         const presets = (ctx as unknown as { agentPresets?: { defaultId?: string } }).agentPresets;
-        const resolved =
-          (typeof presets?.defaultId === 'string' && presets.defaultId) ||
-          (readSetting(ctx, AGENT_PRESET_NAMESPACE)?.selectedDefault as string | undefined) ||
-          (readSetting(ctx, AGENT_PRESET_NAMESPACE)?.default as string | undefined);
-        if (resolved) out[AGENT_PRESET_NAMESPACE] = resolved;
-        // 兼容前端既有读法：老键名 agent-presets.default
-        if (resolved) out['agent-presets'] = resolved;
-      } catch {
-        /* ignore */
+        if (typeof presets?.defaultId === 'string' && presets.defaultId) {
+          resolved = presets.defaultId;
+          presetTrace.push(`service=${resolved}`);
+        } else {
+          presetTrace.push('service: defaultId 为空');
+        }
+      } catch (e) {
+        // 到这说明 inject 又漏了 —— 必须可见，不能再静默
+        presetTrace.push(`service failed: ${(e as Error).message}`);
+        console.warn(`[aemeath-ui] 读 agentPresets 失败（inject 里有没有它？）：${(e as Error).message}`);
+      }
+      if (!resolved) {
+        try {
+          const ap = readSetting(ctx, AGENT_PRESET_NAMESPACE);
+          presetTrace.push(`readSetting=${ap ? JSON.stringify(ap).slice(0, 120) : 'undefined'}`);
+          const v = ap?.selectedDefault ?? ap?.default;
+          if (typeof v === 'string') resolved = v;
+        } catch (e) {
+          presetTrace.push(`readSetting threw: ${(e as Error).message}`);
+        }
+      }
+      out['aemeath-preset-trace'] = presetTrace;
+
+      if (resolved) {
+        out[AGENT_PRESET_NAMESPACE] = resolved;
+        // 兼容前端既有读法：老键名 agent-presets（0.1.1）
+        out['agent-presets'] = resolved;
+      } else {
+        console.warn('[aemeath-ui] 未能解析当前默认角色——前端将退回 localStorage');
       }
       json(res, 200, { ok: true, namespaces: out });
       return;

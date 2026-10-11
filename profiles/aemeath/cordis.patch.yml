@@ -215,7 +215,7 @@
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config:
     default: aemeath
-    selectedDefault: aemeath
+    selectedDefault: physicist
 
 # —— 声明 aemeath / physicist 两个 preset 本体 ——
 #

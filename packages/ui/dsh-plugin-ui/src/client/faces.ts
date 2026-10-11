@@ -8,7 +8,7 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type { CredentialInfo } from '@deepseek-ai/dsh-credentials/types';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
-import { FEATURE_NAMESPACES } from './constants.ts';
+import { FEATURE_NAMESPACES, AGENT_PRESET_NAMESPACE, AGENT_PRESET_FIELD, AGENT_PRESET_READ_FIELDS } from './constants.ts';
 import { CREDENTIALS } from './settings.tsx';
 
 /**
@@ -123,9 +123,24 @@ export function createFaces(ctx: ClientContext): Faces {
     refresh: async (): Promise<void> => {
       try {
         const all = await settingsApi.read();
-        const ap = all['agent-presets'];
+        // ⚠️ 0.2.0：命名空间是 `agent-preset-registry`（0.1.1 才是 agent-presets）。
+        //    后端 GET 会把这个 namespace 的值直接给成**字符串**（已解析好的当前角色），
+        //    所以优先取字符串；若是对象则按 0.2.0 字段名读（selectedDefault → default）。
+        const ap = all[AGENT_PRESET_NAMESPACE];
+        let val: string | undefined;
         if (typeof ap === 'string') {
-          roleFace.current = ap;
+          val = ap;
+        } else if (ap && typeof ap === 'object') {
+          const obj = ap as Record<string, unknown>;
+          for (const f of AGENT_PRESET_READ_FIELDS) {
+            if (typeof obj[f] === 'string') {
+              val = obj[f] as string;
+              break;
+            }
+          }
+        }
+        if (val) {
+          roleFace.current = val;
           roleFace.notify();
         }
       } catch {
@@ -133,7 +148,9 @@ export function createFaces(ctx: ClientContext): Faces {
       }
     },
     set: async (role: string): Promise<void> => {
-      await settingsApi.write('agent-presets', { patch: { default: role } });
+      // ⚠️ 发 `default`（后端约定的入参名），由**后端**翻译成 selectedDefault。
+      //    发 selectedDefault 会被后端校验挡下（400），表现为"点了没反应"。
+      await settingsApi.write(AGENT_PRESET_NAMESPACE, { patch: { [AGENT_PRESET_FIELD]: role } });
       roleFace.current = role;
       roleFace.notify();
     },

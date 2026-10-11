@@ -196,6 +196,16 @@ function SessionListBody({
 interface SessionInfo {
   id: string;
   displayTitle?: string;
+  /**
+   * 会话的 agent preset。
+   *
+   * ⚠️ 真机踩过（"历史记录里没有人格标签"）：这里的字段路径必须是
+   *   `byId[id].projectionValues.agentPreset`
+   * —— 官方 ui-agent-preset 的 AgentPresetLabel 读的就是这条路径
+   *   （`state.byId[sessionId]?.projectionValues?.agentPreset`）。
+   * 早先我只在顶层找 `agentPreset`，永远取不到 → 标签空。
+   */
+  projectionValues?: { agentPreset?: string };
   agentPreset?: string;
   running?: boolean;
   blank?: boolean;
@@ -222,7 +232,10 @@ const SessionRowMemo = memo(function SessionRowMemo({
   const onClick = useCallback(() => open(id), [open, id]);
   const onDelete = useCallback(() => archive(id), [archive, id]);
   if (!s || s.blank) return null;
-  const presetLabel = s.agentPreset === 'aemeath' ? t('sessions.preset.aemeath') : s.agentPreset === 'physicist' ? t('sessions.preset.physicist') : s.agentPreset ?? '';
+  // ⚠️ 路径：官方把它挂在 projectionValues 下（见 SessionInfo 的注释）。
+  //    兼容读顶层是为了不破坏可能存在的旧结构；两者都没有就不显示标签。
+  const presetId = s.projectionValues?.agentPreset ?? s.agentPreset;
+  const presetLabel = presetId === 'aemeath' ? t('sessions.preset.aemeath') : presetId === 'physicist' ? t('sessions.preset.physicist') : presetId ?? '';
   return (
     <SessionRow
       title={s.displayTitle ?? id.slice(0, 8)}

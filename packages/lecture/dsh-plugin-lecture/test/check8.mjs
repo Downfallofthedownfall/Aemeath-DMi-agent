@@ -676,4 +676,43 @@ t('aemeath-ui 依赖的 hero 槽位由该插件提供', () => {
   }
 });
 
+console.log('\n[访问 ctx.<service> 必须在 inject 里声明]');
+
+// 真机踩过（"顶部模态锁死 + 历史标签为空 + 切换无效"）——
+// 三个症状一个根因，而且最难查：
+//
+//   cordis 规则：读 `ctx.<service>` 前，服务名必须在 inject 数组里，
+//   否则抛 `cannot get property "X" without inject`。
+//
+//   aemeath-ui 里裸写了 `ctx.agentPresets`，而 inject 只有 ['webServer','settings'] →
+//   每次 GET /aemeath/api/settings 都在那里抛错 → 被 `catch {}` 静默吃掉 →
+//   **preset 键一个都不返回** → 前端读不到角色（退回 localStorage 显示旧值），
+//   写进去的也读不回来。整条链路没有一处报错。
+t('aemeath-ui 的 inject 含它访问的服务', () => {
+  const uiSrc = readFileSync(join(REPO_ROOT, 'packages/ui/dsh-plugin-ui/src/index.ts'), 'utf-8');
+  const live = stripComments(uiSrc);
+  const injectMatch = live.match(/export const inject = \[([^\]]*)\]/);
+  assert.ok(injectMatch, '找不到 aemeath-ui 的 inject');
+  const declared = injectMatch[1];
+
+  // 它访问了 ctx.agentPresets → 必须在 inject 里
+  if (/ctx(?: as unknown as \{[^}]*\})?\.agentPresets|\.agentPresets\b/.test(live)) {
+    assert.ok(/agentPresets/.test(declared), 'inject 必须含 agentPresets（否则访问会抛错）');
+  }
+  // ctx.get('xxx') 形式不需要 inject（那是显式查找），但 ctx.xxx 需要
+  // 这里只检查已知的几个直接属性访问
+  for (const svc of ['webServer', 'settings']) {
+    if (new RegExp(`ctx\\.${svc}\\b`).test(live)) {
+      assert.ok(new RegExp(`['"]${svc}['"]`).test(declared), `inject 必须含 ${svc}`);
+    }
+  }
+});
+
+t('读服务失败时不再静默（要有可见日志）', () => {
+  const uiSrc = readFileSync(join(REPO_ROOT, 'packages/ui/dsh-plugin-ui/src/index.ts'), 'utf-8');
+  // 解析角色的那段 catch 里应有 console.warn，而不是空 catch
+  const seg = uiSrc.match(/读 agentPresets 失败[\s\S]{0,160}/);
+  assert.ok(seg, '读 agentPresets 失败时应有明确告警（不能再被 catch 静默吃掉）');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);
