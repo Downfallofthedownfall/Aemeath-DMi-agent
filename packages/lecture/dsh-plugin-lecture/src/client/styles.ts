@@ -80,15 +80,14 @@ const CSS = `
 
    注意：本文件是 JS 模板字符串，注释里**不能出现反引号**（会提前结束字符串）。 */
 .${LECTURE_CLASS}[data-standalone="1"] {
-  /* ⚠️ 独立界面模式**不再铺满整窗**：
-     它要和 dsh 自己的对话区上下分屏（上工作台 / 下对话）。
-     早先是 fixed+inset:0 铺满 —— 那会把唯一的输入框盖掉，
-     mac 上就变成"能看不能记"（真机踩过）。
-     现在由 StandaloneMount 的 flex 布局决定高度。 */
-  position: relative;
+  /* 独立界面模式：铺满整窗。
+     输入框由工作台**自己的中栏**提供（见 workbench.tsx 的 Composer），
+     不依赖 dsh 的 shell —— 所以这里可以放心铺满。 */
+  position: fixed;
+  inset: 0;
   width: 100%;
   height: 100%;
-  z-index: auto;
+  z-index: 2147483000;
   border-left: none;
   box-shadow: none;
   animation: none;
@@ -424,9 +423,10 @@ const CSS = `
    一个三栏工作台挤在侧栏里既放不下、也仍然"长得像主 agent"。
    所以：**两种模式都铺满**，只是一个在独立窗口里、一个做全屏浮层。 */
 .${LECTURE_CLASS}[data-workbench="1"] {
-  /* ⚠️ 嵌入主 agent 时（非 standalone）才做全屏浮层。
-     **standalone 模式必须排除** —— 那种模式下工作台与 dsh 对话区**上下分屏**，
-     再 fixed+inset:0 就会把输入框盖掉（真机踩过："mac 上没有输入框"）。 */
+  /* 两种模式都铺满整窗：
+       · 嵌入主 agent 时 —— 全屏浮层（盖住主界面）
+       · standalone（mac）—— 固定定位铺满（就是课堂窗本身）
+     输入框由工作台中栏自己提供，两种模式都不依赖 dsh 的 composer。 */
   position: fixed;
   inset: 0;
   width: 100%;
@@ -437,12 +437,7 @@ const CSS = `
   animation: aem-lec-in 0.16s ease-out;
   z-index: 2147482500;
 }
-/* standalone：回归普通流，高度由 StandaloneMount 的 flex 决定 */
-.${LECTURE_CLASS}[data-workbench="1"][data-standalone="1"] {
-  position: relative;
-  inset: auto;
-  z-index: auto;
-}
+.${LECTURE_CLASS}[data-workbench="1"][data-standalone="1"] { z-index: 2147483000; }
 
 .${LECTURE_CLASS} .lec-wb {
   flex: 1 1 auto;
@@ -548,8 +543,76 @@ const CSS = `
 .${LECTURE_CLASS} .lec-wb-main {
   flex: 1 1 auto;
   min-width: 0;
+  /* ⚠️ 改成纵向 flex：笔记区自己滚，输入框**钉在底部**。
+     早先是整栏 overflow-y:auto —— 那样输入框会跟着内容滚走，
+     上课时又要滚回底部才能打字。 */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+/* 笔记区：吃掉剩余高度并自己滚动 */
+.${LECTURE_CLASS} .lec-wb-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
-  padding: 10px 16px 40px;
+  padding: 10px 16px 20px;
+}
+
+/* —— 速记输入框（中栏底部）——
+   用户要的就是"中间那片空闲放一个输入框"，所以做得朴素：
+   一条分隔线 + 一个自动长高的 textarea + 右下角一个"记下"。 */
+.${LECTURE_CLASS} .lec-composer {
+  flex: none;
+  border-top: 1px solid var(--aem-line);
+  padding: 8px 16px 10px;
+  background: var(--aem-nav-bg);
+}
+.${LECTURE_CLASS} .lec-composer-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  min-height: 44px;
+  max-height: 220px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--aem-line);
+  background: var(--dsw-alias-bg-base, #fff);
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+  outline: none;
+}
+.${LECTURE_CLASS} .lec-composer-input:focus {
+  border-color: var(--aem-accent);
+}
+.${LECTURE_CLASS} .lec-composer-input:disabled { opacity: 0.6; }
+.${LECTURE_CLASS} .lec-composer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.${LECTURE_CLASS} .lec-composer-hint {
+  flex: 1 1 auto;
+  font-size: 11px;
+  opacity: 0.6;
+  min-height: 14px;
+}
+.${LECTURE_CLASS} .lec-composer-hint[data-tone="err"] { color: #d9534f; opacity: 1; }
+.${LECTURE_CLASS} .lec-composer-send {
+  flex: none;
+  padding: 5px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--aem-accent);
+  background: var(--aem-accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.${LECTURE_CLASS} .lec-composer-send:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .${LECTURE_CLASS} .lec-notehead {
   display: flex;

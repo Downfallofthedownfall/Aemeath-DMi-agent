@@ -127,7 +127,7 @@ export function SymbolPanel(): JSX.Element {
         {copied ? (
           <span style={{ color: 'var(--aem-accent)', fontWeight: 600 }}>已复制 {copied} —— 到对话输入框粘贴</span>
         ) : (
-          <>点符号即复制到剪贴板，然后到<b>下面的对话输入框</b>粘贴</>
+          <>点符号即复制到剪贴板，然后到<b>中栏下面的输入框</b>粘贴</>
         )}
       </div>
 

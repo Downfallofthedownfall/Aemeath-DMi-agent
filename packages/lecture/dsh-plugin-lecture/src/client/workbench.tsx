@@ -18,7 +18,7 @@
 // 符号键盘**常驻右栏**（用户反馈："没看到按钮"）——
 // 早先它藏在侧栏底部一个折叠按钮后面，找不到。现在它是一等公民。
 // ============================================================
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReviewPanel } from './review-panel.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { LECTURE_CLASS } from './styles.ts';
@@ -67,6 +67,95 @@ async function postJson<T>(url: string, body: unknown): Promise<T | null> {
 
 /** 右栏放什么。 */
 type RightTab = 'symbols' | 'review';
+
+/**
+ * 速记输入框（中栏底部）。
+ *
+ * 设计取舍（都是真机反馈定的）：
+ *   · **不嵌 dsh 的对话区**。用户原话："不要把整个主agent塞进去啊，
+ *     放一个输入框就完了，反正固定physicist也用不到其他乱七八糟的功能，
+ *     也不要分屏，本来中间的区域就有很多空闲放一个输入框就行了。"
+ *   · **不经过 LLM**。上课现场在听讲，等模型回一轮太慢；
+ *     而且课堂内 LLM 的输出按设计（D3）只在后端、前端不剧透。
+ *     所以直接落盘（与 lecture_capture 工具同一个 store）。
+ *   · **Enter 发送 / Shift+Enter 换行**（和一般聊天框一致，不用学）。
+ *   · 自动长高（最多 ~10 行），免得中栏被输入框吃掉。
+ */
+function Composer({
+  disabled,
+  onSend,
+}: {
+  disabled: boolean;
+  onSend: (text: string) => Promise<void>;
+}): JSX.Element {
+  const [text, setText] = useState('');
+  const [hint, setHint] = useState('');
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  // 自动长高：先归零再按 scrollHeight 设，否则删字时不会回缩
+  const resize = useCallback((): void => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+  }, []);
+
+  const submit = useCallback(async (): Promise<void> => {
+    const v = text.trim();
+    if (!v || disabled) return;
+    setText('');
+    setHint('');
+    // 先清空再发送：现场速记不能因为网络慢就卡住输入
+    requestAnimationFrame(resize);
+    try {
+      await onSend(v);
+      setHint('已记下');
+      window.setTimeout(() => setHint(''), 1200);
+    } catch (e) {
+      // 失败要把内容还给用户，不能吞
+      setText(v);
+      setHint(`没记上：${(e as Error).message}`);
+      requestAnimationFrame(resize);
+    }
+  }, [text, disabled, onSend, resize]);
+
+  return (
+    <div className="lec-composer">
+      <textarea
+        ref={ref}
+        className="lec-composer-input"
+        rows={2}
+        placeholder="在这里记 —— 写下你听到的内容，Enter 记下，Shift+Enter 换行"
+        value={text}
+        disabled={disabled}
+        onChange={(e) => {
+          setText(e.target.value);
+          resize();
+        }}
+        onKeyDown={(e) => {
+          // Enter 发送；Shift+Enter 换行；输入法组合中不拦截
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            void submit();
+          }
+        }}
+      />
+      <div className="lec-composer-row">
+        <span className="lec-composer-hint" data-tone={hint.startsWith('没记上') ? 'err' : 'ok'}>
+          {hint}
+        </span>
+        <button
+          type="button"
+          className="lec-composer-send"
+          onClick={() => void submit()}
+          disabled={disabled || !text.trim()}
+        >
+          {disabled ? '记录中…' : '记下'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * 课堂工作台。
@@ -327,6 +416,8 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
 
         {/* ── 中栏：笔记主体 ── */}
         <main className="lec-wb-main">
+          {/* 笔记区：自己滚动（输入框钉在下面，不跟着滚） */}
+          <div className="lec-wb-scroll">
           {starting ? (
             <div className="lec-startbox">
               <div className="lec-wb-h">开始新的一节课</div>
@@ -420,7 +511,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 在<b>左边的课程列表</b>选一讲，或点右上角「＋ 新的一节」开始。
               </p>
               <p className="lec-hint">
-                笔记在<b>下面的对话输入框</b>里记：直接写你听到的内容，爱弥斯会落盘到这里。
+                笔记在<b>下面的输入框</b>里记：写下你听到的内容，Enter 记下。
                 <br />
                 这一栏用来回看、补漏、对着复习。
               </p>
@@ -440,7 +531,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 <div className="lec-empty">
                   这一讲还没有笔记。
                   <br />
-                  在<b>下面的对话输入框</b>里直接写你听到的内容即可（爱弥斯会落盘到这里）。
+                  在<b>下面的输入框</b>里直接写下你听到的内容即可（Enter 记下）。
                 </div>
               ) : null}
               <div className="lec-notechunks">
@@ -462,6 +553,45 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 ))}
               </div>
             </>
+          ) : null}
+          </div>
+
+          {/* ── 速记输入框 ──
+              用户原话："本来中间的区域就有很多空闲放一个输入框就行了"。
+              所以不嵌 dsh 的对话区、也不分屏 —— 就一个自己的输入框。
+
+              为什么**不经过 LLM**：上课现场在听讲，等模型回一轮太慢，
+              而且课堂内 LLM 的输出按设计（D3）只在后端出现、前端不剧透。
+              所以这里直接把原文落盘（与 lecture_capture 工具同一个 store）。
+
+              留白（[我的理解]/[我的疑问]）**不在这里填** ——
+              那是复盘阶段的事（D12），现场没时间写；服务端也不再强制。 */}
+          {!starting && unitId ? (
+            <Composer
+              disabled={busy}
+              onSend={async (text) => {
+                setBusy(true);
+                try {
+                  const r = await fetch(API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      action: 'chunk',
+                      course_id: courseId,
+                      unit_id: unitId,
+                      chunk: { raw: text },
+                    }),
+                  });
+                  const data = (await r.json()) as { ok?: boolean; error?: string };
+                  if (!r.ok || !data.ok) throw new Error(data.error ?? `落盘失败 (${r.status})`);
+                  await loadUnit(courseId, unitId);
+                } catch (e) {
+                  window.alert(`没能记下来：${(e as Error).message}`);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            />
           ) : null}
         </main>
 

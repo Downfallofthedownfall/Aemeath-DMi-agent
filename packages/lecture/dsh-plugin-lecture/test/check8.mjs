@@ -102,21 +102,19 @@ t('CSS 模板内没有裸反引号（会截断模板字符串）', () => {
 
 console.log('\n[独立窗口形态]');
 
-// ⚠️ 这几条**曾经写成"standalone 必须 fixed + 隐藏 shell"** —— 那是导致
-//    "mac 上没有输入框"的错误设计本身。设计改了，断言跟着改。
-t('standalone 工作台在普通流里（不再 fixed 铺满）', () => {
-  // 注意选择器：要匹配 [data-workbench="1"][data-standalone="1"] 那个块，
-  // 不是更早的 [data-standalone="1"]（那是浮层模式的基础样式，本就不同）。
-  const m = stylesSrc.match(/\[data-workbench="1"\]\[data-standalone="1"\]\s*\{([^}]*)\}/);
-  assert.ok(m, '找不到 standalone 的工作台覆盖块');
-  assert.match(m[1], /position:\s*relative/, 'standalone 应回到普通流，由 flex 决定高度');
-  assert.match(m[1], /inset:\s*auto/, 'standalone 应清掉 inset（否则仍会铺满、盖住输入框）');
-});
+// 注：这里曾经有过 "standalone 走普通流 / 清掉 inset" 的断言 —— 那是
+// 「上下分屏、复用 dsh composer」那版方案留下的，已被用户否掉并回退。
+// 现在独立模式照旧 fixed 铺满（输入框由工作台中栏自己提供），
+// 相关断言在下面的「独立模式铺满整窗」与「中栏底部要有速记输入框」两节。
 
-t('挂载点不再隐藏宿主 shell（对话输入框在里面）', () => {
-  assert.ok(
-    !/body > \*:not\(#\$\{HOST_ID\}\)\s*\{\s*display:\s*none/.test(indexSrc),
-    '不该隐藏宿主 shell —— 那会把唯一的对话输入框一起隐藏（真机踩过）',
+t('独立模式隐藏 dsh shell（输入框是我们自己的）', () => {
+  // 回退说明：中间试过"不隐藏 shell、上下分屏、复用 dsh 的 composer"，
+  // 用户否掉了 —— "不要把整个主agent塞进去啊，放一个输入框就完了……也不要分屏"。
+  // 现在：shell 照旧隐藏，输入框由工作台中栏自己提供。
+  assert.match(
+    indexSrc,
+    /body > \*:not\(#\$\{HOST_ID\}\)\s*\{\s*display:\s*none/,
+    '应隐藏宿主 shell（含 sidebar / 会话列表 / 官方 composer）',
   );
 });
 
@@ -363,17 +361,8 @@ t('符号键盘常驻右栏（不再藏在折叠按钮后面）', () => {
   assert.ok(!/lec-symbtn/.test(wbSrc), '不该再依赖折叠按钮才能看到符号键盘');
 });
 
-t('嵌入主 agent 时工作台铺满；standalone 时让位给对话区', () => {
-  // 嵌入模式（有主 agent）：全屏浮层，这是对的
-  assert.match(
-    stylesSrc,
-    /\[data-workbench="1"\]\s*\{[\s\S]{0,300}?position:\s*fixed/,
-    '嵌入模式应 fixed 铺满',
-  );
-  // standalone（mac）：必须是普通流，否则盖住对话输入框
-  const m = stylesSrc.match(/\[data-workbench="1"\]\[data-standalone="1"\]\s*\{([^}]*)\}/);
-  assert.ok(m, '应有 standalone 的覆盖规则');
-  assert.match(m[1], /position:\s*relative/, 'standalone 应回到普通流');
+t('工作台两种模式都铺满整窗', () => {
+  assert.match(stylesSrc, /\[data-workbench="1"\]\s*\{[\s\S]{0,300}?position:\s*fixed/, '工作台应 fixed 铺满');
 });
 
 t('工作台栏底色是不透明实色（否则主 agent 会透出来）', () => {
@@ -730,42 +719,25 @@ console.log('\n[mac 独立模式必须保留对话输入框]');
 // 设计失误，不是实现 bug：
 //
 //   "记笔记在主界面的对话里"这个方案**只在 Windows 成立**（那里有主 agent）。
-//   mac 上没有主 agent，而 StandaloneMount 早先写了
-//       body > *:not(#host) { display: none !important; }
-//   —— 把整个 dsh shell 隐藏掉，**连同唯一的输入框**。
-//   结果：能看不能记。
-const clientSrc2 = clientSrc;
+//   mac 上没有主 agent，所以隐藏 shell 之后必须**自带输入框**。
+//
+//   ⚠️ 中间试过一版"不隐藏 shell、上下分屏、复用 dsh 的 composer"，
+//      用户否掉了："不要把整个主agent塞进去啊，放一个输入框就完了……也不要分屏"。
+//      所以现在：**照旧隐藏 shell**，输入框由工作台中栏自己提供。
+//      "不再隐藏"那类断言已随方案回退删除 —— 不要重新加回来。
 
-t('独立模式不再隐藏 dsh shell（否则输入框也没了）', () => {
-  const live = stripComments(clientSrc2);
-  assert.ok(
-    !/body\s*>\s*\*:not\(#\$\{HOST_ID\}\)\s*\{\s*display:\s*none/.test(live),
-    '不该再用 display:none 隐藏整个 shell（会连输入框一起隐藏）',
-  );
+t('独立模式铺满整窗（输入框由中栏自己提供）', () => {
+  const m = stripComments(stylesSrc).match(/\[data-standalone="1"\]\s*\{([\s\S]*?)\}/);
+  assert.ok(m, '找不到 data-standalone 样式块');
+  assert.match(m[1], /position:\s*fixed/, 'standalone 应铺满整窗（课堂窗就是它）');
+  assert.match(m[1], /inset:\s*0/, 'standalone 应占满视口');
 });
 
-t('独立模式是上下分屏（工作台 + 对话区）', () => {
-  const live = stripComments(clientSrc2);
-  assert.match(live, /flex-direction:\s*column/, 'body 应是纵向 flex（上下分屏）');
-  assert.match(live, /#\$\{HOST_ID\}\s*\{[\s\S]{0,300}?order:\s*-1/, '工作台应排在最前（order:-1）');
-  assert.match(live, /height:\s*52vh|min-height:\s*240px/, '工作台应占固定上半高度');
-  // shell 必须显式收缩，否则按内容撑成全屏 → 与工作台重叠
-  assert.match(live, /body\s*>\s*\*:not\(#\$\{HOST_ID\}\)\s*\{[\s\S]{0,240}?flex:\s*1 1 0/, 'shell 应吃掉剩余高度');
-  assert.match(live, /body\s*>\s*\*:not\(#\$\{HOST_ID\}\)\s*\{[\s\S]{0,240}?height:\s*0/, 'shell 需要 height:0 才不会撑开');
-});
-
-t('standalone 时工作台不再是 fixed 铺满（会盖住输入框）', () => {
-  const live = stripComments(stylesSrc);
-  const m = live.match(/\[data-workbench="1"\]\[data-standalone="1"\]\s*\{([^}]*)\}/);
-  assert.ok(m, '应有 standalone 的工作台覆盖规则');
-  assert.match(m[1], /position:\s*relative/, 'standalone 应回到普通流');
-  assert.ok(!/inset:\s*0/.test(m[1]), 'standalone 不该再 inset:0 铺满');
-});
-
-t('UI 文案指向"下面的对话输入框"（与实际位置一致）', () => {
+t('UI 文案指向中栏下面的输入框（与实际位置一致）', () => {
   const wb = readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8');
-  assert.match(wb, /下面的对话输入框/, '文案应指向实际位置');
+  assert.match(wb, /下面的输入框/, '文案应指向中栏下面的输入框');
   assert.ok(!/主界面的对话/.test(wb), '不该再说"主界面"（mac 上没有主界面）');
+  assert.ok(!/对话输入框/.test(wb), '不该再提"对话输入框"（那是已否掉的分屏方案）');
 });
 
 t('旧的 lecture-mode.tsx 已删除（避免改错文件）', () => {
@@ -773,6 +745,43 @@ t('旧的 lecture-mode.tsx 已删除（避免改错文件）', () => {
     !existsSync(join(root, 'src/client/lecture-mode.tsx')),
     '旧的侧栏版组件应已删除（它没有输入框、也不再被引用）',
   );
+});
+
+console.log('\n[中栏底部要有速记输入框]');
+
+// 真机踩过（用户："mac 上没有输入框我记个 der 的笔记"）——
+// "记笔记在主界面对话里"只在 Windows 成立；mac 上 lecture 独装，没有主 agent。
+// 用户定的形态："本来中间的区域就有很多空闲放一个输入框就行了"。
+const wbLive2 = stripComments(readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8'));
+
+t('中栏渲染了 Composer（自己的输入框，不依赖 dsh）', () => {
+  assert.match(wbLive2, /function Composer\(/, '应有 Composer 组件');
+  assert.match(wbLive2, /<Composer\b/, '中栏应渲染 Composer');
+  assert.match(wbLive2, /className="lec-composer-input"/, '应有 textarea');
+});
+
+t('输入框直接落盘（不经 LLM、不依赖对话）', () => {
+  // 上课现场等模型太慢；且课堂内 LLM 输出按 D3 只在后端
+  assert.match(wbLive2, /action:\s*'chunk'/, '应调 chunk 端点落盘');
+  assert.match(wbLive2, /fetch\(API\b/, '应打本插件的 HTTP 桥');
+  assert.ok(!/lecture_capture/.test(wbLive2), '前端不该调工具（那是 agent 的路径）');
+});
+
+t('输入框 Enter 发送 / Shift+Enter 换行', () => {
+  assert.match(wbLive2, /e\.key === 'Enter'/, '应处理 Enter');
+  assert.match(wbLive2, /!e\.shiftKey/, 'Shift+Enter 应留给换行');
+  assert.match(wbLive2, /isComposing/, '输入法组合中不应拦截 Enter（中文输入必需）');
+});
+
+t('笔记区自己滚动、输入框钉在底部', () => {
+  // 否则输入框跟着内容滚走，上课要滚回底部才能打字
+  assert.match(stylesSrc, /\.lec-composer\s*\{[\s\S]{0,200}?flex:\s*none/, '输入框不该被压缩');
+  assert.match(stylesSrc, /\.lec-wb-scroll\s*\{[\s\S]{0,200}?overflow-y:\s*auto/, '笔记区应自己滚动');
+});
+
+t('提交失败要把内容还给用户（不能吞）', () => {
+  assert.match(wbLive2, /setText\(v\)/, '失败时应恢复输入内容');
+  assert.match(wbLive2, /没记上|没能记下来/, '应有明确失败提示');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

@@ -426,14 +426,18 @@ export async function handleLectureHttp(
           jsonError(res, 400, 'course_id/unit_id/chunk required');
           return;
         }
-        // 强制留白：前端也会拦，但服务端必须再拦一次（前端可绕过）
+        // ⚠️ 留白**不再强制**（与 lecture_capture 工具对齐）。
+        //
+        //    早先这里硬性要求 [我的理解] + [我的疑问] 都填，否则 400。
+        //    但那是**复盘阶段**的事 —— 上课现场速记时你正在听讲，
+        //    根本没时间写"我对这段的理解"。
+        //
+        //    现在：只写原文即可落盘，留白由用户在复盘时补。
+        //    （留白本身仍然是**用户的**：模型代笔会让主动回忆失效，
+        //      所以谁都不替它填，只是允许暂时空着。）
         const missing: string[] = [];
         if (!String(chunk.my_understanding ?? '').trim()) missing.push('[我的理解]');
         if (!String(chunk.my_question ?? '').trim()) missing.push('[我的疑问]');
-        if (missing.length) {
-          jsonError(res, 400, `强制留白未填：${missing.join('、')}`, { missing });
-          return;
-        }
         const r = await deps.onSubmitChunk(course, unit, {
           raw: String(chunk.raw ?? '').slice(0, 20000),
           my_understanding: String(chunk.my_understanding ?? '').slice(0, 4000),
@@ -443,7 +447,8 @@ export async function handleLectureHttp(
           jsonError(res, 400, r.error ?? 'submit failed');
           return;
         }
-        json(res, 200, { ok: true });
+        // blanks_missing 让前端知道"这段还没留白"，提示用户复盘时补
+        json(res, 200, { ok: true, blanks_missing: missing });
         return;
       }
 
