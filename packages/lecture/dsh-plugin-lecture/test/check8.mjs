@@ -784,4 +784,51 @@ t('提交失败要把内容还给用户（不能吞）', () => {
   assert.match(wbLive2, /没记上|没能记下来/, '应有明确失败提示');
 });
 
+console.log('\n[复盘确认后必须真的能送到主记忆]');
+
+// 真机踩过（用户："前端说写入主agent了，但是肯定没有，肯定只是在mac上面"）：
+//
+//   commit 步只写本机 .candidates.json，前端却说"已记录" →
+//   用户以为已经同步进主记忆。实际导出是**另一个手动工具**，没人调就永远不过去。
+//
+//   现实约束（决定了方案）：上课时 mac 在教室、Windows 在家，
+//   **两台机器不可能同时在线** → 没有"自动推送"这个选项。
+//   只能：mac 导出自包含文件 → 人搬运 → Windows 一键导入。
+//
+//   所以两件事都必须做：
+//     ① commit 后**自动导出**（别让人记着调工具）
+//     ② 前端**说清文件在哪、下一步做什么**（别再让人误会已同步）
+const hostSrc3 = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+const rpSrc = readFileSync(join(root, 'src/client/review-panel.tsx'), 'utf-8');
+
+t('commit 后自动导出握手包（不靠人记得调工具）', () => {
+  assert.match(hostSrc3, /function exportHandoffNow/, '应抽出可复用的导出函数');
+  // commit 分支里调用它
+  const commitSeg = hostSrc3.match(/op === 'commit'[\s\S]{0,2400}?\n\s{10}\}/);
+  assert.ok(commitSeg, '找不到 commit 分支');
+  assert.match(commitSeg[0], /exportHandoffNow\(/, 'commit 后应自动导出');
+  // 导出失败不能阻断复盘
+  assert.match(commitSeg[0], /catch[\s\S]{0,120}自动导出握手包失败/, '导出失败应仅告警，不阻断');
+});
+
+t('commit 返回握手文件路径（前端才能显示）', () => {
+  assert.match(hostSrc3, /handoff_files:\s*handoffFiles/, '应返回 handoff_files');
+  assert.match(hostSrc3, /handoff_dir:\s*handoffDir/, '应返回 handoff_dir');
+});
+
+t('前端显示文件路径并说明"不会自动发生"', () => {
+  assert.match(rpSrc, /handoff_files/, '前端应读 handoff_files');
+  assert.match(rpSrc, /下一步/, '应说明下一步做什么');
+  assert.match(rpSrc, /不会自动发生/, '必须点明"这一步不会自动发生"——否则用户以为已同步');
+  assert.ok(
+    !/已记录。回到主 agent 后可用 lecture_export_handoff/.test(rpSrc),
+    '不该再是旧的模糊说法（它让人以为已经同步了）',
+  );
+});
+
+t('导入工具自解释（用户说"导入讲义进度"就能命中）', () => {
+  assert.match(hostSrc3, /导入讲义进度/, '工具描述里应含用户会说的自然语言触发词');
+  assert.match(hostSrc3, /已扫描目录/, '找不到文件时应告知扫过哪些目录');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

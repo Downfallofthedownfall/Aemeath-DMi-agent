@@ -826,6 +826,49 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
 
   // ---------- 握手导出 ----------
 
+  // ============================================================
+  // 握手**导出**（课堂侧 → 主 agent 侧）
+  //
+  // ⚠️ 为什么要抽成函数：复盘确认后要**自动导出**，不能只靠人记得调工具。
+  //
+  //   真机踩过（用户："前端说写入主agent了，但是肯定没有，
+  //   肯定只是在mac上面，是不是还没做注入到windows主客户端这一块？"）：
+  //   commit 步只写本机 .candidates.json，前端却提示"已记录"。
+  //   而导出是**另一个手动工具**，没人调就永远不过去。
+  //
+  //   现实约束（决定了方案）：上课时 mac 在教室、Windows 在家，
+  //   **两台机器不可能同时在线** → 不存在"自动推送"的选项，
+  //   只能"mac 导出自包含文件 → 人搬运 → Windows 一键导入"。
+  //   所以能自动化的是**导出**这一步（别让人记着调工具），
+  //   导入那一步必须由人在 Windows 上触发（文件得先到那儿）。
+  // ============================================================
+
+  /**
+   * 导出握手包。
+   *
+   * @param courseId 指定课程；缺省导出全部课程
+   * @returns 写出的文件绝对路径 + 每个包的摘要
+   */
+  function exportHandoffNow(courseId?: string): { files: string[]; summaries: string[] } {
+    const ids = courseId ? [courseId] : store.listCourses();
+    const written: string[] = [];
+    const summaries: string[] = [];
+    for (const cid of ids) {
+      const index = store.readIndex(cid);
+      if (!index) continue;
+      const cands = new Map<string, Candidates | null>();
+      const reviews = new Map<string, ReviewState | null>();
+      for (const u of index.units) {
+        cands.set(u.id, store.readCandidates(cid, u.id));
+        reviews.set(u.id, store.readReviewState(cid, u.id));
+      }
+      const h: Handoff = filterReviewed(buildHandoff({ index, candidatesByUnit: cands, reviewByUnit: reviews }));
+      written.push(writeHandoff(h, handoffDir, `${cid}-handoff.json`));
+      summaries.push(describeHandoff(h));
+    }
+    return { files: written, summaries };
+  }
+
   ctx.tools.register(
     defineTool({
       name: 'lecture_export_handoff',
@@ -837,26 +880,17 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
       },
       output: { schema: { type: 'json' }, render: renderJson },
       execute: async (args: { course_id?: string }) => {
-        const ids = args.course_id ? [args.course_id] : store.listCourses();
-        if (!ids.length) return fail('没有可导出的课程');
-        const written: string[] = [];
-        const summaries: string[] = [];
-        for (const cid of ids) {
-          const index = store.readIndex(cid);
-          if (!index) continue;
-          const cands = new Map<string, Candidates | null>();
-          const reviews = new Map<string, ReviewState | null>();
-          for (const u of index.units) {
-            cands.set(u.id, store.readCandidates(cid, u.id));
-            reviews.set(u.id, store.readReviewState(cid, u.id));
-          }
-          const h: Handoff = filterReviewed(buildHandoff({ index, candidatesByUnit: cands, reviewByUnit: reviews }));
-          const file = writeHandoff(h, handoffDir, `${cid}-handoff.json`);
-          written.push(file);
-          summaries.push(describeHandoff(h));
-        }
+        const { files: written, summaries } = exportHandoffNow(args.course_id);
+        if (!written.length) return fail('没有可导出的课程');
         log(`握手包已导出 ${written.length} 个 → ${handoffDir}`);
-        return ok({ files: written, summaries, note: '请把文件上传到主 agent（放学后人工上传）。' });
+        return ok({
+          files: written,
+          handoff_dir: handoffDir,
+          summaries,
+          note:
+            '把这些文件搬到主 agent 所在的机器，然后在那边调 lecture_import_handoff 导入' +
+            '（或直接说"导入讲义进度"，主 agent 会自动扫 handoffDir）。',
+        });
       },
     }),
   );
@@ -956,19 +990,25 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     defineTool({
       name: 'lecture_import_handoff',
       description:
-        '【主 agent 侧】导入 lecture 导出的学习进度/短板（handoff.json）。' +
+        '【主 agent 侧】导入课堂机导出的学习进度/短板（*-handoff.json）。' +
+        '用户说「导入讲义进度」「同步课堂笔记」「导入 handoff」时调这个。' +
         '会**自动过守门员**（查重/冲突/写门）后写入主记忆；未复盘的单元会被跳过。' +
-        'dry_run=true 时只判定不写入，用于上传前先看一眼会写什么。',
+        '⚠️ 缺省是 dry_run（试运行）——先跑一次给用户看会写什么，再确认真正导入。',
       parameters: {
-        file: { type: 'string', description: 'handoff 文件路径；缺省扫描 dataDir 下全部 *-handoff.json' },
-        dry_run: { type: 'boolean', description: '试运行：只判定不写入（建议先跑一次）' },
+        file: { type: 'string', description: '单个 handoff 文件路径；缺省扫描 handoffDir 下全部 *-handoff.json' },
+        dry_run: { type: 'boolean', description: '试运行：只判定不写入（**缺省 true**，确认无误后再传 false）' },
         preset: { type: 'string', description: '目标馆，缺省 physicist' },
       },
       output: { schema: { type: 'json' }, render: renderJson },
       execute: async (args: { file?: string; dry_run?: boolean; preset?: string }) => {
         const files = args.file ? [args.file] : findHandoffFiles(handoffDir);
         if (!files.length) {
-          return fail(`没有找到 handoff 文件（目录：${handoffDir}）`);
+          // 说清"去哪找过"，否则用户不知道文件该放哪
+          return fail(
+            `没有找到 handoff 文件。\n` +
+              `已扫描目录：${handoffDir}\n` +
+              `把课堂机导出的 *-handoff.json 放进该目录，或用 file 参数指定绝对路径。`,
+          );
         }
         const gk = await buildGatekeeper();
         const dryRun = args.dry_run ?? true; // 缺省试运行（安全默认）
@@ -1370,7 +1410,33 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             //    早先这里也写一次，导致"前端路径第 5 步才有摘要、工具路径第 4 步就有"，
             //    has_summary 的语义在两个入口下不一致。现在统一由 writeSummaryFor 负责。
             log(`复盘完成（前端）：${courseId}/${unitId}`);
-            return { step: 'done' };
+
+            // ⚠️ 自动导出握手包 —— 别让人记着"还要再调一个工具"。
+            //
+            //    真机踩过：commit 只写本机 candidates，前端却提示"已记录"，
+            //    用户以为已经进了主记忆（"前端说写入主agent了，但是肯定没有"）。
+            //
+            //    现实约束：上课时 mac 在教室、Windows 在家，
+            //    **两台机器不可能同时在线** → 没有"自动推送"这个选项，
+            //    只能"mac 导出自包含文件 → 人搬运 → Windows 一键导入"。
+            //    所以能自动化的只有导出这一步；导入必须由人在 Windows 上触发。
+            //
+            //    导出失败不阻断复盘（复盘结果已落盘，导出是附加动作）。
+            let handoffFiles: string[] = [];
+            try {
+              const r = exportHandoffNow(courseId);
+              handoffFiles = r.files;
+              log(`复盘后自动导出握手包：${handoffFiles.join(', ')}`);
+            } catch (e) {
+              warn(`自动导出握手包失败（复盘结果已保存，不影响）：${(e as Error).message}`);
+            }
+            return {
+              step: 'done',
+              // 前端据此显示"文件在哪、下一步要做什么"，
+              // 不再让人误以为已经同步进主记忆了。
+              handoff_files: handoffFiles,
+              handoff_dir: handoffDir,
+            };
           }
 
           return { error: `未实现的复盘操作: ${op}` };

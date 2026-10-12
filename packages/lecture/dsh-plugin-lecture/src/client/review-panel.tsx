@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // client/review-panel.tsx — 课后复盘五步界面
 //
 // 步骤（与后端 review.ts 的状态机一致）：
@@ -85,6 +85,16 @@ export function ReviewPanel(props: {
   const [question, setQuestion] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<Candidates | null>(null);
   const [checked, setChecked] = useState<Record<string, boolean>>({});
+  /**
+   * 确认写入后**自动导出**的握手包信息。
+   *
+   * 为什么要有这个 state：早先第 5 步完成后只说"已记录"，
+   * 用户以为**已经同步进主记忆了**（真机原话："前端说写入主agent了，
+   * 但是肯定没有，肯定只是在 mac 上面"）。
+   * 实际只落在本机文件，必须人把文件搬过去再导入。
+   * 现在把路径显示出来，并说清下一步，不再让人误会。
+   */
+  const [handoff, setHandoff] = useState<{ files: string[]; dir: string }>({ files: [], dir: '' });
 
   const load = useCallback(async () => {
     const d = await getJson<{ ok: boolean; step?: Step; state?: ReviewState; candidates?: Candidates }>(
@@ -161,7 +171,12 @@ export function ReviewPanel(props: {
 
   const doCommit = async (): Promise<void> => {
     setBusy(true);
-    const r = await postJson<{ ok: boolean; error?: string }>({
+    const r = await postJson<{
+      ok: boolean;
+      error?: string;
+      handoff_files?: string[];
+      handoff_dir?: string;
+    }>({
       action: 'review',
       op: 'commit',
       course_id: courseId,
@@ -181,6 +196,7 @@ export function ReviewPanel(props: {
       setErr(r?.error ?? '写入失败');
       return;
     }
+    setHandoff({ files: r.handoff_files ?? [], dir: r.handoff_dir ?? '' });
     setStep('done');
     await onFinished();
   };
@@ -318,7 +334,47 @@ export function ReviewPanel(props: {
 
       {step === 'done' ? (
         <div className="lec-ok">
-          复盘完成 ✓ 这一讲的知识条目与短板已记录。回到主 agent 后可用 lecture_export_handoff 导出进度。
+          <div>复盘完成 ✓ 这一讲的知识条目与短板已记录。</div>
+
+          {/* ⚠️ 必须说清"记到哪了"。早先这里只写"已记录"，
+              用户以为已经同步进主记忆（"前端说写入主agent了，但是肯定没有"）。
+              实际上：只落在**本机文件**，还要把文件搬到主 agent 那台机器上导入。 */}
+          <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.7, opacity: 0.85 }}>
+            {handoff.files.length ? (
+              <>
+                <div>
+                  <b>已导出握手包</b>（供主 agent 导入）：
+                </div>
+                {handoff.files.map((f) => (
+                  <div key={f} style={{ marginLeft: 10, wordBreak: 'break-all' }}>
+                    <code>{f}</code>
+                  </div>
+                ))}
+                <div style={{ marginTop: 6 }}>
+                  <b>下一步</b>：把上面的文件复制到主 agent 那台机器，然后对它说
+                  「导入讲义进度」即可（会自动过守门员再写入主记忆）。
+                </div>
+                <div style={{ marginTop: 4, opacity: 0.8 }}>
+                  注意：这一步**不会自动发生** —— 课堂机与主 agent 常常不在同一台设备上。
+                </div>
+                <button
+                  type="button"
+                  className="lec-btn"
+                  style={{ marginTop: 8 }}
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(handoff.files.join('\n'));
+                  }}
+                >
+                  复制文件路径
+                </button>
+              </>
+            ) : (
+              <div>
+                未生成握手包（导出可能失败，见日志）。知识条目已存本机，
+                可在主 agent 侧用 <code>lecture_export_handoff</code> 重试。
+              </div>
+            )}
+          </div>
         </div>
       ) : null}
     </div>
