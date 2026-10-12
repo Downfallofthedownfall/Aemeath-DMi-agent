@@ -420,7 +420,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 在<b>左边的课程列表</b>选一讲，或点右上角「＋ 新的一节」开始。
               </p>
               <p className="lec-hint">
-                笔记在<b>主界面的对话里</b>记：直接写你听到的内容，爱弥斯会落盘到这里。
+                笔记在<b>下面的对话输入框</b>里记：直接写你听到的内容，爱弥斯会落盘到这里。
                 <br />
                 这一栏用来回看、补漏、对着复习。
               </p>
@@ -440,7 +440,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 <div className="lec-empty">
                   这一讲还没有笔记。
                   <br />
-                  回到<b>主界面的对话</b>，直接写下你听到的内容即可。
+                  在<b>下面的对话输入框</b>里直接写你听到的内容即可（爱弥斯会落盘到这里）。
                 </div>
               ) : null}
               <div className="lec-notechunks">

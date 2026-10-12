@@ -99,9 +99,33 @@ function StandaloneApp(): JSX.Element {
  *
  * 幂等：重复调用只挂一次。
  */
+/**
+ * 独立界面模式的挂载。
+ *
+ * ⚠️⚠️ 真机踩过（mac 上"没有输入框，我记个 der 的笔记"）：
+ *
+ *   早先这里把 **整个 dsh shell 都 `display:none` 掉**，只留我们自己的工作台。
+ *   但"记笔记在主界面的对话里"这个设计**只在 Windows 成立** ——
+ *   那里有主 agent、有对话界面。**mac 上没有主 agent**，
+ *   隐藏 shell 就等于把唯一的输入框也隐藏了 → 用户根本没法记笔记。
+ *
+ *   现在改成：**不再隐藏 shell**，而是把页面纵向分成两块：
+ *     ┌──────────────────────────────┐
+ *     │  课堂工作台（课程/笔记/符号）  │  ← 占上部
+ *     ├──────────────────────────────┤
+ *     │  dsh 自己的对话区 + 输入框     │  ← 保留在下方
+ *     └──────────────────────────────┘
+ *
+ *   这样"在对话里记笔记"在 mac 上也成立：输入框就是 dsh 原生那个，
+ *   爱弥斯收到内容后调 lecture_capture 落盘，工作台实时反映。
+ *
+ *   注意：这里**不再**把 shell 隐藏掉，所以布局必须用 flex 让两部分各占一半高度，
+ *   否则 shell 会按自己的全屏样式铺满、把工作台盖住。
+ */
 function StandaloneMount(): void {
   if (typeof document === 'undefined') return;
   const HOST_ID = 'aemeath-lecture-standalone-root';
+  const ROOT_ID = 'aemeath-lecture-shell-root';
   if (document.getElementById(HOST_ID)) return;
 
   // body 可能尚未就绪（apply 的时机由加载器决定）→ 等 DOMContentLoaded
@@ -112,30 +136,52 @@ function StandaloneMount(): void {
 
   // ⚠️ 背景一律引用宿主主题变量，**不要写死颜色**。
   //    曾经写死 #16181d，导致课堂窗永远是深色、不跟随宿主主题。
-  //    --dsw-alias-bg-base 随宿主 light/dark 变化（实测亮色 #eef1f6 / 暗色 #151517）。
+  //
+  // ⚠️ 顺序：工作台必须**插到 body 最前面**（order:-1），
+  //    否则 dsh shell 先渲染、工作台被挤到下面，而 shell 还是全屏高度 →
+  //    两者重叠、且工作台压住对话输入框（真机截图见过）。
   const style = document.createElement('style');
   style.textContent = `
     html, body {
-      overflow: hidden !important;
       margin: 0 !important;
       background: var(--dsw-alias-bg-base, #ffffff) !important;
+      height: 100% !important;
+      overflow: hidden !important;
     }
-    /* 隐藏宿主 shell 的内容（课堂窗里不需要主界面）。
-       用 display:none 而非 z-index 遮盖：彻底移除渲染，避免滚动条/焦点串扰。
-       注意排除我们自己的挂载点。 */
-    body > *:not(#${HOST_ID}) { display: none !important; }
+    /* 纵向两段：工作台在上、dsh 对话区在下。
+       用 flex 而不是 fixed 定位 —— 因为 shell 不再被隐藏，
+       要让它们**各占一部分**而不是互相覆盖。 */
+    body {
+      display: flex !important;
+      flex-direction: column !important;
+    }
+    /* 工作台：固定上半高度，且排在最前 */
+    #${HOST_ID} {
+      order: -1 !important;
+      flex: 0 0 auto !important;
+      height: 52vh !important;
+      min-height: 240px !important;
+      overflow: hidden !important;
+      border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25)) !important;
+    }
+    /* dsh shell 的根节点：吃掉剩余高度，并允许内部滚动。
+       ⚠️ 必须显式给 height:0 + flex:1，否则它按内容撑开（全屏）→ 溢出重叠。 */
+    body > *:not(#${HOST_ID}) {
+      flex: 1 1 0 !important;
+      height: 0 !important;
+      min-height: 0 !important;
+      overflow: hidden !important;
+    }
   `;
   document.head.appendChild(style);
 
   const host = document.createElement('div');
   host.id = HOST_ID;
-  // 容器不透明但**跟随主题**：万一有元素逃过 display:none，也不会透出白底
-  host.style.cssText =
-    'position:fixed;inset:0;z-index:2147483000;display:block;' +
-    'background:var(--dsw-alias-bg-base,#ffffff);';
+  host.style.cssText = 'display:block;background:var(--dsw-alias-bg-base,#ffffff);';
   document.body.appendChild(host);
 
   createRoot(host).render(<StandaloneApp />);
+  void ROOT_ID; // 保留：将来若需要给 shell 根节点加标记
 }
 
 export function apply(ctx: ClientContext): void {

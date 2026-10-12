@@ -102,23 +102,21 @@ t('CSS 模板内没有裸反引号（会截断模板字符串）', () => {
 
 console.log('\n[独立窗口形态]');
 
-t('standalone 是 fixed 定位（static 会让主界面透出来、z-index 也失效）', () => {
-  const m = stylesSrc.match(/\[data-standalone="1"\]\s*\{([\s\S]*?)\}/);
-  assert.ok(m, '找不到 data-standalone 样式块');
-  assert.match(m[1], /position:\s*fixed/, 'standalone 必须是 fixed');
-  assert.ok(!/position:\s*static/.test(m[1]), 'standalone 不能是 static');
+// ⚠️ 这几条**曾经写成"standalone 必须 fixed + 隐藏 shell"** —— 那是导致
+//    "mac 上没有输入框"的错误设计本身。设计改了，断言跟着改。
+t('standalone 工作台在普通流里（不再 fixed 铺满）', () => {
+  // 注意选择器：要匹配 [data-workbench="1"][data-standalone="1"] 那个块，
+  // 不是更早的 [data-standalone="1"]（那是浮层模式的基础样式，本就不同）。
+  const m = stylesSrc.match(/\[data-workbench="1"\]\[data-standalone="1"\]\s*\{([^}]*)\}/);
+  assert.ok(m, '找不到 standalone 的工作台覆盖块');
+  assert.match(m[1], /position:\s*relative/, 'standalone 应回到普通流，由 flex 决定高度');
+  assert.match(m[1], /inset:\s*auto/, 'standalone 应清掉 inset（否则仍会铺满、盖住输入框）');
 });
 
-t('standalone 有 z-index（压住宿主拖拽层）', () => {
-  const m = stylesSrc.match(/\[data-standalone="1"\]\s*\{([\s\S]*?)\}/);
-  assert.match(m[1], /z-index:\s*\d{6,}/, 'standalone 需要足够大的 z-index');
-});
-
-t('挂载点用 display:none 隐藏宿主 shell 内容', () => {
-  assert.match(
-    indexSrc,
-    /body > \*:not\(#\$\{HOST_ID\}\)\s*\{\s*display:\s*none/,
-    '应隐藏宿主 body 直接子节点，否则主界面会透出来',
+t('挂载点不再隐藏宿主 shell（对话输入框在里面）', () => {
+  assert.ok(
+    !/body > \*:not\(#\$\{HOST_ID\}\)\s*\{\s*display:\s*none/.test(indexSrc),
+    '不该隐藏宿主 shell —— 那会把唯一的对话输入框一起隐藏（真机踩过）',
   );
 });
 
@@ -219,18 +217,20 @@ t('工具与 HTTP 共用同一条开课路径（不分叉）', () => {
   assert.ok(toolStart, 'lecture_session_start 工具也应调用 startSession');
 });
 
-console.log('\n[侧栏定位：开课 + 查阅，不重复输入]');
+console.log('\n[工作台定位：开课 + 查阅，不重复输入]');
 
-const lecMode = readFileSync(join(root, 'src/client/lecture-mode.tsx'), 'utf-8');
+// 旧组件 src/client/lecture-mode.tsx 已删除（侧栏版，没有输入框、也无人引用）。
+// 这些断言改指向实际的 workbench.tsx（wbSrc 在后面统一读取）。
+const wbSrcEarly = readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8');
 
-t('侧栏页签为 开课 / 笔记 / 复盘', () => {
-  assert.match(lecMode, /type Tab = 'start' \| 'notes' \| 'review'/, '页签定义应为 start/notes/review');
+t('工作台侧签为 符号 / 复盘', () => {
+  assert.match(wbSrcEarly, /'symbols' \| 'review'|type Side\s*=\s*'symbols' \| 'review'/, '侧签定义应为 symbols/review');
 });
 
-t('侧栏不再有速记输入框（记录发生在主界面对话）', () => {
-  // CapturePanel 已移除；不该再有 lec-shorthand 这类输入
-  assert.ok(!/function CapturePanel/.test(lecMode), 'CapturePanel 应已移除');
-  assert.ok(!/lec-shorthand/.test(lecMode), '侧栏不该再有速记输入框');
+t('工作台不含速记输入框（记录走下面的对话输入框）', () => {
+  // 工作台是只读的笔记视图；输入由 dsh 原生 composer 负责。
+  assert.ok(!/function CapturePanel/.test(wbSrcEarly), 'CapturePanel 应已移除');
+  assert.ok(!/lec-shorthand/.test(wbSrcEarly), '工作台不该再有速记输入框');
 });
 
 t('符号键盘改为复制到剪贴板', () => {
@@ -239,7 +239,7 @@ t('符号键盘改为复制到剪贴板', () => {
   assert.match(sym, /execCommand\('copy'\)/, '应有降级路径');
   // 去注释后再找：注释里会提到 insertSymbol 解释历史，那是应该保留的
   const symLive = stripComments(sym);
-  assert.ok(!/insertSymbol\(/.test(symLive), '活代码里不该再插入到输入框（侧栏没有输入框了）');
+  assert.ok(!/insertSymbol\(/.test(symLive), '活代码里不该再插入到输入框（工作台没有输入框）');
 });
 
 console.log('\n[profile 必须声明 preset 本体]');
@@ -363,8 +363,17 @@ t('符号键盘常驻右栏（不再藏在折叠按钮后面）', () => {
   assert.ok(!/lec-symbtn/.test(wbSrc), '不该再依赖折叠按钮才能看到符号键盘');
 });
 
-t('工作台两种模式都铺满（不是挤在侧栏里）', () => {
-  assert.match(stylesSrc, /\[data-workbench="1"\]\s*\{[\s\S]{0,240}?position:\s*fixed/, '工作台应 fixed 铺满');
+t('嵌入主 agent 时工作台铺满；standalone 时让位给对话区', () => {
+  // 嵌入模式（有主 agent）：全屏浮层，这是对的
+  assert.match(
+    stylesSrc,
+    /\[data-workbench="1"\]\s*\{[\s\S]{0,300}?position:\s*fixed/,
+    '嵌入模式应 fixed 铺满',
+  );
+  // standalone（mac）：必须是普通流，否则盖住对话输入框
+  const m = stylesSrc.match(/\[data-workbench="1"\]\[data-standalone="1"\]\s*\{([^}]*)\}/);
+  assert.ok(m, '应有 standalone 的覆盖规则');
+  assert.match(m[1], /position:\s*relative/, 'standalone 应回到普通流');
 });
 
 t('工作台栏底色是不透明实色（否则主 agent 会透出来）', () => {
@@ -713,6 +722,57 @@ t('读服务失败时不再静默（要有可见日志）', () => {
   // 解析角色的那段 catch 里应有 console.warn，而不是空 catch
   const seg = uiSrc.match(/读 agentPresets 失败[\s\S]{0,160}/);
   assert.ok(seg, '读 agentPresets 失败时应有明确告警（不能再被 catch 静默吃掉）');
+});
+
+console.log('\n[mac 独立模式必须保留对话输入框]');
+
+// 真机踩过（用户原话："mac 上没有输入框我记个 der 的笔记"）——
+// 设计失误，不是实现 bug：
+//
+//   "记笔记在主界面的对话里"这个方案**只在 Windows 成立**（那里有主 agent）。
+//   mac 上没有主 agent，而 StandaloneMount 早先写了
+//       body > *:not(#host) { display: none !important; }
+//   —— 把整个 dsh shell 隐藏掉，**连同唯一的输入框**。
+//   结果：能看不能记。
+const clientSrc2 = clientSrc;
+
+t('独立模式不再隐藏 dsh shell（否则输入框也没了）', () => {
+  const live = stripComments(clientSrc2);
+  assert.ok(
+    !/body\s*>\s*\*:not\(#\$\{HOST_ID\}\)\s*\{\s*display:\s*none/.test(live),
+    '不该再用 display:none 隐藏整个 shell（会连输入框一起隐藏）',
+  );
+});
+
+t('独立模式是上下分屏（工作台 + 对话区）', () => {
+  const live = stripComments(clientSrc2);
+  assert.match(live, /flex-direction:\s*column/, 'body 应是纵向 flex（上下分屏）');
+  assert.match(live, /#\$\{HOST_ID\}\s*\{[\s\S]{0,300}?order:\s*-1/, '工作台应排在最前（order:-1）');
+  assert.match(live, /height:\s*52vh|min-height:\s*240px/, '工作台应占固定上半高度');
+  // shell 必须显式收缩，否则按内容撑成全屏 → 与工作台重叠
+  assert.match(live, /body\s*>\s*\*:not\(#\$\{HOST_ID\}\)\s*\{[\s\S]{0,240}?flex:\s*1 1 0/, 'shell 应吃掉剩余高度');
+  assert.match(live, /body\s*>\s*\*:not\(#\$\{HOST_ID\}\)\s*\{[\s\S]{0,240}?height:\s*0/, 'shell 需要 height:0 才不会撑开');
+});
+
+t('standalone 时工作台不再是 fixed 铺满（会盖住输入框）', () => {
+  const live = stripComments(stylesSrc);
+  const m = live.match(/\[data-workbench="1"\]\[data-standalone="1"\]\s*\{([^}]*)\}/);
+  assert.ok(m, '应有 standalone 的工作台覆盖规则');
+  assert.match(m[1], /position:\s*relative/, 'standalone 应回到普通流');
+  assert.ok(!/inset:\s*0/.test(m[1]), 'standalone 不该再 inset:0 铺满');
+});
+
+t('UI 文案指向"下面的对话输入框"（与实际位置一致）', () => {
+  const wb = readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8');
+  assert.match(wb, /下面的对话输入框/, '文案应指向实际位置');
+  assert.ok(!/主界面的对话/.test(wb), '不该再说"主界面"（mac 上没有主界面）');
+});
+
+t('旧的 lecture-mode.tsx 已删除（避免改错文件）', () => {
+  assert.ok(
+    !existsSync(join(root, 'src/client/lecture-mode.tsx')),
+    '旧的侧栏版组件应已删除（它没有输入框、也不再被引用）',
+  );
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

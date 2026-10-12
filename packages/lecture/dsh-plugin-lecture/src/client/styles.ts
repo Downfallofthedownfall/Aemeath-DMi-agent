@@ -80,11 +80,15 @@ const CSS = `
 
    注意：本文件是 JS 模板字符串，注释里**不能出现反引号**（会提前结束字符串）。 */
 .${LECTURE_CLASS}[data-standalone="1"] {
-  position: fixed;
-  inset: 0;
+  /* ⚠️ 独立界面模式**不再铺满整窗**：
+     它要和 dsh 自己的对话区上下分屏（上工作台 / 下对话）。
+     早先是 fixed+inset:0 铺满 —— 那会把唯一的输入框盖掉，
+     mac 上就变成"能看不能记"（真机踩过）。
+     现在由 StandaloneMount 的 flex 布局决定高度。 */
+  position: relative;
   width: 100%;
   height: 100%;
-  z-index: 2147483000;
+  z-index: auto;
   border-left: none;
   box-shadow: none;
   animation: none;
@@ -420,6 +424,9 @@ const CSS = `
    一个三栏工作台挤在侧栏里既放不下、也仍然"长得像主 agent"。
    所以：**两种模式都铺满**，只是一个在独立窗口里、一个做全屏浮层。 */
 .${LECTURE_CLASS}[data-workbench="1"] {
+  /* ⚠️ 嵌入主 agent 时（非 standalone）才做全屏浮层。
+     **standalone 模式必须排除** —— 那种模式下工作台与 dsh 对话区**上下分屏**，
+     再 fixed+inset:0 就会把输入框盖掉（真机踩过："mac 上没有输入框"）。 */
   position: fixed;
   inset: 0;
   width: 100%;
@@ -430,7 +437,12 @@ const CSS = `
   animation: aem-lec-in 0.16s ease-out;
   z-index: 2147482500;
 }
-.${LECTURE_CLASS}[data-workbench="1"][data-standalone="1"] { z-index: 2147483000; }
+/* standalone：回归普通流，高度由 StandaloneMount 的 flex 决定 */
+.${LECTURE_CLASS}[data-workbench="1"][data-standalone="1"] {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+}
 
 .${LECTURE_CLASS} .lec-wb {
   flex: 1 1 auto;
