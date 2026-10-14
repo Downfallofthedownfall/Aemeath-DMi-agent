@@ -246,6 +246,18 @@ export interface LectureHttpDeps {
   /** 写入快照：前端提交的速记块（服务端负责落盘 + 触发后台转录）。 */
   onSubmitChunk: (courseId: string, unitId: string, chunk: { raw: string; my_understanding: string; my_question: string }) => Promise<{ ok: boolean; error?: string }>;
   /**
+   * 改某一块的留白（我的理解 / 我的疑问）。
+   *
+   * ⚠️ 只走前端桥，**不暴露成 LLM 工具** —— 留白必须是用户自己写的
+   *（D12 主动回忆），让模型代笔会让整套复盘失去意义。
+   */
+  onUpdateBlanks?: (
+    courseId: string,
+    unitId: string,
+    seq: number,
+    patch: { my_understanding?: string; my_question?: string },
+  ) => Promise<{ ok: boolean; error?: string; blanks_ok?: boolean }>;
+  /**
    * 开始一节课（创建课程 + 单元，并把该会话的"当前课堂"指向它）。
    *
    * 为什么前端需要这个：早先只能靠**对话里叫 agent 调 lecture_session_start**
@@ -449,6 +461,38 @@ export async function handleLectureHttp(
         }
         // blanks_missing 让前端知道"这段还没留白"，提示用户复盘时补
         json(res, 200, { ok: true, blanks_missing: missing });
+        return;
+      }
+
+      // 改留白：{ action:'blanks', course_id, unit_id, seq, my_understanding?, my_question? }
+      //
+      // 为什么单独一个 action 而不是复用 chunk：chunk 是**追加新块**，
+      // 这里是**改已有块的留白**，语义不同（改错了不该多出一块）。
+      if (action === 'blanks') {
+        if (!deps.onUpdateBlanks) {
+          jsonError(res, 501, 'blanks 更新未接线');
+          return;
+        }
+        const course = String(parsed.course_id ?? '').slice(0, 64);
+        const unit = String(parsed.unit_id ?? '').slice(0, 64);
+        const seq = Number(parsed.seq);
+        if (!course || !unit || !Number.isInteger(seq) || seq < 0) {
+          jsonError(res, 400, 'course_id/unit_id/seq required');
+          return;
+        }
+        const patch: { my_understanding?: string; my_question?: string } = {};
+        if (typeof parsed.my_understanding === 'string') patch.my_understanding = parsed.my_understanding;
+        if (typeof parsed.my_question === 'string') patch.my_question = parsed.my_question;
+        if (!Object.keys(patch).length) {
+          jsonError(res, 400, '需要 my_understanding 或 my_question');
+          return;
+        }
+        const r = await deps.onUpdateBlanks(course, unit, seq, patch);
+        if (!r.ok) {
+          jsonError(res, 400, r.error ?? 'save failed');
+          return;
+        }
+        json(res, 200, { ok: true, blanks_ok: r.blanks_ok ?? false });
         return;
       }
 

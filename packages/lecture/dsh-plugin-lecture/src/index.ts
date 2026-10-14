@@ -1274,6 +1274,50 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             return { ok: false, error: (e as Error).message };
           }
         },
+        // 改某一块的留白（我的理解 / 我的疑问）。
+        //
+        // ⚠️ 留白**只能由用户本人填**（D12：主动回忆的价值就在于自己写）。
+        //    所以这个入口**不暴露给 LLM 工具**，只有前端 HTTP 桥能调 ——
+        //    模型代笔会让整套复盘失去意义。
+        //
+        // 真机反馈："笔记的理解和疑问目前无法输入" ——
+        // 早先这两栏只是只读展示，写不进去。
+        onUpdateBlanks: async (courseId, unitId, seq, patch) => {
+          try {
+            const index = store.readIndex(courseId);
+            const unit = index?.units.find((u) => u.id === unitId);
+            if (!index || !unit) return { ok: false, error: '课程或单元不存在' };
+            const md = store.readUnitMarkdown(courseId, unit);
+            const chunks = md ? parseUnitMarkdown(md).chunks : [];
+            const target = chunks.find((c) => c.seq === seq);
+            if (!target) return { ok: false, error: `找不到第 ${seq + 1} 块` };
+            // 只改传入的字段（另一栏保持不动）
+            if (typeof patch.my_understanding === 'string') {
+              target.my_understanding = patch.my_understanding.slice(0, 4000);
+            }
+            if (typeof patch.my_question === 'string') {
+              target.my_question = patch.my_question.slice(0, 4000);
+            }
+            store.writeUnitMarkdown(
+              courseId,
+              unit,
+              {
+                course: index.title,
+                unit: unit.title,
+                date: unit.date,
+                semester: index.semester,
+                module: index.module_code,
+              },
+              chunks,
+            );
+            // 留白填齐后就地重算（blanks_ok 是**读时派生**的，不落进 index）；
+            // 前端保存后会重新拉 unit，所以这里只需要把结果回给调用方。
+            const blanks = allBlanksOk(chunks);
+            return { ok: true, blanks_ok: blanks.ok };
+          } catch (e) {
+            return { ok: false, error: (e as Error).message };
+          }
+        },
         // 删除后清理内存态与磁盘指针。
         //
         // 为什么必须做：只删文件的话，`active` 里还留着"正在记这一讲"，

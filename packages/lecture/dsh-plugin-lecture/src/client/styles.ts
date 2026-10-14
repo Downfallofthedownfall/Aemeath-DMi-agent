@@ -282,6 +282,73 @@ const CSS = `
   background: linear-gradient(135deg, var(--aem-accent), var(--aem-accent-2));
   color: #fff; border-color: transparent;
 }
+/* 插入成功的额外提示：加一圈外发光（和"已复制"叠加，都能看出来） */
+.${LECTURE_CLASS} .lec-sym[data-inserted="1"] {
+  box-shadow: 0 0 0 2px var(--aem-accent-2);
+}
+
+/* —— 课程折叠（真机反馈："几十上百节课都列出来了"）—— */
+.${LECTURE_CLASS} .lec-course-toggle {
+  flex: none;
+  width: 16px; height: 16px;
+  padding: 0; margin-right: 2px;
+  border: none; background: none;
+  color: var(--aem-ink);
+  opacity: 0.6;
+  font-size: 10px; line-height: 1;
+  cursor: pointer;
+}
+.${LECTURE_CLASS} .lec-course-toggle:hover { opacity: 1; }
+.${LECTURE_CLASS} .lec-course-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer;
+}
+/* 收起时显示"里面有几节"，免得完全看不出内容量 */
+.${LECTURE_CLASS} .lec-course-count {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  background: color-mix(in srgb, var(--aem-accent) 22%, transparent);
+}
+
+/* —— 可编辑留白（我的理解 / 我的疑问）—— */
+.${LECTURE_CLASS} .lec-blank-edit {
+  display: block;
+  position: relative;
+}
+.${LECTURE_CLASS} .lec-blank-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 3px;
+  padding: 5px 8px;
+  resize: none;
+  min-height: 26px; max-height: 160px;
+  border-radius: 6px;
+  border: 1px dashed var(--aem-line);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  outline: none;
+}
+.${LECTURE_CLASS} .lec-blank-input:focus {
+  border-style: solid;
+  border-color: var(--aem-accent);
+  background: var(--dsw-alias-bg-base, #fff);
+}
+.${LECTURE_CLASS} .lec-blank-state {
+  position: absolute;
+  right: 4px; bottom: 3px;
+  font-size: 10px;
+  opacity: 0.7;
+  pointer-events: none;
+}
+.${LECTURE_CLASS} .lec-blank-state[data-tone="saved"] { color: #3fa96a; opacity: 1; }
+.${LECTURE_CLASS} .lec-blank-state[data-tone="err"] { color: #d9534f; opacity: 1; }
 
 /* —— 按钮 —— */
 .${LECTURE_CLASS} .lec-btn {

@@ -65,6 +65,92 @@ async function postJson<T>(url: string, body: unknown): Promise<T | null> {
   }
 }
 
+/** 输入框对外的命令式接口（符号键盘用）。 */
+interface ComposerApi {
+  insert(snippet: string): void;
+  focus(): void;
+}
+
+/**
+ * 一个可编辑的留白栏（我的理解 / 我的疑问）。
+ *
+ * 保存时机是**失焦**或 **Ctrl/Cmd+Enter**，不是每次按键 ——
+ * 打字过程中反复写盘既浪费，又可能把半句话存进记忆。
+ * 失焦保存也符合直觉：写完点别处就算存了。
+ */
+function BlankField({
+  label,
+  emptyHint,
+  value,
+  onSave,
+}: {
+  label: string;
+  emptyHint: string;
+  value: string;
+  onSave: (next: string) => Promise<void>;
+}): JSX.Element {
+  const [draft, setDraft] = useState(value);
+  const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'err'>('idle');
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  // 外部值变化（切笔记、重新载入）时同步进来 —— 但**不要打断正在输入的草稿**
+  useEffect(() => {
+    if (document.activeElement !== ref.current) setDraft(value);
+  }, [value]);
+
+  const save = useCallback(async (): Promise<void> => {
+    if (draft === value) return; // 没改就不发请求
+    setState('saving');
+    try {
+      await onSave(draft);
+      setState('saved');
+      window.setTimeout(() => setState('idle'), 1200);
+    } catch {
+      setState('err');
+    }
+  }, [draft, value, onSave]);
+
+  const resize = useCallback((): void => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, []);
+
+  useEffect(() => {
+    resize();
+  }, [draft, resize]);
+
+  return (
+    <div className="lec-blank lec-blank-edit" data-empty={draft.trim() ? '0' : '1'}>
+      <b>{label}</b>
+      <textarea
+        ref={ref}
+        className="lec-blank-input"
+        rows={1}
+        placeholder={emptyHint}
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          resize();
+        }}
+        onBlur={() => void save()}
+        onKeyDown={(e) => {
+          // Ctrl/Cmd+Enter 立刻保存（不想离开输入框时）
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            void save();
+            ref.current?.blur();
+          }
+        }}
+      />
+      <span className="lec-blank-state" data-tone={state}>
+        {state === 'saving' ? '保存中…' : state === 'saved' ? '已保存' : state === 'err' ? '保存失败' : ''}
+      </span>
+    </div>
+  );
+}
+
 /** 右栏放什么。 */
 type RightTab = 'symbols' | 'review';
 
@@ -84,9 +170,18 @@ type RightTab = 'symbols' | 'review';
 function Composer({
   disabled,
   onSend,
+  apiRef,
 }: {
   disabled: boolean;
   onSend: (text: string) => Promise<void>;
+  /**
+   * 暴露给父组件的命令式接口 —— 供**符号键盘**往光标处插入。
+   *
+   * 为什么要 ref 而不是受控 state：符号面板在右栏、输入框在中栏，
+   * 是两个兄弟子树；要"插到光标位置"就必须直接操作那个 textarea
+   *（受控值 + 光标位置很难正确同步，尤其是中间已经有一段选中的文本时）。
+   */
+  apiRef?: { current: ComposerApi | null };
 }): JSX.Element {
   const [text, setText] = useState('');
   const [hint, setHint] = useState('');
@@ -99,6 +194,34 @@ function Composer({
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, []);
+
+  // 把插入能力暴露出去。依赖里带 text，保证闭包拿到的是最新值。
+  useEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = {
+      insert(snippet: string): void {
+        const el = ref.current;
+        if (!el) return;
+        const start = el.selectionStart ?? el.value.length;
+        const end = el.selectionEnd ?? start;
+        const next = el.value.slice(0, start) + snippet + el.value.slice(end);
+        setText(next);
+        // 光标落到插入内容之后（下一帧，等 React 渲染完新值）
+        requestAnimationFrame(() => {
+          const pos = start + snippet.length;
+          el.focus();
+          el.setSelectionRange(pos, pos);
+          resize();
+        });
+      },
+      focus(): void {
+        ref.current?.focus();
+      },
+    };
+    return () => {
+      if (apiRef) apiRef.current = null;
+    };
+  }, [apiRef, resize]);
 
   const submit = useCallback(async (): Promise<void> => {
     const v = text.trim();
@@ -170,6 +293,20 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
   const [loading, setLoading] = useState(false);
   const [right, setRight] = useState<RightTab>('symbols');
   const [navOpen, setNavOpen] = useState(true);
+  /**
+   * 每门课的折叠状态：`{ [courseId]: 是否收起 }`。
+   *
+   * 真机反馈："左边课程最好加一个折叠，免得到时候几十上百节课都列出来了"。
+   * 未记录的课程按"当前选中那门展开、其余收起"处理（见渲染处）。
+   */
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  /**
+   * 中栏输入框的命令式句柄 —— 符号键盘点一下要能**插到光标处**。
+   *
+   * 用户要求："符号键盘可以做点击就直接输入输入框，不过复制也保留挺好用的"
+   * → 点一下**同时**做两件事：插入 + 复制。想粘到别处也行，不用选。
+   */
+  const composerApi = useRef<ComposerApi | null>(null);
   const [starting, setStarting] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newCourseId, setNewCourseId] = useState('');
@@ -268,6 +405,25 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
   // 删除是**不可逆**的，所以一律二次确认；确认文案写清"删什么、删多少"。
   const [deleting, setDeleting] = useState('');
 
+  /**
+   * 改一块的留白。失败时**抛错**（BlankField 据此显示"保存失败"），
+   * 不静默 —— 用户以为写上了、实际没存，比报错更糟。
+   */
+  const saveBlank = async (
+    seq: number,
+    patch: { my_understanding?: string; my_question?: string },
+  ): Promise<void> => {
+    const r = await fetch(API, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'blanks', course_id: courseId, unit_id: unitId, seq, ...patch }),
+    });
+    const d = (await r.json()) as { ok?: boolean; error?: string };
+    if (!r.ok || !d.ok) throw new Error(d.error ?? `保存失败 (${r.status})`);
+    await loadUnit(courseId, unitId);
+  };
+
   const deleteUnit = async (course: string, unit: string, unitTitle: string): Promise<void> => {
     if (!window.confirm(`删除「${unitTitle}」？\n\n这一讲的速记、加工结果、复盘记录都会一并删除，无法撤销。`)) return;
     setDeleting(unit);
@@ -355,62 +511,100 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 点右上角「＋ 新的一节」开始。
               </div>
             ) : null}
-            {courses.map((c) => (
-              <div key={c.course_id} className="lec-course">
-                <div className="lec-course-name" title={c.course_id}>
-                  {c.title}
-                  {c.semester ? <span className="lec-course-sem">{c.semester}</span> : null}
-                  {/* 删整门课（悬停才明显，避免误点） */}
-                  <button
-                    type="button"
-                    className="lec-del lec-del-course"
-                    title={`删除整门课程「${c.title}」`}
-                    disabled={deleting === c.course_id}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void deleteCourse(c.course_id, c.title, c.units.length);
-                    }}
-                  >
-                    ✕
-                  </button>
-                </div>
-                {c.units.length === 0 ? (
-                  <div className="lec-hint" style={{ padding: '2px 10px 6px' }}>
-                    （还没有课堂记录）
-                  </div>
-                ) : null}
-                {c.units.map((u) => (
-                  <div key={u.id} className="lec-unit-row">
+            {courses.map((c) => {
+              // 每门课独立折叠（真机反馈："左边课程最好加一个折叠，
+              // 免得到时候几十上百节课都列出来了"）。
+              //
+              // 默认：**当前选中的那门课展开**，其余收起 ——
+              // 这样一眼看到自己在上的课，又不会被上百门课淹没。
+              // 用户手动开合过的以本地状态为准。
+              const isOpen = collapsed[c.course_id] !== undefined
+                ? !collapsed[c.course_id]
+                : c.course_id === courseId;
+              return (
+                <div key={c.course_id} className="lec-course">
+                  <div className="lec-course-name" title={c.course_id}>
                     <button
                       type="button"
-                      className="lec-unit"
-                      data-active={c.course_id === courseId && u.id === unitId ? '1' : '0'}
-                      onClick={() => {
-                        setCourseId(c.course_id);
-                        setUnitId(u.id);
-                      }}
-                      title={`${u.date} · ${u.chunk_count} 块`}
+                      className="lec-course-toggle"
+                      aria-expanded={isOpen}
+                      title={isOpen ? '收起这门课' : '展开这门课'}
+                      onClick={() =>
+                        setCollapsed((prev) => ({
+                          ...prev,
+                          [c.course_id]: isOpen, // 存"是否收起"
+                        }))
+                      }
                     >
-                      <span className="lec-unit-title">{u.title}</span>
-                      <span className="lec-unit-meta">
-                        {u.date.slice(5)}
-                        {u.chunk_count ? ` · ${u.chunk_count}` : ''}
-                        {u.reviewed ? ' ✓' : ''}
-                      </span>
+                      {isOpen ? '▾' : '▸'}
                     </button>
+                    <span
+                      className="lec-course-title"
+                      onClick={() => setCollapsed((prev) => ({ ...prev, [c.course_id]: isOpen }))}
+                    >
+                      {c.title}
+                      {c.semester ? <span className="lec-course-sem">{c.semester}</span> : null}
+                      {/* 收起时也让人知道里面有几节 */}
+                      {!isOpen && c.units.length ? (
+                        <span className="lec-course-count">{c.units.length}</span>
+                      ) : null}
+                    </span>
+                    {/* 删整门课（悬停才明显，避免误点） */}
                     <button
                       type="button"
-                      className="lec-del"
-                      title={`删除「${u.title}」这一讲`}
-                      disabled={deleting === u.id}
-                      onClick={() => void deleteUnit(c.course_id, u.id, u.title)}
+                      className="lec-del lec-del-course"
+                      title={`删除整门课程「${c.title}」`}
+                      disabled={deleting === c.course_id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void deleteCourse(c.course_id, c.title, c.units.length);
+                      }}
                     >
                       ✕
                     </button>
                   </div>
-                ))}
-              </div>
-            ))}
+                  {isOpen && c.units.length === 0 ? (
+                    <div className="lec-hint" style={{ padding: '2px 10px 6px' }}>
+                      （还没有课堂记录）
+                    </div>
+                  ) : null}
+                  {isOpen
+                    ? c.units.map((u) => (
+                        <div key={u.id} className="lec-unit-row">
+                          <button
+                            type="button"
+                            className="lec-unit"
+                            data-active={c.course_id === courseId && u.id === unitId ? '1' : '0'}
+                            onClick={() => {
+                              setCourseId(c.course_id);
+                              setUnitId(u.id);
+                            }}
+                            title={`${u.date} · ${u.chunk_count} 块`}
+                          >
+                            <span className="lec-unit-title">{u.title}</span>
+                            <span className="lec-unit-meta">
+                              {u.date.slice(5)}
+                              {u.chunk_count ? ` · ${u.chunk_count}` : ''}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="lec-del"
+                            title={`删除「${u.title}」`}
+                            disabled={deleting === `${c.course_id}/${u.id}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void deleteUnit(c.course_id, u.id, u.title);
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))
+                    : null}
+                </div>
+              );
+            })}
           </aside>
         ) : null}
 
@@ -540,14 +734,22 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                     <div className="lec-note-num">#{c.seq + 1}</div>
                     <pre className="lec-pre">{c.raw}</pre>
                     <div className="lec-note-blanks">
-                      <div className="lec-blank" data-empty={c.my_understanding ? '0' : '1'}>
-                        <b>我的理解</b>
-                        <span>{c.my_understanding || '（还没写 —— 在对话里说说这段讲了什么）'}</span>
-                      </div>
-                      <div className="lec-blank" data-empty={c.my_question ? '0' : '1'}>
-                        <b>我的疑问</b>
-                        <span>{c.my_question || '（还没写 —— 哪里还没搞懂？）'}</span>
-                      </div>
+                      {/* 留白**可编辑**（真机反馈："笔记的理解和疑问目前无法输入"）。
+                          早先只是只读展示。
+                          保存时机：失焦 或 Ctrl/Cmd+Enter —— 不在每次按键时发请求，
+                          免得打字过程中反复写盘，也免得半句话被存进记忆。 */}
+                      <BlankField
+                        label="我的理解"
+                        emptyHint="（点这里写 —— 这段讲了什么？）"
+                        value={c.my_understanding}
+                        onSave={(v) => saveBlank(c.seq, { my_understanding: v })}
+                      />
+                      <BlankField
+                        label="我的疑问"
+                        emptyHint="（点这里写 —— 哪里还没搞懂？）"
+                        value={c.my_question}
+                        onSave={(v) => saveBlank(c.seq, { my_question: v })}
+                      />
                     </div>
                   </div>
                 ))}
@@ -569,6 +771,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
           {!starting && unitId ? (
             <Composer
               disabled={busy}
+              apiRef={composerApi}
               onSend={async (text) => {
                 setBusy(true);
                 try {
@@ -613,7 +816,13 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
             </button>
           </div>
           <div className="lec-sidebody">
-            {right === 'symbols' ? <SymbolPanel /> : null}
+            {right === 'symbols' ? (
+              <SymbolPanel
+                onInsert={(snippet) => {
+                  composerApi.current?.insert(snippet);
+                }}
+              />
+            ) : null}
             {right === 'review' && currentUnit ? (
               <ReviewPanel
                 courseId={courseId}

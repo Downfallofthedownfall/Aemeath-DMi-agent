@@ -46,9 +46,15 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export function SymbolPanel(): JSX.Element {
+/**
+ * @param onInsert 点到符号时，把它插到中栏输入框的光标处。
+ *                 不传则退化为"只复制"（独立窗口以外没有输入框的场景）。
+ */
+export function SymbolPanel({ onInsert }: { onInsert?: (snippet: string) => void } = {}): JSX.Element {
   const [query, setQuery] = useState('');
   const [copied, setCopied] = useState('');
+  /** 刚插入的符号（用于按钮上闪一下提示）。 */
+  const [inserted, setInserted] = useState('');
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
     let last = '';
     try {
@@ -90,10 +96,31 @@ export function SymbolPanel(): JSX.Element {
     } catch {
       /* 忽略 */
     }
+
+    // ⚠️ 点一下**同时**做两件事（真机反馈："符号键盘可以做点击就直接输入输入框，
+    //    不过复制也保留挺好用的"）：
+    //      ① 插到中栏输入框的光标处 —— 上课时不用来回切
+    //      ② 复制到剪贴板 —— 想粘到别的地方（或别的程序）时直接 Ctrl+V
+    //    两件事互不冲突，所以不做成"二选一"。
+    //
+    //    插入失败（比如输入框还没渲染）不影响复制 —— 各自独立降级。
+    if (onInsert) {
+      try {
+        onInsert(sym.insert);
+        setInserted(sym.label);
+      } catch {
+        /* 插入失败就只复制，不打扰用户 */
+      }
+    }
+
     const ok = await copyText(sym.insert);
     setCopied(ok ? sym.label : '');
+
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => setCopied(''), 1600);
+    timerRef.current = window.setTimeout(() => {
+      setCopied('');
+      setInserted('');
+    }, 1600);
   };
 
   const toggleGroup = (id: string): void => {
@@ -127,7 +154,7 @@ export function SymbolPanel(): JSX.Element {
         {copied ? (
           <span style={{ color: 'var(--aem-accent)', fontWeight: 600 }}>已复制 {copied} —— 到对话输入框粘贴</span>
         ) : (
-          <>点符号即复制到剪贴板，然后到<b>中栏下面的输入框</b>粘贴</>
+          <>点一下即<b>插入到下面输入框</b>的光标处，同时复制到剪贴板</>
         )}
       </div>
 
@@ -151,7 +178,12 @@ export function SymbolPanel(): JSX.Element {
                       className="lec-sym"
                       data-structured={s.kind === 'structured' ? '1' : '0'}
                       data-copied={copied === s.label ? '1' : '0'}
-                      title={s.hint ? `${s.label} — ${s.hint}\n点击复制：${s.insert}` : `点击复制：${s.insert}`}
+                      data-inserted={inserted === s.label ? '1' : '0'}
+                      title={
+                        s.hint
+                          ? `${s.label} — ${s.hint}\n点击：插入到输入框 + 复制「${s.insert}」`
+                          : `点击：插入到输入框 + 复制「${s.insert}」`
+                      }
                       onClick={() => void onClick(s, g.id)}
                     >
                       {s.label}

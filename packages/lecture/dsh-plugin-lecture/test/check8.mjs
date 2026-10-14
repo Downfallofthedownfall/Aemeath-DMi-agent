@@ -357,7 +357,8 @@ t('工作台是三栏结构（左课程 / 中笔记 / 右符号+复盘）', () =
 
 t('符号键盘常驻右栏（不再藏在折叠按钮后面）', () => {
   // 真机反馈"没看到按钮"：早先它在一个 .lec-symbtn 折叠按钮后面。
-  assert.match(wbSrc, /right === 'symbols' \? <SymbolPanel \/>/, '右栏应直接渲染 SymbolPanel');
+  // 现在直接渲染，并接上"点一下插入输入框"的能力。
+  assert.match(wbSrc, /right === 'symbols' \? \(\s*<SymbolPanel/, '右栏应直接渲染 SymbolPanel');
   assert.ok(!/lec-symbtn/.test(wbSrc), '不该再依赖折叠按钮才能看到符号键盘');
 });
 
@@ -829,6 +830,66 @@ t('前端显示文件路径并说明"不会自动发生"', () => {
 t('导入工具自解释（用户说"导入讲义进度"就能命中）', () => {
   assert.match(hostSrc3, /导入讲义进度/, '工具描述里应含用户会说的自然语言触发词');
   assert.match(hostSrc3, /已扫描目录/, '找不到文件时应告知扫过哪些目录');
+});
+
+console.log('\n[三条使用反馈的回归]');
+
+// 都是真机用了一段时间后提的：
+//   ① "左边课程最好加一个折叠，免得到时候几十上百节课都列出来了"
+//   ② "笔记的理解和疑问目前无法输入"
+//   ③ "符号键盘可以做点击就直接输入输入框，不过复制也保留挺好用的"
+const wbLive3 = stripComments(readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8'));
+const symLive = stripComments(readFileSync(join(root, 'src/client/symbol-palette.tsx'), 'utf-8'));
+const httpLive = stripComments(readFileSync(join(root, 'src/http.ts'), 'utf-8'));
+
+t('课程可折叠（几十门课时不会淹没）', () => {
+  assert.match(wbLive3, /const \[collapsed, setCollapsed\]/, '应有折叠状态');
+  assert.match(wbLive3, /lec-course-toggle/, '应有折叠按钮');
+  assert.match(wbLive3, /aria-expanded=/, '折叠按钮应有 aria-expanded（可访问性）');
+  // 默认只展开当前选中那门
+  assert.match(wbLive3, /c\.course_id === courseId/, '默认应只展开当前课程');
+  // 收起时要能看到里面有几节
+  assert.match(wbLive3, /lec-course-count/, '收起时应显示小节数量');
+});
+
+t('留白可编辑并保存（不再是只读展示）', () => {
+  assert.match(wbLive3, /function BlankField/, '应有可编辑的留白组件');
+  assert.match(wbLive3, /action: 'blanks'/, '应调 blanks 端点保存');
+  assert.match(wbLive3, /onBlur=\{\(\) => void save\(\)\}/, '失焦应保存');
+  // 不该再是纯文本展示
+  const blanksSeg = wbLive3.match(/lec-note-blanks[\s\S]{0,600}/);
+  assert.ok(blanksSeg, '找不到留白区');
+  assert.ok(!/<span>\{c\.my_understanding/.test(blanksSeg[0]), '不该再把留白当纯文本渲染');
+});
+
+t('留白只走前端桥（不给 LLM 工具，防代笔）', () => {
+  // D12：主动回忆的价值在于用户自己写；模型能调就是灾难
+  const hostSrc4 = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  assert.match(hostSrc4, /onUpdateBlanks/, 'host 侧应有 onUpdateBlanks');
+  assert.ok(
+    !/name: 'lecture_update_blanks'/.test(hostSrc4),
+    '不该把改留白暴露成 LLM 工具（模型代笔会让复盘失去意义）',
+  );
+  // HTTP 侧要有校验
+  assert.match(httpLive, /action === 'blanks'/, 'HTTP 应支持 blanks action');
+  assert.match(httpLive, /action === 'blanks'[\s\S]{0,900}?!Number\.isInteger\(seq\)/, '应校验 seq');
+});
+
+t('符号点击同时插入输入框 + 复制', () => {
+  // 两件事都做，不是二选一（用户："复制也保留挺好用的"）
+  assert.match(symLive, /onInsert\?\.|onInsert\(/, '符号面板应支持插入回调');
+  assert.match(symLive, /copyText\(sym\.insert\)/, '同时仍要复制（保留原有能力）');
+  // 插入要在复制之前（先给输入框，复制是附加）
+  const insIdx = symLive.indexOf('onInsert(sym.insert)');
+  const copyIdx = symLive.indexOf('copyText(sym.insert)');
+  assert.ok(insIdx >= 0 && copyIdx >= 0 && insIdx < copyIdx, '应先插入再复制');
+});
+
+t('插入走命令式 ref（兄弟子树才够得着光标）', () => {
+  assert.match(wbLive3, /composerApi/, '应有 composerApi ref');
+  assert.match(wbLive3, /interface ComposerApi/, '应定义接口');
+  assert.match(wbLive3, /setSelectionRange/, '插入后应把光标放到插入内容之后');
+  assert.match(wbLive3, /onInsert=\{\(snippet\)/, '应把插入能力接到符号面板');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);
