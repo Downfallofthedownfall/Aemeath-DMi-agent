@@ -755,10 +755,14 @@ console.log('\n[中栏底部要有速记输入框]');
 // 用户定的形态："本来中间的区域就有很多空闲放一个输入框就行了"。
 const wbLive2 = stripComments(readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8'));
 
-t('中栏渲染了 Composer（自己的输入框，不依赖 dsh）', () => {
-  assert.match(wbLive2, /function Composer\(/, '应有 Composer 组件');
-  assert.match(wbLive2, /<Composer\b/, '中栏应渲染 Composer');
-  assert.match(wbLive2, /className="lec-composer-input"/, '应有 textarea');
+t('中栏渲染了公式输入框（MathLive，不依赖 dsh）', () => {
+  // 输入框从普通 textarea 换成了 MathLive 的 math-field（Word 式公式编辑）。
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  assert.match(mc, /export function MathComposer/, '应有 MathComposer 组件');
+  assert.match(wbLive2, /<MathComposer\b/, '中栏应渲染 MathComposer');
+  assert.match(mc, /createElement\('math-field'\)/, '应创建 math-field 元素');
+  // 必须能降级：MathLive 不可用时至少还能记
+  assert.match(mc, /lec-composer-input/, '应有 textarea 降级路径');
 });
 
 t('输入框直接落盘（不经 LLM、不依赖对话）', () => {
@@ -768,10 +772,14 @@ t('输入框直接落盘（不经 LLM、不依赖对话）', () => {
   assert.ok(!/lecture_capture/.test(wbLive2), '前端不该调工具（那是 agent 的路径）');
 });
 
-t('输入框 Enter 发送 / Shift+Enter 换行', () => {
-  assert.match(wbLive2, /e\.key === 'Enter'/, '应处理 Enter');
-  assert.match(wbLive2, /!e\.shiftKey/, 'Shift+Enter 应留给换行');
-  assert.match(wbLive2, /isComposing/, '输入法组合中不应拦截 Enter（中文输入必需）');
+t('输入框可提交（MathLive 主路径 + 降级 textarea）', () => {
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  // MathLive 路径：Enter 由它自己处理，我们提供明确的「记下」按钮
+  assert.match(mc, /lec-composer-send/, '应有「记下」按钮');
+  // 降级路径：仍要 Enter 发送 / Shift+Enter 换行 / 输入法保护
+  assert.match(mc, /e\.key === 'Enter'/, '降级 textarea 应处理 Enter');
+  assert.match(mc, /!e\.shiftKey/, 'Shift+Enter 应留给换行');
+  assert.match(mc, /isComposing/, '输入法组合中不应拦截 Enter（中文输入必需）');
 });
 
 t('笔记区自己滚动、输入框钉在底部', () => {
@@ -780,9 +788,16 @@ t('笔记区自己滚动、输入框钉在底部', () => {
   assert.match(stylesSrc, /\.lec-wb-scroll\s*\{[\s\S]{0,200}?overflow-y:\s*auto/, '笔记区应自己滚动');
 });
 
-t('提交失败要把内容还给用户（不能吞）', () => {
-  assert.match(wbLive2, /setText\(v\)/, '失败时应恢复输入内容');
-  assert.match(wbLive2, /没记上|没能记下来/, '应有明确失败提示');
+t('提交失败不能吞（要有明确提示）', () => {
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  // MathLive 版本：失败时**不清空**（清空只在成功分支里），
+  // 所以内容天然还留着；同时给明确提示，不静默。
+  assert.match(mc, /没记上/, '应有明确失败提示');
+  assert.match(mc, /catch \(e\)/, '应捕获提交失败');
+  // 清空只能发生在成功之后（在 catch 里清空就会丢掉用户内容）
+  const catchSeg = mc.match(/catch \(e\)[\s\S]{0,200}/);
+  assert.ok(catchSeg, '找不到 catch');
+  assert.ok(!/\.value = ''/.test(catchSeg[0]), 'catch 里不该清空内容（那会丢用户输入）');
 });
 
 console.log('\n[复盘确认后必须真的能送到主记忆]');
@@ -886,10 +901,64 @@ t('符号点击同时插入输入框 + 复制', () => {
 });
 
 t('插入走命令式 ref（兄弟子树才够得着光标）', () => {
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
   assert.match(wbLive3, /composerApi/, '应有 composerApi ref');
-  assert.match(wbLive3, /interface ComposerApi/, '应定义接口');
-  assert.match(wbLive3, /setSelectionRange/, '插入后应把光标放到插入内容之后');
+  // 接口定义搬到 math-composer.tsx 了（ComposerApi → MathComposerApi）
+  assert.match(mc, /interface MathComposerApi/, '应定义接口');
+  assert.match(mc, /el\.insert\(latex\)/, 'MathLive 用 insert()（不是 executeCommand）');
   assert.match(wbLive3, /onInsert=\{\(snippet\)/, '应把插入能力接到符号面板');
+});
+
+console.log('\n[MathLive 公式输入（Word 式）]');
+
+// 用户："最好做成 word 的等式输入那种吧"
+//      "符号键盘的向量不可以自定义向量字母，也没有积分符号之类的上下左右填充"
+const mcSrc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+const dataSrc = readFileSync(join(root, 'src/symbol-data.ts'), 'utf-8');
+
+t('用 math-field 而不是 textarea 做输入框', () => {
+  assert.match(mcSrc, /createElement\('math-field'\)/, '应创建 MathLive 元素');
+  assert.match(mcSrc, /from 'mathlive'|import\('mathlive'\)/, '应引入 mathlive');
+});
+
+t('MathLive 懒加载（823KB 不该在打开课堂时同步加载）', () => {
+  assert.match(mcSrc, /await import\('mathlive'\)/, '应动态 import');
+  assert.match(mcSrc, /mathlivePromise/, '应缓存加载 Promise（只加载一次）');
+});
+
+t('关掉 MathLive 自带虚拟键盘（我们用右栏的符号板）', () => {
+  assert.match(mcSrc, /math-virtual-keyboard-policy'\s*,\s*'manual'/, '应设成 manual');
+});
+
+t('LaTeX 落盘（不是 HTML）', () => {
+  // 笔记要能被 LLM 读、二次渲染、跨版本存活 → 存 LaTeX 源码
+  assert.match(mcSrc, /\.value/, '应读 math-field 的 value（LaTeX 源码）');
+  assert.ok(!/outerHTML|innerHTML/.test(mcSrc), '不该存 HTML');
+});
+
+t('积分/求和用 \\placeholder{} 而不是裸空花括号', () => {
+  // 真机实测：`\int_{}^{}` 的空花括号**不是可填的框**，
+  // 打字会跑到积分后面（得到 `\int_{}^{}7`）；
+  // 必须 `\placeholder{}` 才产生真正可点进去的占位。
+  for (const label of ['∫ 上下限', '∮ 路径', '∑ 上下限', '∏ 上下限']) {
+    const re = new RegExp(`label: '${label}'[\\s\\S]{0,160}?insert: '([^']+)'`);
+    const m = dataSrc.match(re);
+    assert.ok(m, `找不到 ${label}`);
+    assert.ok(m[1].includes('\\placeholder{}'), `${label} 应用 \\placeholder{}，实际：${m[1]}`);
+    assert.ok(!/_\{\}\^?\{\}/.test(m[1]), `${label} 不该用裸 {} （框填不进去）`);
+  }
+});
+
+t('矢量字母可自定义（\\vec{占位}，不是硬编码 r⃗）', () => {
+  const m = dataSrc.match(/label: 'a⃗ 矢量'[\s\S]{0,140}?insert: '([^']+)'/);
+  assert.ok(m, '应有矢量符号');
+  assert.ok(m[1].includes('\\vec{'), '应是 \\vec{...}');
+  assert.ok(m[1].includes('\\placeholder{}'), '里面应有可填字母的占位');
+});
+
+t('MathLive 挂了要能降级（上课时输入框不能消失）', () => {
+  assert.match(mcSrc, /setFallback\(true\)/, '加载失败应切到降级');
+  assert.match(mcSrc, /lec-composer-input/, '降级用 textarea');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

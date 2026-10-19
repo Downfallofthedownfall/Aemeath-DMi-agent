@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // symbol-data.ts — 数学/物理符号板的数据表（纯数据，无逻辑）
 //
 // 设计依据（用户 2026-10 定案）：
@@ -76,33 +76,53 @@ export const SYMBOL_DATA: readonly SymbolGroup[] = [
     id: 'calculus',
     label: '微积分',
     symbols: [
-      { label: '∫', insert: '∫', caret: 'end', hint: '不定积分' },
+      /**
+       * ⚠️ 这里放的是**LaTeX**，不是 Unicode ∫。
+       *
+       * 为什么改（用户原话）：
+       *   "最好做成 word 的等式输入那种吧"
+       *   "也没有积分符号之类的上下左右填充"
+       *
+       * 早先 `∫ 上下限` 的 insert 是光秃秃的 `'∫'`，template 里那套 `$1/$2`
+       * 前端**根本没读**（它只用了 sym.insert）→ 上下限得自己手打 LaTeX，
+       * 上课来不及。现在交给 MathLive 解析成可视化结构。
+       *
+       * ⚠️⚠️ 必须用 `\placeholder{}` 而不是 `_{}^{}` —— 真机实测：
+       *   插入 `\\int_{}^{}` 后打字，字符跑到积分**后面**（`\int_{}^{}7`），
+       *   空花括号不是"可填的框"，只是空组。
+       *   用 `\placeholder{}` 才真的产生**可点进去的占位框**：
+       *       插入 `\int_{\placeholder{}}^{\placeholder{}}` → 打字落在下限里
+       *       （实测得到 `\int_7^{\placeholder{}}`）。
+       */
+      { label: '∫', insert: '\\int ', caret: 'end', hint: '不定积分（后面补被积函数）' },
       {
         label: '∫ 上下限',
-        insert: '∫',
+        insert: '\\int_{\\placeholder{}}^{\\placeholder{}} ',
         caret: 'end',
-        kind: 'structured',
-        template: '∫_{$1}^{$2} ',
-        slots: [
-          { index: 1, hint: '下限' },
-          { index: 2, hint: '上限' },
-        ],
-        hint: '定积分（Tab 在下限→上限间跳）',
+        hint: '定积分 —— 上下限框可直接点进去填（Tab 跳下一个框）',
       },
-      { label: '∮', insert: '∮', caret: 'end', hint: '闭合路径积分' },
       {
         label: '∮ 路径',
-        insert: '∮',
+        insert: '\\oint_{\\placeholder{}}^{\\placeholder{}} ',
         caret: 'end',
-        kind: 'structured',
-        template: '∮_{$1} ',
-        slots: [{ index: 1, hint: '路径，如 C' }],
-        hint: '带路径的环流积分',
+        hint: '闭合路径积分（环流）',
       },
-      { label: '∯', insert: '∯', caret: 'end', hint: '闭合曲面积分（高斯）' },
-      { label: '∰', insert: '∰', caret: 'end', hint: '闭合体积分' },
-      { label: '∬', insert: '∬', caret: 'end', hint: '二重积分' },
-      { label: '∭', insert: '∭', caret: 'end', hint: '三重积分' },
+      { label: '∮', insert: '\\oint ', caret: 'end', hint: '闭合路径积分（不带上下限）' },
+      { label: '∬', insert: '\\iint ', caret: 'end', hint: '二重积分' },
+      {
+        label: '∬ 区域',
+        insert: '\\iint_{\\placeholder{}}^{\\placeholder{}} ',
+        caret: 'end',
+        hint: '带区域的二重积分',
+      },
+      { label: '∭', insert: '\\iiint ', caret: 'end', hint: '三重积分' },
+      {
+        label: '∭ 体积',
+        insert: '\\iiint_{\\placeholder{}}^{\\placeholder{}} ',
+        caret: 'end',
+        hint: '带体积的三重积分',
+      },
+      { label: '∯', insert: '\\oiint ', caret: 'end', hint: '闭合曲面积分（高斯定理）' },
       { label: 'd/dx', insert: 'd/dx ', caret: 'end', hint: '常导数（本校约定）' },
       { label: 'd/dt', insert: 'd/dt ', caret: 'end', hint: '对时间求导（写不出点号时用）' },
       { label: '∂/∂x', insert: '∂/∂x ', caret: 'end', hint: '偏导数' },
@@ -131,19 +151,14 @@ export const SYMBOL_DATA: readonly SymbolGroup[] = [
       { label: '∑', insert: '∑', caret: 'end', hint: '不带上下限的求和' },
       {
         label: '∑ 上下限',
-        insert: '∑',
+        insert: '\\sum_{\\placeholder{}}^{\\placeholder{}} ',
         caret: 'end',
         kind: 'structured',
-        template: '∑_{$1}^{$2} ',
-        slots: [
-          { index: 1, hint: '下限，如 i=1' },
-          { index: 2, hint: '上限，如 n' },
-        ],
         hint: '带上下限的求和（Summenzeichen）',
       },
       {
         label: '∑ 仅下',
-        insert: '∑',
+          insert: '\\sum_{\\placeholder{}} ',
         caret: 'end',
         kind: 'structured',
         template: '∑_{$1} ',
@@ -153,19 +168,14 @@ export const SYMBOL_DATA: readonly SymbolGroup[] = [
       { label: '∏', insert: '∏', caret: 'end', hint: '不带上下限的连乘' },
       {
         label: '∏ 上下限',
-        insert: '∏',
+        insert: '\\prod_{\\placeholder{}}^{\\placeholder{}} ',
         caret: 'end',
         kind: 'structured',
-        template: '∏_{$1}^{$2} ',
-        slots: [
-          { index: 1, hint: '下限，如 k=1' },
-          { index: 2, hint: '上限，如 n' },
-        ],
         hint: '带上下限的连乘（Produktzeichen）',
       },
       {
         label: '∏ 仅下',
-        insert: '∏',
+          insert: '\\prod_{\\placeholder{}} ',
         caret: 'end',
         kind: 'structured',
         template: '∏_{$1} ',
@@ -176,26 +186,16 @@ export const SYMBOL_DATA: readonly SymbolGroup[] = [
       { label: '⋂', insert: '⋂', caret: 'end', hint: '交集' },
       {
         label: '⋃ 上下限',
-        insert: '⋃',
+        insert: '\\bigcup_{\\placeholder{}}^{\\placeholder{}} ',
         caret: 'end',
         kind: 'structured',
-        template: '⋃_{$1}^{$2} ',
-        slots: [
-          { index: 1, hint: '下限' },
-          { index: 2, hint: '上限' },
-        ],
         hint: '带上下限的并集',
       },
       {
         label: '⋂ 上下限',
-        insert: '⋂',
+        insert: '\\bigcap_{\\placeholder{}}^{\\placeholder{}} ',
         caret: 'end',
         kind: 'structured',
-        template: '⋂_{$1}^{$2} ',
-        slots: [
-          { index: 1, hint: '下限' },
-          { index: 2, hint: '上限' },
-        ],
         hint: '带上下限的交集',
       },
       { label: '⋯', insert: '⋯', caret: 'end', hint: '省略号（居中）' },
@@ -250,13 +250,26 @@ export const SYMBOL_DATA: readonly SymbolGroup[] = [
     id: 'vectors',
     label: '矢量与导数记号',
     symbols: [
-      combining('r', COMBINING.vector, 'r⃗ 矢量', '上划半箭头（本校约定）—— 加在任意字母后'),
-      combining('r', COMBINING.dot, 'ṙ 时间导数', '一个点 = d/dt（本校约定）'),
-      combining('r', COMBINING.ddot, 'r̈ 二阶时间导数', '两个点 = d²/dt²'),
-      combining('r', COMBINING.bar, 'r̄ 平均值', '上划线：平均 / 复数共轭'),
-      combining('r', COMBINING.hat, 'r̂ 单位矢量', '帽子：单位矢量 / 算符'),
-      combining('r', COMBINING.tilde, 'r̃ 波浪', '波浪：近似 / 相位'),
-      combining('r', COMBINING.under, 'r̲ 下划线', '下划线：强调 / 张量分量'),
+      /**
+       * ⚠️ 矢量改成 `\vec{}`，**字母可自定义**。
+       *
+       * 真机反馈："符号键盘的向量不可以自定义向量字母"
+       * —— 早先全是硬编码的 `r⃗`（combining 组合符拼出来的），
+       * 上课要标 a⃗、v⃗、F⃗、B⃗ 就傻眼了。
+       *
+       * 现在：插进去的是 `\vec{}`，花括号里**随便填字母**。
+       * 本校约定仍是"上划半箭头"——MathLive 渲染 `\vec{a}` 就是 a 上加半箭头，
+       * 符合 INSTITUTIONAL_NOTATION，不需要改成别的写法。
+       */
+      { label: 'a⃗ 矢量', insert: '\\vec{\\placeholder{}} ', caret: 'end', hint: '矢量 —— 点进花括号填任意字母（a v F B…）' },
+      { label: 'ṙ 时间导数', insert: '\\dot{\\placeholder{}} ', caret: 'end', hint: '一个点 = d/dt（本校约定）—— 字母可自定义' },
+      { label: 'r̈ 二次', insert: '\\ddot{\\placeholder{}} ', caret: 'end', hint: '两个点 = d²/dt²' },
+      { label: 'r̄ 平均值', insert: '\\overline{\\placeholder{}} ', caret: 'end', hint: '上划线：平均 / 复数共轭' },
+      { label: 'r̂ 单位矢量', insert: '\\hat{\\placeholder{}} ', caret: 'end', hint: '帽子：单位矢量 / 算符' },
+      { label: 'r̃ 波浪', insert: '\\tilde{\\placeholder{}} ', caret: 'end', hint: '波浪：近似 / 相位' },
+      { label: 'r̲ 下划线', insert: '\\underline{\\placeholder{}} ', caret: 'end', hint: '下划线：强调 / 张量分量' },
+      /** 纯 Unicode 版本：不想进公式模式、只想打普通文本时用。 */
+      combining('r', COMBINING.vector, 'r⃗ 纯文本', '上划半箭头（不带公式）—— 加在任意字母后'),
       { label: '→ 趋于', insert: '→', caret: 'end', hint: '趋于（极限）' },
       { label: '↦ 映射到', insert: '↦', caret: 'end', hint: '映射' },
       { label: '⇒ 推出', insert: '⇒', caret: 'end', hint: '蕴含（folgt）' },

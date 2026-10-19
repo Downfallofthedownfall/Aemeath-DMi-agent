@@ -69,8 +69,27 @@ t('复杂结构数量足够（>=25 个带插槽模板）', () => {
 });
 
 t('findSymbol 能查到 / 查不到返回 undefined', () => {
-  assert.equal(findSymbol('∫').insert, '∫');
+  // 注：∫ 的 insert 现在是 LaTeX（`\int `），不再是 Unicode ∫ ——
+  // 因为输入框换成了 MathLive，插入 LaTeX 才能解析成可视化积分。
+  assert.equal(findSymbol('∫').insert, '\\int ');
   assert.equal(findSymbol('不存在的符号'), undefined);
+});
+
+t('积分/求和等复杂结构插的是占位符（MathLive 可填）', () => {
+  // 真机实测：`_{}^{}` 的空花括号**不是**可填的框，打字会跑到积分后面；
+  // 必须用 `\placeholder{}` 才产生真正可点进去的占位。
+  const withLimits = allSymbols().filter((s) => (s.insert ?? '').includes('\\int_') || (s.insert ?? '').includes('\\oint_'));
+  assert.ok(withLimits.length > 0, '应有带上下限的积分');
+  for (const s of withLimits) {
+    assert.ok(s.insert.includes('\\placeholder{}'), `${s.label} 应使用 \\placeholder{}（否则框填不进去）`);
+  }
+});
+
+t('矢量可自定义字母（不再是硬编码 r⃗）', () => {
+  const vec = findSymbol('a⃗ 矢量');
+  assert.ok(vec, '应有矢量符号');
+  assert.ok(vec.insert.includes('\\vec{'), '矢量应是 \\vec{...}（字母可换）');
+  assert.ok(vec.insert.includes('\\placeholder{}'), '里面有可填字母的占位');
 });
 
 // ---------- 用户点名要的符号都在 ----------
@@ -98,7 +117,9 @@ t('用户点名（第三轮）：∑ / lim / ∈ / ∀ gilt 这类带条件的',
 
 t('矢量/导数记号（本校约定：点号 + 半箭头 + 帽子 + 上划线）', () => {
   const labels = new Set(allSymbols().map((s) => s.label));
-  for (const need of ['r⃗ 矢量', 'ṙ 时间导数', 'r̈ 二阶时间导数', 'r̄ 平均值', 'r̂ 单位矢量']) {
+  // 注：标签从 "r⃗ 矢量" 改成了 "a⃗ 矢量" —— 因为矢量现在**字母可自定义**
+  //（\vec{\placeholder{}}），r 不再是唯一。详见 symbol-data.ts 的说明。
+  for (const need of ['a⃗ 矢量', 'ṙ 时间导数', 'r̈ 二次', 'r̄ 平均值', 'r̂ 单位矢量']) {
     assert.ok(labels.has(need), `缺少: ${need}`);
   }
 });
@@ -117,13 +138,21 @@ t('集合与逻辑齐全', () => {
   }
 });
 
-t('带条件的符号用 template 且 kind=structured', () => {
-  for (const label of ['∑ 上下限', '∑ 仅下', '∏ 上下限', '∏ 仅下', 'lim', '∫ 上下限', '∮ 路径', '∀ 任意', '∃ 存在', '⋃ 上下限']) {
+t('带条件的符号插的是可填占位（不再依赖 template/slots）', () => {
+  // ⚠️ 设计变了：早先用 `template: '∫_{$1}^{$2}'` + slots 描述插槽，
+  //    但**前端从来没读过 template**（只用了 sym.insert）→ 插槽形同虚设。
+  //    现在统一走 insert 里的 LaTeX `\placeholder{}`，
+  //    MathLive 解析后就是**可点进去填的框**，不再需要 template。
+  for (const label of ['∑ 上下限', '∑ 仅下', '∏ 上下限', '∏ 仅下', '∫ 上下限', '∮ 路径', '⋃ 上下限']) {
     const s = findSymbol(label);
     assert.ok(s, `找不到 ${label}`);
-    assert.ok(s.template, `${label} 缺 template`);
-    assert.equal(s.kind, 'structured', `${label} kind 应为 structured`);
+    assert.ok(
+      (s.insert ?? '').includes('\\placeholder{}'),
+      `${label} 的 insert 应含 \\placeholder{}（可填框），实际：${s.insert}`,
+    );
   }
+  // lim 这类不需要占位框，只要插进去就行
+  assert.ok(findSymbol('lim'), '找不到 lim');
 });
 
 t('template 里不出现字面占位文本（避免污染笔记）', () => {
@@ -257,7 +286,8 @@ t('模拟边栏插入一整条公式后仍解析为公式行', () => {
     text = r.text;
     caret = r.caret;
   }
-  assert.ok(text.startsWith('= ∫'), text);
+  // ∫ 的 insert 现在是 LaTeX `\int `（MathLive 用），不再是 Unicode ∫
+  assert.ok(text.startsWith('= \\int'), text);
   assert.equal(parseShorthand(text)[0].kind, 'formula');
 });
 
@@ -319,13 +349,13 @@ t('renderTemplate：四插槽（矩阵）', () => {
   assert.deepEqual(slots, [1, 2, 4, 5]);
 });
 
-t('insertSymbol 用 template：∑ 插入后光标在第一个插槽', () => {
+t('insertSymbol：∑ 上下限插的是 LaTeX 占位（MathLive 可填）', () => {
   const r = insertSymbol('= ', 2, 2, findSymbol('∑ 上下限'));
-  assert.equal(r.text, '= ∑_{}^{} ');
-  assert.equal(r.slots.length, 2);
-  assert.equal(r.caret, r.slots[0]);
-  assert.equal(r.activeSlot, 1);
-  assert.equal(r.text[r.caret - 1], '{');
+  // 设计变了：不再用 template/slots 拼 Unicode，而是直接插 LaTeX，
+  // 由 MathLive 解析成可点进去的占位框。
+  assert.equal(r.text, '= \\sum_{\\placeholder{}}^{\\placeholder{}} ');
+  // 没有 template 了，所以 slots 为空
+  assert.equal(r.slots.length, 0);
 });
 
 t('insertSymbol 用 template：lim 单插槽', () => {
@@ -344,34 +374,30 @@ t('insertSymbol 用 template：∀x∈A', () => {
   assert.equal(r.slots[1], 2);
 });
 
-t('insertSymbol 用 template：∏ 上下限', () => {
+t('insertSymbol：∏ 上下限插 LaTeX 占位', () => {
   const r = insertSymbol('', 0, 0, findSymbol('∏ 上下限'));
-  assert.equal(r.text, '∏_{}^{} ');
-  assert.equal(r.slots.length, 2);
+  assert.equal(r.text, '\\prod_{\\placeholder{}}^{\\placeholder{}} ');
 });
 
-t('template 与 autoSpace 共存', () => {
+t('autoSpace 与 LaTeX 插入共存', () => {
   const r = insertSymbol('x', 1, 1, findSymbol('∑ 上下限'), { autoSpace: true });
-  assert.equal(r.text, 'x ∑_{}^{} ');
-  assert.equal(r.caret, r.slots[0]);
+  assert.equal(r.text, 'x \\sum_{\\placeholder{}}^{\\placeholder{}} ');
 });
 
-t('template 替换选区', () => {
+t('template 替换选区（lim 仍走 template）', () => {
+  // 注：只有积分/求和/连乘/并交改成了 LaTeX 占位；
+  // lim、∀ 这些**没改**，仍走原来的 template/slots 机制。
   const r = insertSymbol('= old', 2, 5, findSymbol('lim'));
   assert.equal(r.text, '= lim_{} ');
   assert.equal(r.slots.length, 1);
 });
 
-// ---------- Tab 跳转 ----------
+// ---------- Tab 跳转（template 机制还留着给 lim / ∀ / 矩阵这些用）----------
 
-t('nextSlot：1 → 2', () => {
-  const r = insertSymbol('', 0, 0, findSymbol('∑ 上下限'));
-  assert.equal(nextSlot(r.slots, 1), r.slots[1]);
-});
-
-t('nextSlot：最后一个 → null（前端应放行 Tab）', () => {
-  const r = insertSymbol('', 0, 0, findSymbol('∑ 上下限'));
-  assert.equal(nextSlot(r.slots, 2), null);
+t('nextSlot：单插槽 → null', () => {
+  const r = insertSymbol('', 0, 0, findSymbol('lim'));
+  assert.equal(r.slots.length, 1);
+  assert.equal(nextSlot(r.slots, 1), null);
 });
 
 t('nextSlot：无插槽 → null', () => {
@@ -399,30 +425,19 @@ t('shiftSlots：输入位置之前的插槽不动', () => {
   assert.deepEqual(shiftSlots([10, 20], 0, 5), [15, 25]);
 });
 
-t('完整还原一次 ∑ 输入流程', () => {
+t('∑ 插入后是可被解析的 LaTeX 公式行', () => {
+  // ⚠️ 设计变了：∑ 不再走 template 拼 Unicode，而是直接插 LaTeX + 占位，
+  //    交给 MathLive 渲染成可填的上下限框。所以这里验证的是
+  //    「插进去的东西仍然是一条合法公式行」，而不是 slots 跳转。
   const r = insertSymbol('', 0, 0, findSymbol('∑ 上下限'));
-  let text = r.text;
-  assert.equal(text, '∑_{}^{} ');
-  const s1 = r.slots[0];
-  text = text.slice(0, s1) + 'i=1' + text.slice(s1);
-  const slots = shiftSlots(r.slots, s1, 3);
-  const s2 = nextSlot(slots, 1);
-  text = text.slice(0, s2) + 'n' + text.slice(s2);
-  assert.equal(text, '∑_{i=1}^{n} ');
-  const lines = parseShorthand('= ' + text + 'x_i');
+  assert.equal(r.text, '\\sum_{\\placeholder{}}^{\\placeholder{}} ');
+  const lines = parseShorthand('= ' + r.text + 'x_i');
   assert.equal(lines[0].kind, 'formula');
-  assert.match(textsOfKind(lines, 'formula')[0], /∑_\{i=1\}\^\{n\}/);
 });
 
-t('完整还原一次 ∏ 输入流程', () => {
+t('∏ 插入后同样是 LaTeX', () => {
   const r = insertSymbol('', 0, 0, findSymbol('∏ 上下限'));
-  let text = r.text;
-  const s1 = r.slots[0];
-  text = text.slice(0, s1) + 'k=1' + text.slice(s1);
-  const slots = shiftSlots(r.slots, s1, 3);
-  const s2 = nextSlot(slots, 1);
-  text = text.slice(0, s2) + 'n' + text.slice(s2);
-  assert.equal(text, '∏_{k=1}^{n} ');
+  assert.equal(r.text, '\\prod_{\\placeholder{}}^{\\placeholder{}} ');
 });
 
 t('完整还原一次 bra-ket 输入流程', () => {

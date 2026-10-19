@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReviewPanel } from './review-panel.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
+import { MathComposer, type MathComposerApi } from './math-composer.tsx';
 import { LECTURE_CLASS } from './styles.ts';
 
 const API = '/aemeath/api/lecture';
@@ -63,12 +64,6 @@ async function postJson<T>(url: string, body: unknown): Promise<T | null> {
   } catch {
     return null;
   }
-}
-
-/** 输入框对外的命令式接口（符号键盘用）。 */
-interface ComposerApi {
-  insert(snippet: string): void;
-  focus(): void;
 }
 
 /**
@@ -154,131 +149,6 @@ function BlankField({
 /** 右栏放什么。 */
 type RightTab = 'symbols' | 'review';
 
-/**
- * 速记输入框（中栏底部）。
- *
- * 设计取舍（都是真机反馈定的）：
- *   · **不嵌 dsh 的对话区**。用户原话："不要把整个主agent塞进去啊，
- *     放一个输入框就完了，反正固定physicist也用不到其他乱七八糟的功能，
- *     也不要分屏，本来中间的区域就有很多空闲放一个输入框就行了。"
- *   · **不经过 LLM**。上课现场在听讲，等模型回一轮太慢；
- *     而且课堂内 LLM 的输出按设计（D3）只在后端、前端不剧透。
- *     所以直接落盘（与 lecture_capture 工具同一个 store）。
- *   · **Enter 发送 / Shift+Enter 换行**（和一般聊天框一致，不用学）。
- *   · 自动长高（最多 ~10 行），免得中栏被输入框吃掉。
- */
-function Composer({
-  disabled,
-  onSend,
-  apiRef,
-}: {
-  disabled: boolean;
-  onSend: (text: string) => Promise<void>;
-  /**
-   * 暴露给父组件的命令式接口 —— 供**符号键盘**往光标处插入。
-   *
-   * 为什么要 ref 而不是受控 state：符号面板在右栏、输入框在中栏，
-   * 是两个兄弟子树；要"插到光标位置"就必须直接操作那个 textarea
-   *（受控值 + 光标位置很难正确同步，尤其是中间已经有一段选中的文本时）。
-   */
-  apiRef?: { current: ComposerApi | null };
-}): JSX.Element {
-  const [text, setText] = useState('');
-  const [hint, setHint] = useState('');
-  const ref = useRef<HTMLTextAreaElement | null>(null);
-
-  // 自动长高：先归零再按 scrollHeight 设，否则删字时不会回缩
-  const resize = useCallback((): void => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
-  }, []);
-
-  // 把插入能力暴露出去。依赖里带 text，保证闭包拿到的是最新值。
-  useEffect(() => {
-    if (!apiRef) return;
-    apiRef.current = {
-      insert(snippet: string): void {
-        const el = ref.current;
-        if (!el) return;
-        const start = el.selectionStart ?? el.value.length;
-        const end = el.selectionEnd ?? start;
-        const next = el.value.slice(0, start) + snippet + el.value.slice(end);
-        setText(next);
-        // 光标落到插入内容之后（下一帧，等 React 渲染完新值）
-        requestAnimationFrame(() => {
-          const pos = start + snippet.length;
-          el.focus();
-          el.setSelectionRange(pos, pos);
-          resize();
-        });
-      },
-      focus(): void {
-        ref.current?.focus();
-      },
-    };
-    return () => {
-      if (apiRef) apiRef.current = null;
-    };
-  }, [apiRef, resize]);
-
-  const submit = useCallback(async (): Promise<void> => {
-    const v = text.trim();
-    if (!v || disabled) return;
-    setText('');
-    setHint('');
-    // 先清空再发送：现场速记不能因为网络慢就卡住输入
-    requestAnimationFrame(resize);
-    try {
-      await onSend(v);
-      setHint('已记下');
-      window.setTimeout(() => setHint(''), 1200);
-    } catch (e) {
-      // 失败要把内容还给用户，不能吞
-      setText(v);
-      setHint(`没记上：${(e as Error).message}`);
-      requestAnimationFrame(resize);
-    }
-  }, [text, disabled, onSend, resize]);
-
-  return (
-    <div className="lec-composer">
-      <textarea
-        ref={ref}
-        className="lec-composer-input"
-        rows={2}
-        placeholder="在这里记 —— 写下你听到的内容，Enter 记下，Shift+Enter 换行"
-        value={text}
-        disabled={disabled}
-        onChange={(e) => {
-          setText(e.target.value);
-          resize();
-        }}
-        onKeyDown={(e) => {
-          // Enter 发送；Shift+Enter 换行；输入法组合中不拦截
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            void submit();
-          }
-        }}
-      />
-      <div className="lec-composer-row">
-        <span className="lec-composer-hint" data-tone={hint.startsWith('没记上') ? 'err' : 'ok'}>
-          {hint}
-        </span>
-        <button
-          type="button"
-          className="lec-composer-send"
-          onClick={() => void submit()}
-          disabled={disabled || !text.trim()}
-        >
-          {disabled ? '记录中…' : '记下'}
-        </button>
-      </div>
-    </div>
-  );
-}
 
 /**
  * 课堂工作台。
@@ -306,7 +176,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
    * 用户要求："符号键盘可以做点击就直接输入输入框，不过复制也保留挺好用的"
    * → 点一下**同时**做两件事：插入 + 复制。想粘到别处也行，不用选。
    */
-  const composerApi = useRef<ComposerApi | null>(null);
+  const composerApi = useRef<MathComposerApi | null>(null);
   const [starting, setStarting] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newCourseId, setNewCourseId] = useState('');
@@ -769,10 +639,10 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
               留白（[我的理解]/[我的疑问]）**不在这里填** ——
               那是复盘阶段的事（D12），现场没时间写；服务端也不再强制。 */}
           {!starting && unitId ? (
-            <Composer
+            <MathComposer
               disabled={busy}
               apiRef={composerApi}
-              onSend={async (text) => {
+              onSubmit={async (text) => {
                 setBusy(true);
                 try {
                   const r = await fetch(API, {
@@ -788,8 +658,6 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                   const data = (await r.json()) as { ok?: boolean; error?: string };
                   if (!r.ok || !data.ok) throw new Error(data.error ?? `落盘失败 (${r.status})`);
                   await loadUnit(courseId, unitId);
-                } catch (e) {
-                  window.alert(`没能记下来：${(e as Error).message}`);
                 } finally {
                   setBusy(false);
                 }
