@@ -10,7 +10,7 @@
     "@aemeath/dsh-plugin-ui": "file:../../packages/ui/dsh-plugin-ui",
     "@aemeath/dsh-plugin-workflow": "file:../../packages/workflow/dsh-plugin-workflow",
     "@aemeath/dsh-plugin-worldbook": "file:../../packages/worldbook/dsh-plugin-worldbook",
-    "@deepseek-ai/dsh-mcp-client": "^0.2.0-rc.2"
+    "@deepseek-ai/dsh-mcp-client": "^0.2.1-rc.2"
   },
   "dsh": {
     "profile": {
