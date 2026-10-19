@@ -681,6 +681,43 @@ const CSS = `
   opacity: 0.45;
   cursor: default;
 }
+
+/* —— 输入框的模式切换（文字 / 公式）——
+   用户反馈："那现在是不是整个输入框都是公式文字了？正常文本怎么办呢"。
+   所以默认文字模式，公式是显式选项。 */
+.${LECTURE_CLASS} .lec-composer-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.${LECTURE_CLASS} .lec-composer-tab {
+  padding: 2px 10px;
+  border-radius: 6px 6px 0 0;
+  border: 1px solid var(--aem-line);
+  border-bottom: none;
+  background: transparent;
+  color: var(--aem-ink);
+  font-size: 11.5px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.${LECTURE_CLASS} .lec-composer-tab[data-active="1"] {
+  opacity: 1;
+  font-weight: 600;
+  background: var(--dsw-alias-bg-base, #fff);
+  border-color: var(--aem-accent);
+}
+.${LECTURE_CLASS} .lec-composer-modelabel {
+  margin-left: auto;
+  font-size: 10.5px;
+  opacity: 0.55;
+}
+.${LECTURE_CLASS} .lec-composer-loading {
+  padding: 10px 4px;
+  font-size: 12px;
+  opacity: 0.6;
+}
 .${LECTURE_CLASS} .lec-notehead {
   display: flex;
   align-items: baseline;

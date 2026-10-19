@@ -50,7 +50,7 @@ async function copyText(text: string): Promise<boolean> {
  * @param onInsert 点到符号时，把它插到中栏输入框的光标处。
  *                 不传则退化为"只复制"（独立窗口以外没有输入框的场景）。
  */
-export function SymbolPanel({ onInsert }: { onInsert?: (snippet: string) => void } = {}): JSX.Element {
+export function SymbolPanel({ onInsert }: { onInsert?: (latex: string, plainFallback?: string) => void } = {}): JSX.Element {
   const [query, setQuery] = useState('');
   const [copied, setCopied] = useState('');
   /** 刚插入的符号（用于按钮上闪一下提示）。 */
@@ -106,7 +106,8 @@ export function SymbolPanel({ onInsert }: { onInsert?: (snippet: string) => void
     //    插入失败（比如输入框还没渲染）不影响复制 —— 各自独立降级。
     if (onInsert) {
       try {
-        onInsert(sym.insert);
+        // 第二个参数是可读回退：公式编辑器不可用时至少能落成纯文本
+        onInsert(sym.insert, sym.label);
         setInserted(sym.label);
       } catch {
         /* 插入失败就只复制，不打扰用户 */

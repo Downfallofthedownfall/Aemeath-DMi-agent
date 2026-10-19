@@ -895,7 +895,8 @@ t('符号点击同时插入输入框 + 复制', () => {
   assert.match(symLive, /onInsert\?\.|onInsert\(/, '符号面板应支持插入回调');
   assert.match(symLive, /copyText\(sym\.insert\)/, '同时仍要复制（保留原有能力）');
   // 插入要在复制之前（先给输入框，复制是附加）
-  const insIdx = symLive.indexOf('onInsert(sym.insert)');
+  // 注：调用签名是 onInsert(sym.insert, sym.label) —— 第二个参数是纯文本回退
+  const insIdx = symLive.indexOf('onInsert(sym.insert');
   const copyIdx = symLive.indexOf('copyText(sym.insert)');
   assert.ok(insIdx >= 0 && copyIdx >= 0 && insIdx < copyIdx, '应先插入再复制');
 });
@@ -957,8 +958,38 @@ t('矢量字母可自定义（\\vec{占位}，不是硬编码 r⃗）', () => {
 });
 
 t('MathLive 挂了要能降级（上课时输入框不能消失）', () => {
-  assert.match(mcSrc, /setFallback\(true\)/, '加载失败应切到降级');
-  assert.match(mcSrc, /lec-composer-input/, '降级用 textarea');
+  // 双模式之后，降级的含义变了：不再是"退回 textarea"，
+  // 而是"公式模式标记不可用，文字模式照常工作"。
+  assert.match(mcSrc, /setMathFailed\(true\)/, '加载失败应标记公式不可用');
+  assert.match(mcSrc, /公式编辑器加载失败/, '应明确告知用户');
+  assert.match(mcSrc, /lec-composer-input/, '文字模式仍用 textarea（照常记笔记）');
+});
+
+t('输入框有文字/公式双模式，默认文字', () => {
+  // 真机反馈："那现在是不是整个输入框都是公式文字了？正常文本怎么办呢"
+  // —— MathLive 是数学模式：中文/英文被当变量（斜体）、空格被吞、不能多行。
+  // 所以拆成两个模式：默认文字（普通 textarea），需要时切公式。
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  assert.match(mc, /useState<ComposerMode>\('text'\)/, '**默认必须是文字模式**');
+  assert.match(mc, /lec-composer-tab/, '应有模式切换按钮');
+  // 文字模式要有真正的 textarea（空格/换行/中文靠它）
+  assert.match(mc, /mode === 'text' \? \(/, '文字模式应渲染 textarea');
+  assert.match(mc, /multi-line|rows=\{2\}/, 'textarea 应可多行');
+});
+
+t('公式模式才加载 MathLive（用不到就别下 823KB）', () => {
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  assert.match(mc, /mode !== 'math' \|\| mathReady/, '只有切到公式模式才加载');
+});
+
+t('文字模式下点符号会切到公式模式（否则 LaTeX 会变成一串反斜杠）', () => {
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  // 注意：`insert(latex: string...)` 出现两次 —— 接口声明（以 ; 结尾）和实现（以 { 开头）。
+  // 要匹配的是**实现**那一处。
+  const impl = mc.match(/insert\(latex: string[^)]*\)\s*:\s*void\s*\{[\s\S]{0,600}/);
+  assert.ok(impl, '找不到 insert 实现');
+  assert.match(impl[0], /if \(mode === 'text'\)\s*\{/, '应有文字模式分支');
+  assert.match(impl[0], /setMode\('math'\)/, '文字模式应自动切公式');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);
