@@ -907,7 +907,8 @@ t('插入走命令式 ref（兄弟子树才够得着光标）', () => {
   // 接口定义搬到 math-composer.tsx 了（ComposerApi → MathComposerApi）
   assert.match(mc, /interface MathComposerApi/, '应定义接口');
   assert.match(mc, /el\.insert\(latex\)/, 'MathLive 用 insert()（不是 executeCommand）');
-  assert.match(wbLive3, /onInsert=\{\(snippet\)/, '应把插入能力接到符号面板');
+  // 注：签名已改成 (latex, plainFallback) —— 第二个参数是文字模式要插的可读字符
+  assert.match(wbLive3, /onInsert=\{\(latex, plainFallback\)/, '应把插入能力接到符号面板');
 });
 
 console.log('\n[MathLive 公式输入（Word 式）]');
@@ -982,14 +983,48 @@ t('公式模式才加载 MathLive（用不到就别下 823KB）', () => {
   assert.match(mc, /mode !== 'math' \|\| mathReady/, '只有切到公式模式才加载');
 });
 
-t('文字模式下点符号会切到公式模式（否则 LaTeX 会变成一串反斜杠）', () => {
+t('符号注入跟随当前输入位置（不再硬切公式模式）', () => {
+  // 用户原话："目前是符号键盘固定输入公式页面，但是有时候文本里也会需要输入，
+  //           所以要做成目前在哪里输入就注入哪个"
+  //
+  // 早先是"文字模式下一律 setMode('math')" —— 只想到结构化公式必须可视化，
+  // 忘了一个更常见的情形：**文字里也要能插单个符号**（∂、∇、×、→、∈、ℝ…）。
+  // 硬切会打断正在写的段落，还抢走用户的模式选择。
   const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
-  // 注意：`insert(latex: string...)` 出现两次 —— 接口声明（以 ; 结尾）和实现（以 { 开头）。
-  // 要匹配的是**实现**那一处。
-  const impl = mc.match(/insert\(latex: string[^)]*\)\s*:\s*void\s*\{[\s\S]{0,600}/);
+  const impl = mc.match(/insert\(latex: string[^)]*\)\s*:\s*void\s*\{[\s\S]{0,700}/);
   assert.ok(impl, '找不到 insert 实现');
-  assert.match(impl[0], /if \(mode === 'text'\)\s*\{/, '应有文字模式分支');
-  assert.match(impl[0], /setMode\('math'\)/, '文字模式应自动切公式');
+  // 不该再自动切模式
+  assert.ok(!/setMode\('math'\)/.test(impl[0]), '不该在插入时硬切公式模式（会打断文字输入）');
+  // 两种模式都要有分支
+  assert.match(impl[0], /if \(mode === 'math'\)/, '公式模式分支');
+  assert.match(impl[0], /insertIntoTextarea/, '文字模式走 textarea 插入');
+});
+
+t('文字模式插到光标处（不是追加到末尾）', () => {
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  const seg = mc.match(/const insertIntoTextarea = useCallback\([\s\S]{0,700}/);
+  assert.ok(seg, '应有 insertIntoTextarea');
+  assert.match(seg[0], /selectionStart/, '应读光标位置');
+  assert.match(seg[0], /setSelectionRange/, '插完应把光标放到插入内容之后');
+});
+
+t('plainFallback 必须从符号面板一路透传到输入框', () => {
+  // 真机踩过：workbench 的 onInsert 只接了第一个参数 → plain 丢失 →
+  // 文字模式退回去掉反斜杠的 LaTeX，笔记里出现 `Aoint`。
+  const wb = readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8');
+  const seg = wb.match(/<SymbolPanel[\s\S]{0,500}?\/>/);
+  assert.ok(seg, '找不到 SymbolPanel 用法');
+  assert.match(seg[0], /onInsert=\{\(latex, plainFallback\)/, '应接两个参数');
+  assert.match(seg[0], /insert\(latex, plainFallback\)/, '两个都要传下去');
+});
+
+t('纯文字回退要剥掉中文描述（∫ 上下限 → ∫）', () => {
+  // label 是界面标签，常带说明（`∫ 上下限`、`Δx 增量`）。
+  // 整条插进笔记会把描述文字也写进去。
+  const sp = readFileSync(join(root, 'src/client/symbol-palette.tsx'), 'utf-8');
+  assert.match(sp, /function plainOf/, '应有 plainOf');
+  assert.match(sp, /onInsert\(sym\.insert, plainOf\(sym\.label\)\)/, '应用 plainOf 而非原标签');
+  assert.match(sp, /u4e00-\\u9fff/, '应按中文区段判断（没有中文的 lim sup 要整条保留）');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

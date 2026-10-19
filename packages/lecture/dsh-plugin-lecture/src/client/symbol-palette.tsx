@@ -20,6 +20,31 @@ import { SYMBOL_GROUPS, type MathSymbol } from '../symbols.ts';
 /** 最近用过的分组（localStorage；让面板下次打开时落在常用的那组）。 */
 const RECENT_KEY = 'aemeath-lecture-symbol-group';
 
+/**
+ * 从界面标签里取出**纯文字版**（文字模式插入用）。
+ *
+ * 符号数据的 `label` 是给人看的，常带中文说明：
+ *   `'∫ 上下限'` → `'∫'`
+ *   `'Δx 增量'`  → `'Δx'`
+ *   `'δ 变分'`   → `'δ'`
+ * 但有些标签本身就是完整符号、没有描述：
+ *   `'lim sup'`  → `'lim sup'`（原样保留 —— 它有空格但字字是符号）
+ *   `'∂²/∂x²'`   → 原样
+ *
+ * 判据：**中文/全角字符出现的位置**就是描述开始处。
+ * 没有中文 → 整条都是符号本体。
+ */
+function plainOf(label: string): string {
+  // 汉字、中文标点、全角字符
+  const cut = label.search(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/);
+  if (cut <= 0) return label.trim();
+  const head = label.slice(0, cut).trim();
+  // 切出来啥也不剩，或只剩括号之类（如 `[待验证]` → `[`）→ 用原标签。
+  // 宁可插一条完整的标记，也不要插一个孤零零的 `[`。
+  if (!head || /^[\s\[\](){}<>«»]+$/.test(head)) return label.trim();
+  return head;
+}
+
 /** 复制到剪贴板：优先用 Clipboard API，失败回退到 execCommand。 */
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -106,8 +131,10 @@ export function SymbolPanel({ onInsert }: { onInsert?: (latex: string, plainFall
     //    插入失败（比如输入框还没渲染）不影响复制 —— 各自独立降级。
     if (onInsert) {
       try {
-        // 第二个参数是可读回退：公式编辑器不可用时至少能落成纯文本
-        onInsert(sym.insert, sym.label);
+        // 第二个参数是**纯文字模式**下插入的内容。
+        // ⚠️ 不能用 sym.label —— 那是界面标签，带中文描述
+        //    （`∫ 上下限`、`Δx 增量`）。把整条插进笔记会把描述文字也写进去。
+        onInsert(sym.insert, plainOf(sym.label));
         setInserted(sym.label);
       } catch {
         /* 插入失败就只复制，不打扰用户 */

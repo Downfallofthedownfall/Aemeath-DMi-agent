@@ -70,6 +70,47 @@ async function loadMathLive(): Promise<boolean> {
   return typeof customElements !== 'undefined' && !!customElements.get('math-field');
 }
 
+/**
+ * 把 LaTeX 命令降级成近似可读文本（**仅作最后兜底**）。
+ *
+ * 用途：文字模式下点符号，而符号数据里没给 `plainFallback` 时，
+ * 至少不要往笔记里倒一串反斜杠。
+ *
+ * 这只是"别更糟"，不是"正确" —— 所以符号数据应当尽量提供 plainFallback
+ *（见 symbol-data.ts 的 label 字段，本来就是给人看的）。
+ */
+function stripLatexCommands(latex: string): string {
+  return latex
+    // 结构占位 → 空（`\placeholder{}` 不该出现在纯文本里）
+    .replace(/\\placeholder\{\}/g, '')
+    // 常见命令 → 它的 Unicode 字形
+    .replace(/\\int\b/g, '∫')
+    .replace(/\\iint\b/g, '∬')
+    .replace(/\\iiint\b/g, '∭')
+    .replace(/\\oint\b/g, '∮')
+    .replace(/\\oiint\b/g, '∯')
+    .replace(/\\sum\b/g, '∑')
+    .replace(/\\prod\b/g, '∏')
+    .replace(/\\bigcup\b/g, '⋃')
+    .replace(/\\bigcap\b/g, '⋂')
+    .replace(/\\vec\b/g, '')
+    .replace(/\\hat\b/g, '')
+    .replace(/\\bar\b/g, '')
+    .replace(/\\overline\b/g, '')
+    .replace(/\\underline\b/g, '')
+    .replace(/\\tilde\b/g, '')
+    .replace(/\\dot\b/g, '')
+    .replace(/\\ddot\b/g, '')
+    // 剩余命令名直接去掉反斜杠（`\alpha` → `alpha` 至少还认得）
+    .replace(/\\[a-zA-Z]+/g, (m) => m.slice(1))
+    // 花括号与下标符在纯文本里没有意义
+    .replace(/[{}]/g, '')
+    .replace(/_/g, '')
+    .replace(/\^/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export interface MathComposerApi {
   /**
    * 插入一段内容。
@@ -138,6 +179,32 @@ export function MathComposer({
     };
   }, [mode, mathReady]);
 
+  /**
+   * 往文字框的**光标处**插入文本。
+   *
+   * 为什么不用 `setText(v => v + s)` 直接拼尾巴：那样永远只能追加到末尾，
+   * 而"在哪里输入就注入哪里"正是这次的要求 —— 光标在句子中间时
+   * 符号必须插在中间，并且插完光标要跟在符号后面继续打字。
+   */
+  const insertIntoTextarea = useCallback((snippet: string): void => {
+    const el = textareaRef.current;
+    if (!el) {
+      // textarea 还没渲染（极少见）：退化为追加，至少不丢
+      setText((v) => v + snippet);
+      return;
+    }
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? start;
+    const next = el.value.slice(0, start) + snippet + el.value.slice(end);
+    setText(next);
+    // 光标落到插入内容之后（等 React 写完新值再设，否则会被覆盖）
+    requestAnimationFrame(() => {
+      const pos = start + snippet.length;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    });
+  }, []);
+
   /** 自动长高（文字模式）。 */
   const resize = useCallback((): void => {
     const el = textareaRef.current;
@@ -175,32 +242,34 @@ export function MathComposer({
   useEffect(() => {
     if (!apiRef) return;
     apiRef.current = {
+      /**
+       * 插入到**当前正在输入的那个框**（真机反馈）。
+       *
+       * 用户原话："目前是符号键盘固定输入公式页面，但是有时候文本里也会需要输入，
+       *           所以要做成目前在哪里输入就注入哪个"
+       *
+       * 早先是"文字模式下一律切到公式模式再插" —— 那个设计只考虑了
+       * `\int_{}` 这类结构必须可视化，却漏掉了一个更常见的情形：
+       * **文字里也要能插入单个符号**（∂、∇、×、→、≈、∈、ℝ、希腊字母…）。
+       * 硬切模式会打断正在写的段落，还把用户的模式选择抢走。
+       *
+       * 现在按当前模式分发：
+       *   · 公式模式 → MathLive `insert()`：结构可填（积分上下限框照常）
+       *   · 文字模式 → 往 textarea 光标处插**可读文本**（plainFallback）
+       */
       insert(latex: string, plainFallback?: string): void {
-        // ⚠️ 文字模式下点符号 → **自动切到公式模式**再插入。
-        //    因为 LaTeX 放进 textarea 只会变成一串反斜杠，对用户没用；
-        //    "点了没反应"比"自动切模式"更让人困惑。
-        if (mode === 'text') {
-          setMode('math');
-          // 等 math-field 挂载后（下一帧）再插
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              const el = fieldRef.current;
-              if (el) {
-                el.insert(latex);
-                el.focus();
-              }
-            });
-          });
-          return;
+        // 公式模式且 MathLive 就绪 → 交给它解析成结构化节点
+        if (mode === 'math') {
+          const el = fieldRef.current;
+          if (el) {
+            el.insert(latex);
+            el.focus();
+            return;
+          }
         }
-        const el = fieldRef.current;
-        if (el) {
-          el.insert(latex);
-          el.focus();
-          return;
-        }
-        // 公式模式还没就绪：先把文字塞进 textarea，至少不丢
-        setText((v) => v + (plainFallback ?? latex));
+        // 其余情况（文字模式；或公式模式但编辑器还没哼哧完）：
+        // 插入可读文本，至少不丢、也不会把反斜杠命令倒进笔记里。
+        insertIntoTextarea(plainFallback ?? stripLatexCommands(latex));
       },
       focus(): void {
         if (mode === 'math' && fieldRef.current) fieldRef.current.focus();
@@ -210,7 +279,7 @@ export function MathComposer({
     return () => {
       if (apiRef) apiRef.current = null;
     };
-  }, [apiRef, mode]);
+  }, [apiRef, mode, insertIntoTextarea]);
 
   return (
     <div className="lec-composer">

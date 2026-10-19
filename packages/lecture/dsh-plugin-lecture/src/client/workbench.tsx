@@ -686,8 +686,13 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
           <div className="lec-sidebody">
             {right === 'symbols' ? (
               <SymbolPanel
-                onInsert={(snippet) => {
-                  composerApi.current?.insert(snippet);
+                // ⚠️ 两个参数都要透传：第二个是**纯文字模式**下要插入的可读字符
+                //   （`∮ 路径` 的 plain 是 `∮`）。
+                //   早先这里只接了第一个参数 → 文字模式拿不到 plain，
+                //   只能退回去掉反斜杠的 LaTeX（`\oint` → `oint`），
+                //   笔记里就会出现 `Aoint` 这种垃圾。
+                onInsert={(latex, plainFallback) => {
+                  composerApi.current?.insert(latex, plainFallback);
                 }}
               />
             ) : null}
