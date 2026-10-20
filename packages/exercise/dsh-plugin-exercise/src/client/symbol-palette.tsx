@@ -1,30 +1,29 @@
 // ============================================================
-// client/symbol-palette.tsx — 数学符号面板（外观照 lecture 的符号键盘）
+// client/symbol-palette.tsx — 数学符号面板（**整份抄自 lecture**）
 //
-// 数据来源：host 的 `?action=symbols`，借的是 lecture 的符号表（250+ 项）。
-// 点一下 = 插入到答案光标处；没有聚焦的编辑器时 = 复制到剪贴板。
+// 用户定案（2026-10-20）：「目前符号全是 placeholder，你直接去抄 lecture 的全套不就行了」。
+// 之前那版是自己拼的网格 + 简单的 `$1` 替换，结果把 lecture 数据里的
+// `\placeholder{}`（MathLive 的占位框语法）原样插进了纯文本答案框 —— 一按就是
+// `\int_{\placeholder{}}^{\placeholder{}}`，看着就是"全是 placeholder"。
 //
-// 为什么走 HTTP 而不是前端 import lecture 的包：
-//   client bundle 是 __ModuleLoader__ 单文件格式，跨插件 import 会变成运行时依赖；
-//   走 HTTP 则 lecture 没装时也能优雅退化成空表。
+// 现在：
+//   · 布局/交互/文案**照抄 lecture**：搜索框、分组折叠（记住上次用的组）、
+//     点一下闪一下（data-inserted）、复制成功提示（data-copied）
+//   · 数据同样来自 lecture 的 SYMBOL_GROUPS（host 经 HTTP 下发，见 index.ts）
+//   · 插入：把 MathLive 的 `\placeholder{}` 换成 LaTeX 空组 `{}`，
+//     光标落到第一个 `{}` 里（所以 ∫ 上下限 点完直接打上限）
+//   · 没有聚焦的答案框时退回"复制到剪贴板"（lecture 的老行为）
 // ============================================================
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, type SymbolGroupView, type SymbolView } from './api.ts';
+import { symbolInsertion } from '../symbol-insert.ts';
 
-/** 把模板渲染成可插入文本：`$1`/`$2` → 空的待填位。 */
-export function renderTemplate(template: string): string {
-  return template.replace(/\$(\d+)/g, '');
-}
+/** 最近用过的分组（localStorage；让面板下次打开落在常用的那组）。 */
+const RECENT_KEY = 'aemeath-exercise-symbol-group';
 
-/** 插入什么 + 光标落哪（纯文本 textarea，落进第一个空 {} / () / []）。 */
-export function symbolInsertion(s: SymbolView): { text: string; caret: number } {
-  const text = s.template ? renderTemplate(s.template) : s.insert;
-  const idx = text.search(/\{\}|\(\)|\[\]/);
-  const caret = idx === -1 ? text.length : idx + 1;
-  return { text, caret };
-}
 
+/** 复制到剪贴板：优先 Clipboard API，失败回退 execCommand（同 lecture）。 */
 async function copyText(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
@@ -50,6 +49,7 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 export interface SymbolPanelProps {
+  /** 插到聚焦答案框的光标处；返回 false 表示没有活动编辑器（退回复制） */
   onInsert: (text: string, caretOffset: number) => boolean;
   onToast?: (msg: string) => void;
 }
@@ -57,51 +57,99 @@ export interface SymbolPanelProps {
 export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Element {
   const [groups, setGroups] = useState<SymbolGroupView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [q, setQ] = useState('');
+  const [query, setQuery] = useState('');
+  const [copied, setCopied] = useState('');
+  const [inserted, setInserted] = useState('');
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
+    let last = '';
+    try {
+      last = localStorage.getItem(RECENT_KEY) ?? '';
+    } catch {
+      /* 隐私模式 */
+    }
+    return new Set(last ? [last] : []);
+  });
+  const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
     let alive = true;
     apiGet<{ groups: SymbolGroupView[] }>('symbols')
       .then((r) => {
-        if (alive) setGroups(r.groups ?? []);
+        if (!alive) return;
+        const list = r.groups ?? [];
+        setGroups(list);
+        // 没记住上次的组 → 默认展开第一组
+        setOpenGroups((prev) => (prev.size ? prev : new Set([list[0]?.id ?? ''])));
       })
       .catch((e: Error) => {
-        if (alive) {
-          setError(e.message);
-          setGroups([]);
-        }
+        if (!alive) return;
+        setError(e.message);
+        setGroups([]);
       });
     return () => {
       alive = false;
     };
   }, []);
 
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  const searching = query.trim().length > 0;
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    const src = groups ?? [];
-    if (!needle) return src;
-    return src
+    const list = groups ?? [];
+    const q = query.trim().toLowerCase();
+    if (!q) return list;
+    return list
       .map((g) => ({
         ...g,
         symbols: g.symbols.filter(
-          (s) =>
-            s.label.toLowerCase().includes(needle) ||
-            s.insert.toLowerCase().includes(needle) ||
-            (s.hint ?? '').toLowerCase().includes(needle),
+          (s) => s.label.toLowerCase().includes(q) || s.insert.toLowerCase().includes(q) || (s.hint ?? '').toLowerCase().includes(q),
         ),
       }))
       .filter((g) => g.symbols.length > 0);
-  }, [groups, q]);
+  }, [groups, query]);
 
-  const insert = async (s: SymbolView): Promise<void> => {
-    const { text, caret } = symbolInsertion(s);
-    if (!text) {
-      onToast?.('这个模板没有可插入的文本');
-      return;
+  const onClick = async (sym: SymbolView, groupId: string): Promise<void> => {
+    try {
+      localStorage.setItem(RECENT_KEY, groupId);
+    } catch {
+      /* 忽略 */
     }
-    if (onInsert(text, caret)) return;
+    const { text, caret } = symbolInsertion(sym);
+
+    // ① 插到聚焦答案框的光标处（没有就退回复制）
+    let didInsert = false;
+    try {
+      didInsert = onInsert(text, caret);
+    } catch {
+      didInsert = false;
+    }
+    if (didInsert) setInserted(sym.label);
+
+    // ② 复制（lecture 的老行为保留：想粘到别处也能用）
     const ok = await copyText(text);
-    onToast?.(ok ? `已复制 ${text}` : '复制失败（浏览器拒绝了剪贴板写入）');
+    setCopied(ok ? sym.label : '');
+
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      setCopied('');
+      setInserted('');
+    }, 1600);
+
+    if (!didInsert && !ok) onToast?.('没有聚焦的答案框，复制也被浏览器拒绝');
+  };
+
+  const toggleGroup = (id: string): void => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   if (groups === null) return <div className="lec-hint">符号表加载中…</div>;
@@ -116,40 +164,67 @@ export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Elemen
   if (!groups.length) return <div className="lec-empty">符号表为空 —— lecture 插件未安装，可手动输入 LaTeX</div>;
 
   return (
-    <div>
-      <input
-        className="lec-symsearch"
-        placeholder="搜索符号（试：积分 / sum / 根号 / 矢量）"
-        value={q}
-        onChange={(e) => setQ(e.currentTarget.value)}
-      />
-      <div className="lec-hint">
-        点符号 = 插入到答案光标处；没有聚焦编辑器时 = 复制。
-        {q ? ` 过滤：${filtered.reduce((n, g) => n + g.symbols.length, 0)} 个` : ''}
+    <div className="lec-sympanel">
+      <div className="lec-sympanel-head">
+        <input
+          className="lec-input"
+          style={{ padding: '5px 9px', fontSize: 12 }}
+          placeholder="搜索符号（积分 / sum / 矢量 …）"
+          value={query}
+          onChange={(e) => setQuery(e.currentTarget.value)}
+        />
+        {query ? (
+          <button type="button" className="lec-icon-btn" title="清空" onClick={() => setQuery('')}>
+            ✕
+          </button>
+        ) : null}
       </div>
-      {filtered.map((g, gi) => (
-        // 默认展开前两组（常用：微积分 / 求和），其余折叠 —— 与 lecture 的手感一致：
-        // 一进来就能点到 ∫ 和 ∑，又不会被十几组淹没。
-        <details key={g.id} open={!!q || gi < 2}>
-          <summary className="lec-symgroup-name">{g.label}</summary>
-          <div className="lec-symgrid">
-            {g.symbols.map((s, i) => (
-              <button
-                key={`${g.id}-${i}`}
-                type="button"
-                className="lec-symbtn"
-                title={`${s.label}${s.hint ? ` — ${s.hint}` : ''}`}
-                // 关键：点符号**不能**把焦点从答案框抢走，否则插不到光标处
-                // （用户要求："符号键盘也要可以点击后注入当前输入框，复制功能也保留"）
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => void insert(s)}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-        </details>
-      ))}
+
+      <div className="lec-hint" style={{ margin: '6px 10px 0' }}>
+        {copied ? (
+          <span style={{ color: 'var(--aem-accent)', fontWeight: 600 }}>已复制 {copied} —— 到答案框粘贴</span>
+        ) : (
+          <>
+            点一下即<b>插入到答案框</b>的光标处，同时复制到剪贴板
+          </>
+        )}
+      </div>
+
+      <div className="lec-sympanel-body">
+        {filtered.length === 0 ? <div className="lec-hint">没有匹配的符号。</div> : null}
+        {filtered.map((g) => {
+          const open = searching || openGroups.has(g.id);
+          return (
+            <div key={g.id} className="lec-symgroup">
+              <div className="lec-symgroup-name" onClick={() => toggleGroup(g.id)} title="点击展开 / 收起">
+                <span>{open ? '▾' : '▸'}</span>
+                {g.label}
+                <span style={{ opacity: 0.6 }}>（{g.symbols.length}）</span>
+              </div>
+              {open ? (
+                <div className="lec-symgrid">
+                  {g.symbols.map((s) => (
+                    <button
+                      key={s.label}
+                      type="button"
+                      className="lec-sym"
+                      data-structured={s.kind === 'structured' ? '1' : '0'}
+                      data-copied={copied === s.label ? '1' : '0'}
+                      data-inserted={inserted === s.label ? '1' : '0'}
+                      title={s.hint ? `${s.label} — ${s.hint}\n点击：插入到答案框 + 复制` : `点击：插入到答案框 + 复制`}
+                      // 不抢焦点：否则插不到光标处
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => void onClick(s, g.id)}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

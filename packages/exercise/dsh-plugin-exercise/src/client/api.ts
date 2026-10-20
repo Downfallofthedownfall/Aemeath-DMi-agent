@@ -157,6 +157,8 @@ export interface SymbolView {
   insert: string;
   caret?: string;
   hint?: string;
+  /** structured = 带插槽的复合结构（∫ 上下限 / ∑ / 分式…），按钮样式更宽 */
+  kind?: string;
   template?: string;
   slots?: Array<{ index: number; hint: string }>;
 }

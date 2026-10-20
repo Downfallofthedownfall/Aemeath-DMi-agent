@@ -12,6 +12,7 @@ import {
   segmentWithVision,
 } from '../lib/vision.js';
 import { pageFromImageName, pageImageName } from '../lib/pdf-image.js';
+import { applyInsertion, symbolInsertion } from '../lib/symbol-insert.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -215,6 +216,34 @@ await asyncT('segmentWithVision：输出不可解析 → 失败并保留原文',
 await asyncT('segmentWithVision：没有页面图片 → 直接失败', async () => {
   const r = await segmentWithVision([], async () => 'x');
   assert.equal(r.ok, false);
+});
+
+// ---- 符号插入（lecture 模板 → 纯文本 LaTeX）----
+t('symbolInsertion：\\placeholder{} 换成 {}，光标进第一个空组', () => {
+  const { text, caret } = symbolInsertion({ insert: '\\int_{\\placeholder{}}^{\\placeholder{}} ' });
+  assert.equal(text, '\\int_{}^{} ');
+  assert.equal(caret, '\\int_{'.length, '光标应落在第一个 {} 里');
+});
+
+t('symbolInsertion：模板 $1/$2 也换成 {}', () => {
+  const { text } = symbolInsertion({ template: '\\sum_{$1}^{$2}' });
+  assert.equal(text, '\\sum_{}^{}');
+});
+
+t('symbolInsertion：没有占位符时原样保留（如 ∫ / √(）', () => {
+  assert.equal(symbolInsertion({ insert: '\\int ' }).text, '\\int ');
+  const sqrt = symbolInsertion({ insert: '\\sqrt(' });
+  assert.equal(sqrt.text, '\\sqrt(');
+  assert.equal(sqrt.caret, sqrt.text.length, '没有空组就落在末尾');
+});
+
+t('applyInsertion：在选区处替换并给出绝对光标位', () => {
+  const sym = { insert: '\\int_{\\placeholder{}}^{\\placeholder{}} ' };
+  const ins = symbolInsertion(sym);
+  const r = applyInsertion('a + b', 4, 5, ins); // 选中 'b'
+  assert.equal(r.text, 'a + \\int_{}^{} ');
+  assert.equal(r.caret, 4 + '\\int_{'.length);
+  assert.equal(r.text[r.caret], '}', '光标在 {} 内部');
 });
 
 console.log(`\n[exercise-vision] ${passed} 项断言通过`);

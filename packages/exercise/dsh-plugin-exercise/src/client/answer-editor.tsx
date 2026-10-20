@@ -6,13 +6,15 @@
 //   ② "符号键盘也要可以点击后注入当前输入框，复制功能也保留"
 //
 // ① 的做法：输入框与渲染结果**左右并排**（.lec-editor），滚动同步；
-//    另外两个模式——「只写」（不要预览）和「只读渲染」（看排好版的结果）。
-//    为什么不做"输入框内直接排版"：textarea 里没法渲染 KaTeX，真 WYSIWYG 需要
-//    contentEditable，光标/撤销/中文输入法/公式边界都会崩 —— 分栏是稳妥且好用的折中。
+//    另有「只写」和「只看渲染」两个模式。不做"输入框内直接排版"的原因：
+//    textarea 里没法渲染 KaTeX，真 WYSIWYG 要 contentEditable，
+//    光标/撤销/中文输入法/公式边界都会崩 —— 分栏是稳妥且好用的折中。
 //
-// ② 的做法：每个编辑器把自己的 inserter 注册成"当前活动目标"（focus 时设、blur 时清），
-//    符号面板点击时 **preventDefault**（不抢焦点），于是按钮点下去仍然插到光标处；
-//    没有活动编辑器时退回"复制到剪贴板"（lecture 的老行为，保留）。
+// ② 的做法（2026-10-20 修）：**按 DOM 元素登记**插入器（WeakMap），
+//    focus 时把该 textarea 记为"当前目标"，点符号时先看活动元素、
+//    再退回"最近聚焦的 textarea"。早先按函数身份登记 + 在每次 render 的
+//    effect 清理里把 active 置空 —— 结果**只有第一次点进输入框能插入**，
+//    之后 active 永远是 null（用户实测报的就是这个）。
 //
 // 保存：900ms 防抖 + 失焦；答案一改，host 会把旧检查标 stale（D6）。
 // ============================================================
@@ -23,25 +25,35 @@ import { MathText } from './math.tsx';
 
 export type Inserter = (text: string, caretOffset: number) => boolean;
 
-/** 当前聚焦的答案编辑器（跨组件：符号面板点一下要能插到"正在写的那个框"）。 */
-let activeInserter: Inserter | null = null;
+/** 每个 textarea 自己的插入实现（WeakMap：元素换/卸载自动失效，不需要手动清理）。 */
+const inserters = new WeakMap<HTMLTextAreaElement, Inserter>();
+/** 最近聚焦的答案框（符号面板在右栏，点按钮时它仍应是活动目标）。 */
+let activeTextArea: HTMLTextAreaElement | null = null;
 
-export function setActiveInserter(fn: Inserter | null): void {
-  activeInserter = fn;
-  // 调试/自检用：DOM 上留一个标记，headless 探针能看出"当前有没有活动编辑器"
+export function registerInserter(ta: HTMLTextAreaElement, fn: Inserter): void {
+  inserters.set(ta, fn);
+}
+
+export function setActiveTextArea(ta: HTMLTextAreaElement | null): void {
+  activeTextArea = ta;
   if (typeof document !== 'undefined') {
-    if (fn) document.body.dataset.exActiveEditor = '1';
+    if (ta) document.body.dataset.exActiveEditor = '1';
     else delete document.body.dataset.exActiveEditor;
   }
 }
 
-export function getActiveInserter(): Inserter | null {
-  return activeInserter;
-}
-
-/** 符号面板调用：插到活动编辑器；没有就返回 false（调用方退回复制）。 */
+/**
+ * 符号面板调用：插到当前答案框；返回 false 表示"没有可插入的目标"
+ * （调用方退回复制到剪贴板）。
+ */
 export function insertIntoActiveEditor(text: string, caretOffset: number): boolean {
-  const fn = activeInserter;
+  const el =
+    activeTextArea ??
+    (typeof document !== 'undefined' && document.activeElement instanceof HTMLTextAreaElement
+      ? document.activeElement
+      : null);
+  if (!el) return false;
+  const fn = inserters.get(el);
   if (!fn) return false;
   try {
     return fn(text, caretOffset);
@@ -82,7 +94,8 @@ export function AnswerEditor({
   const timer = useRef<number | null>(null);
   const pending = useRef<{ answer?: string; notes?: string }>({});
   const dirtyRef = useRef(false);
-  const selfRef = useRef<Inserter | null>(null);
+  /** 让"稳定的插入器"始终调到最新的 schedule 实现（避免每次 render 重建插入器）。 */
+  const scheduleRef = useRef<(patch: { answer?: string; notes?: string }) => void>(() => undefined);
 
   useEffect(() => {
     if (!dirtyRef.current) {
@@ -123,6 +136,7 @@ export function AnswerEditor({
     },
     [flush],
   );
+  scheduleRef.current = schedule;
 
   useEffect(() => {
     return () => {
@@ -131,45 +145,48 @@ export function AnswerEditor({
         dirtyRef.current = false;
         void onSave(pending.current).catch(() => undefined);
       }
-      if (activeInserter === selfRef.current) activeInserter = null;
-    };
-  }, [problem.id, onSave]);
-
-  /** 注册"插入到光标处"的能力（focus 时成为活动目标）。 */
-  const makeInserter = useCallback((): Inserter => {
-    return (text: string, caretOffset: number): boolean => {
       const ta = taRef.current;
-      if (!ta) return false;
-      const start = ta.selectionStart ?? ta.value.length;
-      const end = ta.selectionEnd ?? start;
-      const next = `${ta.value.slice(0, start)}${text}${ta.value.slice(end)}`;
-      setDraft(next);
-      schedule({ answer: next });
-      const caret = start + Math.max(0, Math.min(caretOffset, text.length));
-      window.requestAnimationFrame(() => {
-        ta.focus();
-        ta.setSelectionRange(caret, caret);
-      });
-      return true;
+      if (ta && activeTextArea === ta) setActiveTextArea(null);
     };
-  }, [schedule]);
+  }, [onSave]);
+
+  /**
+   * 插入器只建一次（依赖全在 ref 里）：读 textarea 的真实值/选区，
+   * 写回 React 状态并恢复光标。稳定身份 → WeakMap 里的登记永远有效。
+   */
+  const inserterRef = useRef<Inserter>((text, caretOffset) => {
+    const ta = taRef.current;
+    if (!ta) return false;
+    const start = ta.selectionStart ?? ta.value.length;
+    const end = ta.selectionEnd ?? start;
+    const next = `${ta.value.slice(0, start)}${text}${ta.value.slice(end)}`;
+    setDraft(next);
+    scheduleRef.current({ answer: next });
+    const caret = start + Math.max(0, Math.min(caretOffset, text.length));
+    window.requestAnimationFrame(() => {
+      ta.focus();
+      ta.setSelectionRange(caret, caret);
+    });
+    return true;
+  });
 
   useEffect(() => {
-    selfRef.current = makeInserter();
+    const ta = taRef.current;
+    if (!ta) return;
+    registerInserter(ta, inserterRef.current);
     return () => {
-      selfRef.current = null;
+      // 元素卸载后 WeakMap 自然释放；只需保证活动目标不指向已卸载元素
+      if (activeTextArea === ta) setActiveTextArea(null);
     };
-  }, [makeInserter]);
+  }, []);
 
-  // 输入框滚动 → 预览同步滚动（两边行数不一样，按比例对齐就够用）
   const syncScroll = useCallback(() => {
     const ta = taRef.current;
     const pv = previewRef.current;
     if (!ta || !pv) return;
     const max = ta.scrollHeight - ta.clientHeight;
     if (max <= 0) return;
-    const ratio = ta.scrollTop / max;
-    pv.scrollTop = ratio * Math.max(0, pv.scrollHeight - pv.clientHeight);
+    pv.scrollTop = (ta.scrollTop / max) * Math.max(0, pv.scrollHeight - pv.clientHeight);
   }, []);
 
   const savedLabel = saving ? '保存中…' : dirty ? '未保存' : savedAt ? '已保存' : '';
@@ -205,9 +222,11 @@ export function AnswerEditor({
             schedule({ answer: v });
           }}
           onScroll={syncScroll}
-          onFocus={() => setActiveInserter(selfRef.current)}
-          onBlur={() => {
-            setActiveInserter(null);
+          onFocus={(e) => setActiveTextArea(e.currentTarget)}
+          onBlur={(e) => {
+            // 点符号时按钮 mousedown 已 preventDefault，不会走到这里；
+            // 走到这里就是真的离开了 → 清掉活动目标
+            if (activeTextArea === e.currentTarget) setActiveTextArea(null);
             void flush();
           }}
           spellCheck={false}

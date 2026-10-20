@@ -1034,12 +1034,9 @@ const CSS = `
 .${EX_CLASS} .lec-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .${EX_CLASS} .lec-warnbox { margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; background: light-dark(#fff6e6, rgba(240, 180, 90, 0.14)); border: 1px solid light-dark(#f3dfb8, rgba(240, 180, 90, 0.3)); color: light-dark(#7a5a12, #f0cd8a); }
 
-/* 符号网格（lecture 的符号面板用 .lec-symbtn；这里补网格与搜索框） */
-.${EX_CLASS} .lec-symgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(50px, 1fr)); gap: 5px; margin-top: 6px; }
-.${EX_CLASS} .lec-symsearch { width: 100%; box-sizing: border-box; height: 28px; padding: 0 9px; margin-bottom: 8px; border-radius: var(--aem-radius-ctl); border: 1px solid var(--aem-line); background: var(--aem-surface); color: var(--aem-ink); font: inherit; font-size: 12px; outline: none; }
 
 /* ---- 答案编辑器：分栏实时渲染（写的时候右边就是排好版的公式） ---- */
-. .lec-tab { white-space: nowrap; }
+.${EX_CLASS} .lec-answer-head .lec-tab { white-space: nowrap; }
 .${EX_CLASS} .lec-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
 .${EX_CLASS} .lec-editor[data-mode="write"] { grid-template-columns: 1fr; }
 .${EX_CLASS} .lec-editor[data-mode="write"] .lec-preview-pane { display: none; }
