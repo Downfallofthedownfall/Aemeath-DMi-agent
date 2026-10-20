@@ -755,14 +755,18 @@ console.log('\n[中栏底部要有速记输入框]');
 // 用户定的形态："本来中间的区域就有很多空闲放一个输入框就行了"。
 const wbLive2 = stripComments(readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8'));
 
-t('中栏渲染了公式输入框（MathLive，不依赖 dsh）', () => {
-  // 输入框从普通 textarea 换成了 MathLive 的 math-field（Word 式公式编辑）。
+t('中栏是 markdown 单框（不再是 math-field 或双模式）', () => {
+  // 演进到最终形态：一个 textarea 写 markdown，公式用 `$...$` 内联。
+  // 真机反馈："目前的架构无法再文本中插入公式，很繁琐得分成几块，
+  //           最好还是做成 word 那样文本编辑可以插入一个公式块"
   const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
   assert.match(mc, /export function MathComposer/, '应有 MathComposer 组件');
   assert.match(wbLive2, /<MathComposer\b/, '中栏应渲染 MathComposer');
-  assert.match(mc, /createElement\('math-field'\)/, '应创建 math-field 元素');
-  // 必须能降级：MathLive 不可用时至少还能记
-  assert.match(mc, /lec-composer-input/, '应有 textarea 降级路径');
+  // 输入是普通 textarea（不是 math-field）
+  assert.match(mc, /<textarea/, '应该是普通 textarea');
+  assert.ok(!/createElement\('math-field'\)/.test(mc), '不该再创建 math-field 编辑元素');
+  // 不再有两个模式
+  assert.ok(!/ComposerMode/.test(mc), '不该再有 文字/公式 双模式');
 });
 
 t('输入框直接落盘（不经 LLM、不依赖对话）', () => {
@@ -772,12 +776,10 @@ t('输入框直接落盘（不经 LLM、不依赖对话）', () => {
   assert.ok(!/lecture_capture/.test(wbLive2), '前端不该调工具（那是 agent 的路径）');
 });
 
-t('输入框可提交（MathLive 主路径 + 降级 textarea）', () => {
+t('输入框可提交（Enter 记下 / Shift+Enter 换行 / 输入法保护）', () => {
   const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
-  // MathLive 路径：Enter 由它自己处理，我们提供明确的「记下」按钮
   assert.match(mc, /lec-composer-send/, '应有「记下」按钮');
-  // 降级路径：仍要 Enter 发送 / Shift+Enter 换行 / 输入法保护
-  assert.match(mc, /e\.key === 'Enter'/, '降级 textarea 应处理 Enter');
+  assert.match(mc, /e\.key === 'Enter'/, '应处理 Enter');
   assert.match(mc, /!e\.shiftKey/, 'Shift+Enter 应留给换行');
   assert.match(mc, /isComposing/, '输入法组合中不应拦截 Enter（中文输入必需）');
 });
@@ -790,14 +792,14 @@ t('笔记区自己滚动、输入框钉在底部', () => {
 
 t('提交失败不能吞（要有明确提示）', () => {
   const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
-  // MathLive 版本：失败时**不清空**（清空只在成功分支里），
-  // 所以内容天然还留着；同时给明确提示，不静默。
+  // 失败时**不清空**（清空只在成功分支里），所以内容天然还留着；
+  // 同时给明确提示，不静默。
   assert.match(mc, /没记上/, '应有明确失败提示');
   assert.match(mc, /catch \(e\)/, '应捕获提交失败');
   // 清空只能发生在成功之后（在 catch 里清空就会丢掉用户内容）
-  const catchSeg = mc.match(/catch \(e\)[\s\S]{0,200}/);
+  const catchSeg = mc.match(/catch \(e\)[\s\S]{0,220}/);
   assert.ok(catchSeg, '找不到 catch');
-  assert.ok(!/\.value = ''/.test(catchSeg[0]), 'catch 里不该清空内容（那会丢用户输入）');
+  assert.ok(!/setText\(''\)/.test(catchSeg[0]), 'catch 里不该清空内容（那会丢用户输入）');
 });
 
 console.log('\n[复盘确认后必须真的能送到主记忆]');
@@ -904,39 +906,67 @@ t('符号点击同时插入输入框 + 复制', () => {
 t('插入走命令式 ref（兄弟子树才够得着光标）', () => {
   const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
   assert.match(wbLive3, /composerApi/, '应有 composerApi ref');
-  // 接口定义搬到 math-composer.tsx 了（ComposerApi → MathComposerApi）
   assert.match(mc, /interface MathComposerApi/, '应定义接口');
-  assert.match(mc, /el\.insert\(latex\)/, 'MathLive 用 insert()（不是 executeCommand）');
-  // 注：签名已改成 (latex, plainFallback) —— 第二个参数是文字模式要插的可读字符
+  assert.match(mc, /insertInto/, '应有插入实现');
+  // 签名是 (latex, plainFallback)
   assert.match(wbLive3, /onInsert=\{\(latex, plainFallback\)/, '应把插入能力接到符号面板');
 });
 
-console.log('\n[MathLive 公式输入（Word 式）]');
+console.log('\n[笔记渲染：markdown + 行内公式]');
 
-// 用户："最好做成 word 的等式输入那种吧"
-//      "符号键盘的向量不可以自定义向量字母，也没有积分符号之类的上下左右填充"
-const mcSrc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+// 真机截图：笔记区显示的是
+//     \sum_{i=1}^{n}\alpha_{i}\vec{a_{i}}=\alpha_1 a_1+\ldots=0
+// —— 原样 LaTeX，因为显示区是 `<pre>{raw}</pre>`，什么都不渲染。
+// 公式模式记下来的东西**在界面上根本没法读**。
+const markupSrc = readFileSync(join(root, 'src/client/math-markup.tsx'), 'utf-8');
+
+t('笔记区用 MathMarkup 渲染（不再是 <pre>）', () => {
+  assert.match(wbLive2, /<MathMarkup\b/, '笔记区应渲染 MathMarkup');
+  assert.ok(!/<pre className="lec-pre">/.test(wbLive2), '不该再直接把 raw 塞进 <pre>');
+});
+
+t('行内公式用 $...$ 语法', () => {
+  assert.match(markupSrc, /\\\$/, '应识别 $ 定界符');
+  // 不能把 "价格 $5 到 $10" 误判成公式
+  assert.match(markupSrc, /\\\$\(\?!\\s\)/, '应排除 $ 后紧跟空白的误判');
+});
+
+t('公式渲染走 MathLive，且**不引入新依赖**', () => {
+  assert.match(markupSrc, /convertLatexToMarkup/, '应用 MathLive 的静态渲染');
+  assert.match(markupSrc, /await import\('mathlive'\)/, '应动态 import（懒加载）');
+});
+
+t('必须注入 MathLive 的样式表（否则字形缺失，\\neq 渲染成豆腐块）', () => {
+  // 真机踩过：只调 convertLatexToMarkup 不注入 CSS →
+  // `\neq` 渲染成 □（字体里没有那个字形）。
+  assert.match(markupSrc, /mathlive-static\.css/, '应引 mathlive-static.css');
+  assert.match(markupSrc, /ensureMathCss/, '应有一次性注入逻辑');
+});
+
+t('MathLive 静态资源由 host 侧提供（字体 254KB 不进 bundle）', () => {
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  const assets = readFileSync(join(root, 'src/assets.ts'), 'utf-8');
+  assert.match(idx, /ASSETS_PREFIX/, '应注册资源路由');
+  assert.match(idx, /kind:\s*'prefix'/, '应用 prefix 路由（一条覆盖所有字体）');
+  assert.match(assets, /req\.resolve\('mathlive'\)|resolve\('mathlive'\)/, '应按 Node 解析规则找包目录');
+  // 安全：必须防路径穿越
+  assert.match(assets, /FONT_RE/, '字体名应白名单校验');
+  assert.match(assets, /\.\./, '应有路径穿越防护说明/处理');
+});
+
+t('懒加载：没有公式的笔记不下载 mathlive', () => {
+  assert.match(markupSrc, /hasMath/, '应有 hasMath 判定');
+});
+
+t('渲染失败要退回源码（不能显示空白）', () => {
+  assert.match(markupSrc, /lec-math-src/, '应有源码回退样式');
+  assert.match(markupSrc, /setFailed\(true\)/, '应记录失败状态');
+});
+
+console.log('\n[符号数据：可填的上下限 + 可自定义的矢量字母]');
+
+// 用户："符号键盘的向量不可以自定义向量字母，也没有积分符号之类的上下左右填充"
 const dataSrc = readFileSync(join(root, 'src/symbol-data.ts'), 'utf-8');
-
-t('用 math-field 而不是 textarea 做输入框', () => {
-  assert.match(mcSrc, /createElement\('math-field'\)/, '应创建 MathLive 元素');
-  assert.match(mcSrc, /from 'mathlive'|import\('mathlive'\)/, '应引入 mathlive');
-});
-
-t('MathLive 懒加载（823KB 不该在打开课堂时同步加载）', () => {
-  assert.match(mcSrc, /await import\('mathlive'\)/, '应动态 import');
-  assert.match(mcSrc, /mathlivePromise/, '应缓存加载 Promise（只加载一次）');
-});
-
-t('关掉 MathLive 自带虚拟键盘（我们用右栏的符号板）', () => {
-  assert.match(mcSrc, /math-virtual-keyboard-policy'\s*,\s*'manual'/, '应设成 manual');
-});
-
-t('LaTeX 落盘（不是 HTML）', () => {
-  // 笔记要能被 LLM 读、二次渲染、跨版本存活 → 存 LaTeX 源码
-  assert.match(mcSrc, /\.value/, '应读 math-field 的 value（LaTeX 源码）');
-  assert.ok(!/outerHTML|innerHTML/.test(mcSrc), '不该存 HTML');
-});
 
 t('积分/求和用 \\placeholder{} 而不是裸空花括号', () => {
   // 真机实测：`\int_{}^{}` 的空花括号**不是可填的框**，
@@ -958,52 +988,28 @@ t('矢量字母可自定义（\\vec{占位}，不是硬编码 r⃗）', () => {
   assert.ok(m[1].includes('\\placeholder{}'), '里面应有可填字母的占位');
 });
 
-t('MathLive 挂了要能降级（上课时输入框不能消失）', () => {
-  // 双模式之后，降级的含义变了：不再是"退回 textarea"，
-  // 而是"公式模式标记不可用，文字模式照常工作"。
-  assert.match(mcSrc, /setMathFailed\(true\)/, '加载失败应标记公式不可用');
-  assert.match(mcSrc, /公式编辑器加载失败/, '应明确告知用户');
-  assert.match(mcSrc, /lec-composer-input/, '文字模式仍用 textarea（照常记笔记）');
+t('渲染器挂了要能降级（不能显示空白）', () => {
+  // markdown 单框之后，"降级"指公式渲染器不可用时退回显示源码 ——
+  // 笔记本身照常可读写（textarea 不依赖 mathlive）。
+  assert.match(markupSrc, /lec-math-src/, '应有源码回退');
+  assert.match(wbLive2, /<textarea/, '输入框不依赖 mathlive，永远可用');
 });
 
-t('输入框有文字/公式双模式，默认文字', () => {
-  // 真机反馈："那现在是不是整个输入框都是公式文字了？正常文本怎么办呢"
-  // —— MathLive 是数学模式：中文/英文被当变量（斜体）、空格被吞、不能多行。
-  // 所以拆成两个模式：默认文字（普通 textarea），需要时切公式。
+t('一个框写文字和公式（不再分模式）', () => {
+  // 用户："目前的架构无法再文本中插入公式，很繁琐得分成几块，
+  //       最好还是做成 word 那样文本编辑可以插入一个公式块"
   const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
-  assert.match(mc, /useState<ComposerMode>\('text'\)/, '**默认必须是文字模式**');
-  assert.match(mc, /lec-composer-tab/, '应有模式切换按钮');
-  // 文字模式要有真正的 textarea（空格/换行/中文靠它）
-  assert.match(mc, /mode === 'text' \? \(/, '文字模式应渲染 textarea');
-  assert.match(mc, /multi-line|rows=\{2\}/, 'textarea 应可多行');
+  assert.ok(!/ComposerMode/.test(mc), '不该有模式枚举');
+  assert.match(mc, /<textarea/, '应只有一个 textarea');
+  // 有预览（写的时候能看公式对不对）
+  assert.match(mc, /<MathMarkup\b/, '预览应复用同一个渲染器');
 });
 
-t('公式模式才加载 MathLive（用不到就别下 823KB）', () => {
+t('符号插入到光标处（markdown 语法）', () => {
   const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
-  assert.match(mc, /mode !== 'math' \|\| mathReady/, '只有切到公式模式才加载');
-});
-
-t('符号注入跟随当前输入位置（不再硬切公式模式）', () => {
-  // 用户原话："目前是符号键盘固定输入公式页面，但是有时候文本里也会需要输入，
-  //           所以要做成目前在哪里输入就注入哪个"
-  //
-  // 早先是"文字模式下一律 setMode('math')" —— 只想到结构化公式必须可视化，
-  // 忘了一个更常见的情形：**文字里也要能插单个符号**（∂、∇、×、→、∈、ℝ…）。
-  // 硬切会打断正在写的段落，还抢走用户的模式选择。
-  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
-  const impl = mc.match(/insert\(latex: string[^)]*\)\s*:\s*void\s*\{[\s\S]{0,700}/);
-  assert.ok(impl, '找不到 insert 实现');
-  // 不该再自动切模式
-  assert.ok(!/setMode\('math'\)/.test(impl[0]), '不该在插入时硬切公式模式（会打断文字输入）');
-  // 两种模式都要有分支
-  assert.match(impl[0], /if \(mode === 'math'\)/, '公式模式分支');
-  assert.match(impl[0], /insertIntoTextarea/, '文字模式走 textarea 插入');
-});
-
-t('文字模式插到光标处（不是追加到末尾）', () => {
-  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
-  const seg = mc.match(/const insertIntoTextarea = useCallback\([\s\S]{0,700}/);
-  assert.ok(seg, '应有 insertIntoTextarea');
+  assert.match(mc, /markdownOf/, '应把符号 LaTeX 转成 markdown 片段');
+  const seg = mc.match(/const insertInto = useCallback\([\s\S]{0,1200}/);
+  assert.ok(seg, '应有 insertInto');
   assert.match(seg[0], /selectionStart/, '应读光标位置');
   assert.match(seg[0], /setSelectionRange/, '插完应把光标放到插入内容之后');
 });
@@ -1025,6 +1031,28 @@ t('纯文字回退要剥掉中文描述（∫ 上下限 → ∫）', () => {
   assert.match(sp, /function plainOf/, '应有 plainOf');
   assert.match(sp, /onInsert\(sym\.insert, plainOf\(sym\.label\)\)/, '应用 plainOf 而非原标签');
   assert.match(sp, /u4e00-\\u9fff/, '应按中文区段判断（没有中文的 lim sup 要整条保留）');
+});
+
+t('旧数据兼容：裸 LaTeX 块也要渲染（用户当时的抱怨）', () => {
+  // 真机截图：早先"公式模式"把 LaTeX 源码直接落盘，
+  // 存的是 `\sum_{i=1}^{n}\alpha_{i}\vec{a_{i}}=...`，没有 `$`。
+  // 用户当时的原话就是"速记框不渲染" —— 这些老块必须能看。
+  assert.match(markupSrc, /looksLikeBareLatex/, '应有裸 LaTeX 判定');
+  assert.match(markupSrc, /looksLikeBareLatex\(b\.text\)/, '渲染时应检查每一块');
+  // 判据从严：必须两个字母以上的命令，含中文的一律当普通笔记
+  const seg = markupSrc.match(/export function looksLikeBareLatex[\s\S]{0,700}/);
+  assert.ok(seg, '找不到 looksLikeBareLatex');
+  assert.match(seg[0], /\\\\\[a-zA-Z\]\{2,\}/, '只认两个字母以上的 LaTeX 命令（\\n 之类不误判）');
+  assert.match(seg[0], /u4e00-\\u9fff/, '含中文的行应保持普通文本');
+  assert.match(seg[0], /includes\('\$'\)/, '有 $ 的走正常行内公式路径');
+});
+
+t('插入符号时不会拼出 $$（光标在 $ 后面要补空格）', () => {
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  const seg = mc.match(/const insertInto = useCallback\([\s\S]{0,900}/);
+  assert.ok(seg, '找不到 insertInto');
+  assert.match(seg[0], /endsWith\('\$'\)/, '应检查前一个非空白字符是不是 $');
+  assert.match(seg[0], /pad/, '应补一个空格隔开');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

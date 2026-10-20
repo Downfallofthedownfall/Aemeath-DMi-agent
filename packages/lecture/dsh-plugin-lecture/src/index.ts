@@ -24,6 +24,7 @@
 // ============================================================
 
 import { join } from 'node:path';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, writeFileSync, mkdirSync, readFileSync, rmSync, readdirSync } from 'node:fs';
 import { hostname } from 'node:os';
 import type { Context } from '@deepseek-ai/cordis';
@@ -36,6 +37,7 @@ import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-credentials';
 import type {} from '@deepseek-ai/dsh-tools';
 import { LectureStore, allBlanksOk, parseUnitMarkdown } from './store.js';
+import { ASSETS_PREFIX, serveAsset } from './assets.js';
 import { transcribeChunk, looksLikeSummary, isOverExpanded, type AskLlm } from './transcriber.js';
 import { ReviewMachine, looksLikeDirectAnswer } from './review.js';
 import { buildHandoff, filterReviewed, writeHandoff, describeHandoff, type Handoff } from './handoff.js';
@@ -1489,15 +1491,35 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     };
     const dispose = webServer.register({ kind: 'exact', path: '/aemeath/api/lecture', handler });
     const disposeSlash = webServer.register({ kind: 'exact', path: '/aemeath/api/lecture/', handler });
+
+    // MathLive 的静态资源（CSS + 字体）。
+    //
+    // 为什么必须提供（真机截图）：`convertLatexToMarkup()` 只产出标记，
+    // 样式和字体要另外加载 —— 不加载的话字形缺失，`\neq` 渲染成豆腐块 □。
+    //
+    // 为什么走 prefix 路由而不是把字体打进 bundle：
+    // 20 个 woff2 共 254KB，base64 会无条件增加 ~340KB；
+    // 走路由则只有真在渲染公式时才请求，且浏览器缓存。
+    const disposeAssets = webServer.register({
+      kind: 'prefix',
+      path: ASSETS_PREFIX,
+      handler: (req: IncomingMessage, res: ServerResponse) => {
+        // serveAsset 返回 false 表示不是它能处理的路径（理论上到不了这里）
+        if (!serveAsset(req, res, req.url ?? '')) res.writeHead(404).end('not found');
+      },
+    });
+
     ctx.effect(() => () => {
       try {
         dispose?.();
         disposeSlash?.();
+        disposeAssets?.();
       } catch {
         /* 服务可能已卸载 */
       }
     });
     log('HTTP 桥已注册: GET/POST /aemeath/api/lecture（前端不持有 token）');
+    log(`MathLive 静态资源已注册: ${ASSETS_PREFIX}/{mathlive-static.css,fonts/*.woff2}`);
   } else {
     log('未检测到 webServer（headless profile）——HTTP 桥跳过，工具路径不受影响');
   }

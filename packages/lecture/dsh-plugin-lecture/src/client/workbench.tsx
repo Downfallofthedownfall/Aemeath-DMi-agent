@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReviewPanel } from './review-panel.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { MathComposer, type MathComposerApi } from './math-composer.tsx';
+import { MathMarkup } from './math-markup.tsx';
 import { LECTURE_CLASS } from './styles.ts';
 
 const API = '/aemeath/api/lecture';
@@ -602,7 +603,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 {chunks.map((c) => (
                   <div key={c.seq} className="lec-note">
                     <div className="lec-note-num">#{c.seq + 1}</div>
-                    <pre className="lec-pre">{c.raw}</pre>
+                    <MathMarkup text={c.raw} />
                     <div className="lec-note-blanks">
                       {/* 留白**可编辑**（真机反馈："笔记的理解和疑问目前无法输入"）。
                           早先只是只读展示。

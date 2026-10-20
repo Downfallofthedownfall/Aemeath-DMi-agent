@@ -718,6 +718,96 @@ const CSS = `
   font-size: 12px;
   opacity: 0.6;
 }
+/* markdown 单框模式下的说明文字（不再是"文字/公式"两个按钮） */
+.${LECTURE_CLASS} .lec-composer-mode-static {
+  margin-left: 0;
+  margin-right: auto;
+  opacity: 0.55;
+  font-size: 11px;
+}
+.${LECTURE_CLASS} .lec-composer-mode-static code {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--aem-accent) 16%, transparent);
+  font-size: 10.5px;
+}
+
+/* —— 预览区 ——
+   写的时候就能看到公式渲染得对不对（提交后笔记区也会渲染，
+   但写错了当场发现比事后翻笔记便宜）。 */
+.${LECTURE_CLASS} .lec-composer-preview {
+  flex: none;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px dashed var(--aem-line);
+  background: color-mix(in srgb, var(--aem-accent) 5%, transparent);
+  font-size: 13px;
+}
+.${LECTURE_CLASS} .lec-composer-previewhead {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  opacity: 0.45;
+  margin-bottom: 3px;
+}
+
+/* ============================================================
+   笔记渲染（markdown + 行内公式）
+   —— 由 math-markup.tsx 的 MathMarkup 产出
+   ============================================================ */
+.${LECTURE_CLASS} .lec-md {
+  font-size: 13px;
+  line-height: 1.65;
+  word-break: break-word;
+}
+.${LECTURE_CLASS} .lec-md h3,
+.${LECTURE_CLASS} .lec-md h4,
+.${LECTURE_CLASS} .lec-md h5,
+.${LECTURE_CLASS} .lec-md h6 {
+  margin: 10px 0 6px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.${LECTURE_CLASS} .lec-md h3 { font-size: 16px; }
+.${LECTURE_CLASS} .lec-md h4 { font-size: 15px; }
+.${LECTURE_CLASS} .lec-md h5 { font-size: 14px; }
+.${LECTURE_CLASS} .lec-md h6 { font-size: 13px; }
+.${LECTURE_CLASS} .lec-md-p { margin: 2px 0; }
+.${LECTURE_CLASS} .lec-md-gap { height: 8px; }
+.${LECTURE_CLASS} .lec-md-li {
+  display: flex;
+  gap: 6px;
+  margin: 1px 0 1px 2px;
+}
+.${LECTURE_CLASS} .lec-md-dot { opacity: 0.5; flex: none; }
+.${LECTURE_CLASS} .lec-md-code {
+  margin: 6px 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--aem-line) 40%, transparent);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+/* 行内公式：不要把行高顶开 */
+.${LECTURE_CLASS} .lec-math-inline {
+  display: inline-block;
+  vertical-align: middle;
+  margin: 0 1px;
+}
+.${LECTURE_CLASS} .lec-math-inline .ML__latex {
+  font-size: 1.05em;
+}
+/* 渲染器不可用时的源码回退 */
+.${LECTURE_CLASS} .lec-math-src {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--lec-accent, var(--aem-accent)) 14%, transparent);
+  font-size: 0.92em;
+  opacity: 0.8;
+}
 .${LECTURE_CLASS} .lec-notehead {
   display: flex;
   align-items: baseline;

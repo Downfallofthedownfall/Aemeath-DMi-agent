@@ -50,6 +50,18 @@ export function classifyLine(raw: string): ShorthandLine {
   if (/^-{3,}$/.test(line.replace(/\s+/g, ''))) return { kind: 'divider', text: '', raw };
   const head = line[0];
   if (head && head in MARKER_PREFIX && MARKER_PREFIX[head] !== 'divider') {
+    // ⚠️ `#` 要剥掉**全部**连续的 `#`，不是一个。
+    //
+    //   真机踩过：用户按 markdown 写 `## 1.2 Vektorraeume`，
+    //   这里只剥一个 `#` → text = `# 1.2 …`，
+    //   而 writeUnitMarkdown 又统一加 `## ` 前缀 →
+    //   存成 `## # 1.2 Vektorraeume`，渲染出来标题前面多一个 `#`。
+    //
+    //   现在 `## x` / `### x` 都规整成 `x`，写回时统一是 `## x`
+    //   （每块就是一个小节，层次没有语义差别）。
+    if (head === '#') {
+      return { kind: MARKER_PREFIX[head]!, text: line.replace(/^#+\s*/, ''), raw };
+    }
     return { kind: MARKER_PREFIX[head]!, text: line.slice(1).trim(), raw };
   }
   return { kind: 'text', text: line, raw };
