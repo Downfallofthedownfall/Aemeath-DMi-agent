@@ -4,6 +4,7 @@
   "dependencies": {
     "@aemeath/dsh-plugin-common": "file:../../packages/shared/dsh-plugin-common",
     "@aemeath/dsh-plugin-curriculum": "file:../../packages/curriculum/dsh-plugin-curriculum",
+    "@aemeath/dsh-plugin-exercise": "file:../../packages/exercise/dsh-plugin-exercise",
     "@aemeath/dsh-plugin-lecture": "file:../../packages/lecture/dsh-plugin-lecture",
     "@aemeath/dsh-plugin-memory": "file:../../packages/memory/dsh-plugin-memory",
     "@aemeath/dsh-plugin-retriever": "file:../../packages/retriever/dsh-plugin-retriever",

@@ -1,0 +1,116 @@
+{
+  "name": "@aemeath/dsh-plugin-exercise",
+  "version": "0.1.0",
+  "description": "Aemeath Übungen 模块：PDF 作业导入 → 题目拆分 → 可编辑答案 → 手动 LLM 检查 → 错题/经验汇总（worldbook + 错题本）→ 合并 PDF 提交包 → 复用 lecture handoff 回主 agent。零 Python，mac/Windows 可用。",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./store": {
+      "types": "./lib/store.d.ts",
+      "default": "./lib/store.js"
+    },
+    "./types": {
+      "types": "./lib/types.d.ts",
+      "default": "./lib/types.js"
+    },
+    "./split": {
+      "types": "./lib/split.d.ts",
+      "default": "./lib/split.js"
+    },
+    "./digest": {
+      "types": "./lib/digest.d.ts",
+      "default": "./lib/digest.js"
+    },
+    "./handoff": {
+      "types": "./lib/handoff.d.ts",
+      "default": "./lib/handoff.js"
+    },
+    "./http": {
+      "types": "./lib/http.d.ts",
+      "default": "./lib/http.js"
+    },
+    "./client": {
+      "types": "./src/client/index.tsx",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/*.js",
+    "lib/*.d.ts",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node build-client.mjs",
+    "build:client": "node build-client.mjs",
+    "typecheck:client": "tsc -p tsconfig.client.json",
+    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT",
+  "dependencies": {
+    "katex": "^0.16.22",
+    "mathlive": "^0.111.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.4.149",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@aemeath/dsh-plugin-common": "file:../../../packages/shared/dsh-plugin-common",
+    "@aemeath/dsh-plugin-lecture": "file:../../../packages/lecture/dsh-plugin-lecture",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-ui-layout": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@aemeath/dsh-plugin-memory": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@aemeath/dsh-plugin-common": "file:../../../packages/shared/dsh-plugin-common",
+    "@aemeath/dsh-plugin-lecture": "file:../../../packages/lecture/dsh-plugin-lecture",
+    "@aemeath/dsh-plugin-memory": "file:../../../packages/memory/dsh-plugin-memory",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-ui-layout": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.0",
+    "esbuild": "^0.24.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.6.0",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.2"
+  }
+}

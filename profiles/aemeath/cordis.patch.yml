@@ -136,6 +136,28 @@
           apiKey: ''
           baseUrl: 'https://api.deepseek.com'
           model: 'deepseek-v4-flash'
+    # —— Übungen 习题模式（主 agent 内也可用：侧栏「Übungen」胶囊 → overlay）——
+    #    与独立 exercise profile **同一份插件、同一份数据目录**。
+    #    挂进主 profile 后多了 13 个 exercise_* 工具 + 一个 overlay 界面；
+    #    它不注入任何上下文（不碰 worldbook/retriever 的注入链），
+    #    唯一与主记忆的交互是显式的 exercise_import_handoff（握手接收侧）。
+    #    LLM（检查用）不在这里配：走全局 dsh 的 provider / model / 凭据。
+    - id: aemeath-exercise
+      name: '@aemeath/dsh-plugin-exercise'
+      config:
+        defaultPreset: 'physicist'
+        enabled: true
+        # 主 profile 里不做独立界面（保持侧栏入口 + overlay）
+        standalone: false
+        dataDir: 'packages/library/physicist/exercises'
+        handoffDir: 'packages/library/physicist/exercises/handoff'
+        worldbookLibraryDir: 'packages/worldbook/data/physicist'
+        lectureDataDir: 'packages/library/physicist/lectures'
+        autoCollectMistakes: true
+        studentName: ''
+        includeSourcePdf: true
+        submissionOrder: 'sheet-first'
+        chromePath: ''
     # —— M5 前端 UI 插件（browser 半区经 dsh.client 声明进入 __DSH_BOOT__）——
     - id: aemeath-ui
       name: '@aemeath/dsh-plugin-ui'

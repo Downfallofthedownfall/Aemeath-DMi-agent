@@ -4,7 +4,7 @@
 >
 > **架构 / Architecture**: v2 is rebuilt on the DeepSeek Harness (dsh) plugin system. **The platform is just the engine — the moat is the physics content track**: Worldbook knowledge base, exam benchmark, weekly usage log (see [docs/usage-log.md](docs/usage-log.md) and migration plan `docs/v2-migration-plan.md`).
 >
-> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona; borrowing ripples-of-aion ideas: fact timeline with valid_from/valid_until, evolution-vs-conflict, autoDream idle consolidation into a separate insights store, canonical attribute normalization, recall write throttle, LLM salvage parsing); frontend enhanced (Cyrene borrow: tabbed settings+appearance, status pill, mode chips, tiered memory panel, floating plan todo card, in-composer cards); TTS upgraded to IndexTTS-2.5; **Lecture Mode (class-note capture) P0–P4 complete — standalone macOS-capable profile, zero Python, full-screen UI with a 250-symbol math palette, gatekeeper-checked handoff importer**; 513 unit-test assertions green (23 files).
+> **状态 / Status**: M0–M6 engine + M5 frontend delivered; curriculum (Modulhandbuch) plugin, i18n (en), multi-model ports (openai responses/completions + anthropic messages) added; security hardening done; memory/persona enhanced (borrowing Cyrene ideas: typed conflict, write-gate, DMAE activation lifecycle, mood/relationship cue, live-role + stable/dynamic persona; borrowing ripples-of-aion ideas: fact timeline with valid_from/valid_until, evolution-vs-conflict, autoDream idle consolidation into a separate insights store, canonical attribute normalization, recall write throttle, LLM salvage parsing); frontend enhanced (Cyrene borrow: tabbed settings+appearance, status pill, mode chips, tiered memory panel, floating plan todo card, in-composer cards); TTS upgraded to IndexTTS-2.5; **Lecture Mode (class-note capture) P0–P4 complete — standalone macOS-capable profile, zero Python, full-screen UI with a 250-symbol math palette, gatekeeper-checked handoff importer**; **Übungen (exercise mode) done 2026-10 — PDF homework import → manual LLM check → editable answers → mistake book + worldbook → merged submission PDF (KaTeX-rendered), zero Python on mac**; 689 unit-test assertions green (30 files).
 
 ---
 
@@ -38,6 +38,7 @@ Built on [DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.2.0-rc.2`) a
 | i18n (zh/en) | ✅ 2026-08 | UI strings via locale service; personas per locale (`*.en.md`) |
 | Curriculum plugin (Modulhandbuch) | ✅ 2026-08 | Semester module summary injection + `curriculum_query` tool, WiSe/SoSe detection, gatekeeper link |
 | **Lecture Mode (class-note capture)** | ✅ P0–P4 done, 2026-10 | Standalone profile with its own **three-column workbench** (courses / notes / symbols+review), filling the viewport — not a skin over the main shell. In-class shorthand is typed **in the conversation**; the backend LLM normalizes formulas and **never shows the result** (protects active recall) → 5-step manual review (recall-first, Socratic, no direct answers) → summary only after step 4 → one-way handoff of progress/weak points. **250-symbol math palette** (12 groups, 30 slot-templates with Tab-navigation) pinned in the right column, copying to the clipboard. The `[我的理解]` / `[我的疑问]` blanks are **user-owned**: the model asks instead of writing them. Create/delete courses and lectures from the UI. **macOS-capable with zero Python**; own file store, deliberately isolated from the memory pipeline. |
+| **Übungen (exercise mode)** | ✅ 2026-10 | Import a weekly Übungsblatt PDF → problems split automatically → **you** write the answer (always editable, autosaved) → **manual** LLM check (never automatic, never hands you the solution) → wrong answers into a cross-sheet mistake book + `generated_exercise.json` in the physicist worldbook (hot-reloaded) → one merged submission PDF (original sheet + KaTeX-rendered solutions, via local Chrome/Edge) → lecture-compatible handoff back to the main agent. Every new sheet carries a **learning-progress digest** (last unfinished sheet, unmastered mistakes, lecture progress). Zero Python, macOS-capable, port 3084. Tools: 13 × `exercise_*`. |
 | Security hardening | ✅ 2026-08 | S1–S5 (sympy sandbox / clipboard / CORS / memory-http token) + C1–C26 (build / config / frontend / python / electron) |
 
 > Full milestone & acceptance details: `docs/v2-migration-plan.md` (§5). Project report: `docs/PROJECT_REPORT.md`.
@@ -75,6 +76,9 @@ npm start
 # Browser UI (alternative to the desktop shell)
 .\scripts\dsh.ps1 --profile aemeath --port 3081   # → http://127.0.0.1:3081
 
+# Übungen — exercise workbench as its own app (PDF in, submission PDF out)
+.\scripts\dsh.ps1 --profile exercise --port 3084  # → http://127.0.0.1:3084
+
 # Headless smoke test (no browser)
 .\scripts\dsh.ps1 --profile aemeath-run "Hi, introduce yourself"
 
@@ -85,20 +89,29 @@ python packages\benchmark\run_benchmark.py --limit 5
 curl.exe -H "Authorization: Bearer <token>" http://127.0.0.1:18895/memory/stats
 ```
 
-### 🍎 macOS — Lecture Mode only
+### 🍎 macOS — Lecture Mode + Übungen
 
 **There is no main agent on macOS, by design.** The physics Copilot (memory,
-persona, retriever, Electron shell) is Windows-only. On a Mac you run **Lecture
-Mode**, which is fully standalone and needs zero Python.
+persona, retriever, Electron shell) is Windows-only. On a Mac you run the two
+standalone apps — **Lecture Mode** and **Übungen (exercise mode)** — both fully
+standalone and zero-Python.
 
 ```bash
 cd ~/aemeath-dmi-agent
-./lecture-launch.command        # or double-click it in Finder
+./lecture-launch.command        # class notes (port 3083) — double-click works too
+./exercise-launch.command       # homework: import PDF, solve, submit (port 3084)
 ```
 
-📖 **Full guide: [使用说明-课堂模式-macOS.md](使用说明-课堂模式-macOS.md)**
-covers startup (and why you must use `.command`, not `.sh`), macOS's missing
-Node in PATH, the daily workflow, where data lives, and troubleshooting.
+> Both launchers find Node themselves (Homebrew / nvm / volta / fnm and the
+> `.command`-vs-`.sh` trap are handled — see
+> [docs/lecture-frontend-pitfalls.md](docs/lecture-frontend-pitfalls.md)), and
+> both rebuild `lib/` when a source file is newer than the bundle.
+
+📖 **Full guides:**
+[使用说明-课堂模式-macOS.md](使用说明-课堂模式-macOS.md) (class notes) ·
+[使用说明-习题模式-macOS.md](使用说明-习题模式-macOS.md) (homework: import → solve → submit)
+Both cover startup (and why you must use `.command`, not `.sh`), macOS's missing
+Node in PATH, the daily workflow, where data lives, configuration, and troubleshooting.
 
 Equivalent manual install steps (bash):
 
@@ -137,6 +150,7 @@ cd app && npm install
 ```
 packages/            # v2 plugin monorepo (common/worldbook/memory/retriever/workflow/curriculum/lecture/benchmark/py-services/ui)
 packages/lecture     # Lecture Mode: in-class capture → backend-only processing → 5-step post-lecture review (standalone profile, macOS-capable, zero Python)
+packages/exercise    # Übungen: PDF homework import → editable answers → manual LLM check → mistake book + worldbook → merged submission PDF (port 3084, macOS-capable, zero Python)
 packages/py-services # v1 Python microservices → MCP servers (sympy/vision/tts/control, zero-dep mcp_core)
 profiles/            # dsh profiles (aemeath = Web main, aemeath-run = one-shot/benchmark, lecture = class mode)
 scripts/dsh.ps1      # dsh wrapper (project-local DSH_HOME + cwd + preset sync)
@@ -169,6 +183,34 @@ review** (you-recall-first → compare → targeted repair → candidates → co
 > See [`packages/lecture/dsh-plugin-lecture/README.md`](packages/lecture/dsh-plugin-lecture/README.md)
 > for setup, and [`docs/lecture-mode-plan.md`](docs/lecture-mode-plan.md) for the full design rationale.
 
+### Übungen (exercise mode)
+
+A companion workbench for the weekly problem sheets. **Its whole point is honesty about
+what you can do**: you write the answer yourself, and the model is only allowed to say
+*where* it breaks — never to hand you the solution.
+
+| Aspect | Design |
+|---|---|
+| Import | Drop the sheet PDF in → `pdfjs` extracts text → problems split on `Aufgabe 1` / `1.` (sub-parts `a)` stay inside); scanned sheets fall back to "fill the statement in yourself" instead of failing |
+| Solving | Answer editor with live KaTeX preview, autosave (900 ms / on blur), **always editable**; changing the answer marks older checks `stale` instead of deleting them |
+| Check | **Manual only** (button / `exercise_check`). Returns verdict + which step is wrong + Socratic hints + "what to verify next". Runs on the **global dsh LLM** — same provider, model and credentials as the main agent (no separate API key/model to configure). Truncated model output is repair-parsed, and a parse failure is recorded as `error` — never as "your answer is wrong" |
+| Mistakes | Cross-sheet mistake book (`_mistakes.json`) with your one-line lesson per entry; `mastered` toggles; auto-filled when a check says `wrong`/`partial` |
+| Knowledge | Lessons/mistakes become worldbook entries in the physicist library (`generated_exercise.json`), hot-reloaded ≤3 s — so the Copilot can say "you fell for this before" |
+| Handoff | **Reuses lecture's handoff**: schema extends `handoffSchema`, same `writeHandoff`; direction is one-way, received with the gatekeeper (`dry_run` by default) |
+| Submission | Solutions page (KaTeX rendered server-side, fonts inlined) merged with the original sheet via `pdf-lib` → **one PDF** for the Übungsbetrieb; internal verdicts are print-hidden |
+| Progress | Every new sheet gets a `progress_digest`: last unfinished sheet, answered/checked counts, unmastered top topics, lecture review progress |
+
+```powershell
+.\scripts\dsh.ps1 --profile exercise --port 3084   # standalone workbench
+```
+
+> Tools: `exercise_list` / `exercise_new_sheet` / `exercise_open` / `exercise_problem` /
+> `exercise_save_answer` / `exercise_check` / `exercise_collect_mistake` / `exercise_lessons` /
+> `exercise_sync_worldbook` / `exercise_build_submission` / `exercise_progress` /
+> `exercise_export_handoff` / `exercise_import_handoff`.
+> Full design + verification log: [`docs/exercise-mode-plan.md`](docs/exercise-mode-plan.md).
+> macOS setup walkthrough: [`使用说明-习题模式-macOS.md`](使用说明-习题模式-macOS.md).
+
 ### Testing
 
 ```bash
@@ -178,10 +220,11 @@ npm test -w @aemeath/dsh-plugin-memory       # 193 assertions (gatekeeper/BM25-c
 npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
-npm test -w @aemeath/dsh-plugin-lecture      # 257 (markers/storage/traversal-guard/BOM + transcriber/5-step-review/D4-gate/D12-guard/notation + tool-chain regression + math-symbol palette + P3 no-leak contract + P4 handoff importer + workbench/standalone-mode/delete/create-course/stale-detection regression)
+npm test -w @aemeath/dsh-plugin-lecture      # 282 (markers/storage/traversal-guard/BOM + transcriber/5-step-review/D4-gate/D12-guard/notation + tool-chain regression + math-symbol palette + P3 no-leak contract + P4 handoff importer + workbench/standalone-mode/delete/create-course/stale-detection regression)
+npm test -w @aemeath/dsh-plugin-exercise     # 151 (types+digest / PDF text extraction + problem split / file store / submission HTML / lecture-compatible handoff + worldbook / manual-check parsing + HTTP routing)
 npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views: list/timeline/graph)
-# Total: 513 unit-test assertions (all green, 23 files)
-# (memory 193 + lecture 257 + ui 12 + common 15 + worldbook 10 + retriever 4 + workflow 13 + curriculum 9)
+# Total: 689 unit-test assertions (all green, 30 files — measured 2026-10-20)
+# (lecture 282 + memory 193 + exercise 151 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4)
 ```
 
 ### Roadmap (next)
@@ -223,6 +266,7 @@ npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views:
 | i18n（中/英） | ✅ 2026-08 | UI 文案走 locale 服务；人格按 locale 加载（`*.en.md`） |
 | curriculum 课程插件（Modulhandbuch） | ✅ 2026-08 | 学期模块摘要常驻注入 + curriculum_query 工具，WiSe/SoSe 学期判断，gatekeeper 联动 |
 | **Lecture Mode 课堂记录模式** | ✅ P0–P4 已完成，2026-10 | 独立 profile：课堂速记采集 → **只落后端**的 LLM 加工（不回显，保护主动回忆）→ 五步人工复盘（你先说 / 苏格拉底式引导 / 不直接给答案）→ 第 4 步后才生成摘要 → 单向握手进度与短板。**全屏界面**（`shell.overlay`）+ **250 符号数学边栏**（30 个带插槽模板，Tab 跳转）；握手接收侧**过守门员**。**macOS 可用且零 Python**；自带文件存储，刻意与记忆管线隔离。 |
+| **Übungen 习题模式** | ✅ 2026-10 | 导入每周 Übungsblatt PDF → 自动拆题 → **自己写答案**（永远可改、自动保存）→ **手动**触发 LLM 检查（绝不自动、不给完整答案）→ 错题进跨套题错题本 + physicist 馆 `generated_exercise.json`（热重载 ≤3s）→ 原卷 + KaTeX 渲染解答合并成**一份提交 PDF**（本机 Chrome/Edge 打印）→ 与 lecture 同形的握手回主 agent。每开一套新题自动附**学习进度摘要**（上次没做完哪套 / 未掌握错题 / 课堂复盘进度）。零 Python、macOS 可用、端口 3084，13 个 `exercise_*` 工具。 |
 | 安全加固 | ✅ 2026-08 | S1–S5（sympy 沙箱/剪贴板/CORS/记忆端点 token）+ C1–C26（构建/配置/前端/Python/Electron） |
 
 > 完整里程碑与验收见 `docs/v2-migration-plan.md`（§5）；全项目报告见 `docs/PROJECT_REPORT.md`。
@@ -260,6 +304,9 @@ npm start
 # 浏览器 UI（替代桌宠壳）
 .\scripts\dsh.ps1 --profile aemeath --port 3081   # → http://127.0.0.1:3081
 
+# Übungen 习题模式（独立 app：PDF 进 → 提交 PDF 出）
+.\scripts\dsh.ps1 --profile exercise --port 3084  # → http://127.0.0.1:3084
+
 # headless 冒烟测试（无需浏览器）
 .\scripts\dsh.ps1 --profile aemeath-run "你好，自我介绍"
 
@@ -282,6 +329,25 @@ cd app && npm install
 ```
 
 > `scripts/dsh.ps1` 固定项目内 DSH_HOME（`.dsh-home/`，gitignored），不干扰全局 web profile。API Key：Web「设置 → API 密钥」填写，或写入 `.dsh-home/.credentials.yaml`，缺省回退环境变量 `DEEPSEEK_API_KEY`。
+
+### 🍎 macOS
+
+mac 上**没有主 agent（设计如此）**，只有两个独立 app，都零 Python：
+
+```bash
+cd ~/aemeath-dmi-agent
+./lecture-launch.command     # 课堂记录（3083）
+./exercise-launch.command    # 习题模式（3084）：导入 PDF / 做题 / 提交
+```
+
+- 入口脚本自己找 Node（Homebrew / nvm / volta / fnm），并处理 macOS 的
+  「双击 `.sh` 不读 `~/.zshrc`」坑 —— 所以**用 `.command`，不要双击 `.sh`**
+- 首次运行自动：装依赖 → 构建 → 把 `profiles/<name>` 链到 `$DSH_HOME/profiles/`
+  → 逐包链 `@aemeath/*` 与 `@deepseek-ai`（两套模块实例会让工具调度器报错）
+- 提交 PDF 需要本机 Chrome/Edge；没有时用「打开打印页」→ ⌘P → 存储为 PDF
+- API Key：界面左下「设置 → Models」，或写 `$DSH_HOME/.credentials.yaml`
+
+📖 详细说明：[课堂模式](使用说明-课堂模式-macOS.md) · [习题模式](使用说明-习题模式-macOS.md)
 
 ### 技术栈
 
@@ -307,6 +373,7 @@ cd app && npm install
 ```
 packages/            # v2 插件 monorepo（common/worldbook/memory/retriever/workflow/curriculum/lecture/benchmark/py-services/ui）
 packages/lecture     # Lecture Mode：课堂采集 → 只落后端的加工 → 五步课后复盘（独立 profile，macOS 可用，零 Python）
+packages/exercise    # Übungen 习题模式：PDF 作业导入 → 可编辑答案 → 手动 LLM 检查 → 错题本 + worldbook → 合并提交 PDF（端口 3084，macOS 可用，零 Python）
 packages/py-services # v1 Python 微服务 → MCP server（sympy/vision/tts/control，mcp_core 零依赖）
 profiles/            # dsh profile（aemeath=Web 主 profile，aemeath-run=一次性/基准，lecture=课堂模式）
 scripts/dsh.ps1      # dsh 包装脚本（项目内 DSH_HOME + cwd + preset 同步）
@@ -338,6 +405,33 @@ electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留�
 > 安装见 [`packages/lecture/dsh-plugin-lecture/README.md`](packages/lecture/dsh-plugin-lecture/README.md)；
 > 完整设计论证见 [`docs/lecture-mode-plan.md`](docs/lecture-mode-plan.md)。
 
+### Übungen（习题模式）
+
+一个给"每周一张 Übungsblatt"用的工作台。**它的全部意义在于对你诚实**：
+答案是你自己写的，模型只许说*哪一步不成立*，**绝不许**把解法给你。
+
+| 方面 | 设计 |
+|---|---|
+| 导入 | 把作业 PDF 拖进来 → `pdfjs` 抽文本 → 按 `Aufgabe 1` / `1.` 拆题（子问 `a)` 留在父题内）；扫描件不报错，改成"题干你自己补" |
+| 做题 | 答案编辑器 + 实时 KaTeX 预览 + 自动保存（900ms / 失焦），**永远可改**；改动会把旧检查标 `stale`（不删除历史） |
+| 检查 | **只能手动**（按钮 / `exercise_check`）。返回结论 + 哪一步错 + 苏格拉底式提问 + "下一步验证什么"。走**全局 dsh LLM** —— 与主 agent 同一个 provider、模型和凭据（**不需要**单独配 API key / 模型）。模型输出被截断时会抢救解析；解析失败记为 `error`，**绝不**记成"你答错了" |
+| 错题 | 跨套题错题本（`_mistakes.json`），每条带**你自己写的一句话教训**；`mastered` 可切换；检查判 `wrong`/`partial` 时自动收录 |
+| 知识 | 教训/经验写成 physicist 馆的世界书条目（`generated_exercise.json`），热重载 ≤3s —— 于是爱弥斯能在同类题上说"你上次在这里栽过" |
+| 握手 | **直接借用 lecture 的 handoff**：schema 继承 `handoffSchema`、同一个 `writeHandoff`；方向单向，接收侧**必过守门员**（缺省 `dry_run`） |
+| 提交 | 解答页（服务端 KaTeX 渲染 + 字体内联）用 `pdf-lib` 与原卷合并 → **一份 PDF** 交给 Übungsbetrieb；内部 verdict 在打印时隐藏 |
+| 进度 | 每开一套新题自动附 `progress_digest`：上次没做完哪套、已答/已检查、未掌握的高频主题、课堂复盘进度 |
+
+```powershell
+.\scripts\dsh.ps1 --profile exercise --port 3084   # 独立习题工作台
+```
+
+> 工具：`exercise_list` / `exercise_new_sheet` / `exercise_open` / `exercise_problem` /
+> `exercise_save_answer` / `exercise_check` / `exercise_collect_mistake` / `exercise_lessons` /
+> `exercise_sync_worldbook` / `exercise_build_submission` / `exercise_progress` /
+> `exercise_export_handoff` / `exercise_import_handoff`。
+> 完整设计与验证记录：[`docs/exercise-mode-plan.md`](docs/exercise-mode-plan.md)。
+> macOS 配置与使用：[`使用说明-习题模式-macOS.md`](使用说明-习题模式-macOS.md)。
+
 ### 测试
 
 ```bash
@@ -347,10 +441,11 @@ npm test -w @aemeath/dsh-plugin-memory       # 193 （守门员/BM25 冲突/引�
 npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
-npm test -w @aemeath/dsh-plugin-lecture      # 257（标记语法/存储/穿越防护/BOM + 转录员/五步复盘/D4/D12/记号约定 + 工具链回归 + 符号边栏 + P3 不泄漏契约 + P4 握手接收 + 三栏工作台/独立界面模式/删除/新建课程/陈旧检测回归）
+npm test -w @aemeath/dsh-plugin-lecture      # 282（标记语法/存储/穿越防护/BOM + 转录员/五步复盘/D4/D12/记号约定 + 工具链回归 + 符号边栏 + P3 不泄漏契约 + P4 握手接收 + 三栏工作台/独立界面模式/删除/新建课程/陈旧检测回归）
+npm test -w @aemeath/dsh-plugin-exercise     # 151（types+digest / PDF 抽文本 + 拆题 / 文件存储 / 提交 HTML / 借用 lecture 的握手 + worldbook / 手动检查解析 + HTTP 路由）
 npm test -w @aemeath/dsh-plugin-ui           # 12 （记忆工作区代理视图：列表/时间轴/图谱）
-# 合计：513 项断言（全绿，23 个测试文件）
-# （memory 193 + lecture 257 + ui 12 + common 15 + worldbook 10 + retriever 4 + workflow 13 + curriculum 9）
+# 合计：689 项断言（全绿，30 个测试文件，2026-10-20 实测）
+# （lecture 282 + memory 193 + exercise 151 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4）
 ```
 
 ### 下一步

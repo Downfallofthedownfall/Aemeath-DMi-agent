@@ -1,0 +1,167 @@
+# ============================================================
+# profiles/exercise/cordis.patch.yml — Übungen（习题模式）
+#
+# 定位（docs/exercise-mode-plan.md）：
+#   · lecture 的姊妹模块：同一套文件存储 / 前端语言 / 单向握手
+#   · 但**不隔离** memory 与 worldbook：习题的产物（教训、薄弱点、进度）
+#     本来就该进主记忆与知识库 —— 走的是"单向握手 + 守门员"，不是直接写
+#   · 零 Python：mac/Windows 都能跑（PDF 解析用 pdfjs，PDF 生成用本机浏览器）
+#   · LLM（检查用）**不单独配置**：走全局 dsh 的 provider / model / 凭据，
+#     与主 agent 完全同一套（详见插件 index.ts 的 LLM 通道注释）
+#
+# 用法：
+#   .\scripts\dsh.ps1 --profile exercise --port 3084
+#   ./exercise-launch.command            # mac（或 Windows 的浏览器版）
+#
+# 注：web-app bundle 已提供 storage 三件套与 Web 层，
+#     故本文件**不再** insert storage（那是 headless profile 才需要的）。
+# ============================================================
+
+# —— agent preset 注册表：习题用 physicist 人格 ——
+- id: agent-preset-registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
+  config:
+    default: physicist
+    selectedDefault: physicist
+
+# —— 声明 physicist preset 本体（不声明的话创建会话会报 preset not found）——
+- insert:
+    - id: preset-physicist
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: physicist
+        name: 爱弥斯-拉贝尔学部学霸
+        description: 物理学习模式：引导式讲解、推导、复盘（习题用）
+        order: 20
+        plugins:
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
+# —— Aemeath 插件：persona + 前端设计语言 + 习题 ——
+- insert:
+    - id: aemeath-common
+      name: '@aemeath/dsh-plugin-common'
+      config:
+        defaultPreset: 'physicist'
+        oocRulesEnabled: true
+        oocLlmEnabled: false
+        personas:
+          physicist:
+            file: 'profiles/aemeath/personas/physicist.md'
+          aemeath:
+            file: 'profiles/aemeath/personas/aemeath.md'
+        oocRules:
+          physicist:
+            forbidPatterns:
+              - '嘤嘤嘤'
+              - '人家'
+              - '好哒'
+              - '喵~'
+              - 'Ciallo'
+          aemeath:
+            forbidPatterns:
+              - '根据研究'
+              - '科学表明'
+              - '数据显示'
+
+    # —— 前端 UI 插件（aemeath 设计语言；browser 半区经 dsh.client 进入 __DSH_BOOT__）——
+    - id: aemeath-ui
+      name: '@aemeath/dsh-plugin-ui'
+      config:
+        locale: ''
+        ttsEnabled: false
+        ttsVolume: 1
+
+    # —— 习题插件（host：工具 + HTTP 桥 + PDF 管线；client：三栏工作台）——
+    - id: aemeath-exercise
+      name: '@aemeath/dsh-plugin-exercise'
+      config:
+        defaultPreset: 'physicist'
+        enabled: true
+        # ⚠️ 必须为 true：这个 profile **就是**习题独立界面。
+        #    纯浏览器下客户端拿不到 Electron 标记 / URL 标记（认证 303 会丢 query），
+        #    只能靠 host 在 index.html 注入的全局量判定（同 lecture 的教训）。
+        standalone: true
+        # D2：数据放 physicist 里 → retriever 可直接消费
+        dataDir: 'packages/library/physicist/exercises'
+        # 握手导出目录（改成局域网共享目录即可；空 = dataDir/handoff）
+        handoffDir: 'packages/library/physicist/exercises/handoff'
+        # 错题/经验写进 worldbook 物理馆（热重载 ≤3s 生效）
+        worldbookLibraryDir: 'packages/worldbook/data/physicist'
+        # 只读 lecture 数据，用于"开新题时附学习进度"
+        lectureDataDir: 'packages/library/physicist/lectures'
+        autoCollectMistakes: true
+        studentName: ''
+        includeSourcePdf: true
+        submissionOrder: 'sheet-first'
+        # 空 = 自动发现 Chrome/Edge/Chromium（Windows Edge 一定在）
+        chromePath: ''
+
+# —— 重新启用文件系统工具（题目/答案要落盘）——
+- id: tool-fs
+  disabled: false
+- id: tool-fs-search
+  disabled: false
+
+# —— 重新启用 skill 机制（与主 profile 一致的联网搜索行为指南）——
+- id: skill-filesystem
+  disabled: false
+- id: tool-skill
+  disabled: false
+
+# —— 禁用与做题无关的官方 UI 插件（保持界面精简）——
+- id: ui-agent-preset
+  disabled: true
+- id: ui-jobs
+  disabled: true
+- id: ui-skill
+  disabled: true
+- id: ui-subagent
+  disabled: true
+- id: ui-goal
+  disabled: true
+- id: ui-workflow-run
+  disabled: true
+- id: ui-plan
+  disabled: true
+- id: ui-trajectory
+  disabled: true
+- id: ui-deliverables
+  disabled: true
+- id: ui-cordis
+  disabled: true
+- id: ui-settings-plugin-inventory
+  disabled: true
+
+# —— 外观：与主 agent 保持一致 ——
+#    dsh **不跨 profile 读** ui-theme 配置：两个 profile 各持一份。
+#    主 agent（profiles/aemeath）现在设的是 dark；这里跟它一致，
+#    否则习题界面会是另一种亮暗，看起来像两个不同的产品。
+#    ⚠️ 改外观时两处一起改（或都用 system 跟随系统）。
+#    颜色本身（品牌玫粉 / 语义色）不在这里配 —— 那些由 aemeath-ui 的
+#    PALETTE_OVERRIDES 提供，习题界面只引用 --dsw-alias-* token。
+- id: ui-theme
+  name: "@deepseek-ai/dsh-client-ui-theme"
+  config:
+    preference: dark
+
+# —— 权限预设（与主 profile 一致）——
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: ask
+
+# —— 恢复网络搜索工具 ——
+- id: tool-web
+  disabled: false
