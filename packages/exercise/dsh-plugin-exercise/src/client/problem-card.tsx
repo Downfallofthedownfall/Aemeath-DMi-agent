@@ -1,11 +1,12 @@
 // ============================================================
-// client/problem-card.tsx — 一道题的卡片（题干 + 解答 + 检查结果）
+// client/problem-card.tsx — 一道题的卡片（题干 + 解答 + 检查）
 //
-// 为什么题干也可编辑：
-//   PDF 抽文本对**公式为主的题**并不可靠（LaTeX 的数学字体常常抽不出可读文本），
-//   用户必须能补/改题干，否则整套流程在真机上第一张扫描版作业就卡死。
-//   因此题干改动会落回 sheet.json（sheet.json 是唯一事实源），
-//   并且可以随时用 source.md 重新拆题（resplit 会按题号保留已有答案）。
+// 外观照 lecture 的笔记卡（.lec-problem 用的是同一批 --aem-* token）：
+//   卡片圆角/阴影/边框与课堂笔记一致；题干放进 .lec-statement（自己滚，
+//   长题不会把解答框顶出屏幕）；状态用 .lec-badge[data-kind] 表达。
+//
+// 题干可编辑：PDF 抽文本对公式为主的作业并不可靠，用户必须能改/补；
+// 改完可以「LLM 重新分块」（按题号保留已写答案）。
 // ============================================================
 
 import { useState } from 'react';
@@ -51,7 +52,6 @@ export function ProblemCard({
   const [savingText, setSavingText] = useState(false);
 
   const status = problem.status;
-  const cardClass = status === 'needs_fix' ? 'ex-problem-card needs-fix' : status === 'checked' || status === 'done' ? 'ex-problem-card checked' : 'ex-problem-card';
 
   const saveText = async (): Promise<void> => {
     setSavingText(true);
@@ -67,25 +67,25 @@ export function ProblemCard({
   };
 
   return (
-    <div className={cardClass} id={`ex-problem-${problem.id}`}>
-      <div className="ex-problem-head">
-        <span className="ex-problem-label">{problem.label || problem.id}</span>
-        {problem.points != null && <span className="ex-chip points">{problem.points} P</span>}
-        <span className={`ex-chip ${status}`}>{STATUS_LABEL[status] ?? status}</span>
-        {problem.page > 0 && <span className="ex-chip todo">原卷第 {problem.page} 页</span>}
-        {problem.answer_edited_by === 'agent' && <span className="ex-chip accent">agent 代笔</span>}
-        {problem.title && <span className="ex-problem-title">{problem.title}</span>}
-        <span className="ex-problem-head-actions">
-          <button type="button" className="ex-btn ex-btn-sm ex-btn-ghost" onClick={() => setEditing((v) => !v)}>
+    <div className="lec-problem" data-state={status} id={`lec-problem-${problem.id}`}>
+      <div className="lec-problem-head">
+        <span className="lec-problem-no">{problem.label || problem.id}</span>
+        {problem.points != null && <span className="lec-badge" data-kind="points">{problem.points} P</span>}
+        <span className="lec-badge" data-kind={status}>{STATUS_LABEL[status] ?? status}</span>
+        {problem.page > 0 && <span className="lec-badge" data-kind="todo">原卷第 {problem.page} 页</span>}
+        {problem.answer_edited_by === 'agent' && <span className="lec-badge">agent 代笔</span>}
+        {problem.title && <span className="lec-problem-title">{problem.title}</span>}
+        <span className="lec-problem-actions">
+          <button type="button" className="lec-btn lec-btn-ghost" onClick={() => setEditing((v) => !v)}>
             {editing ? '取消' : '改题干'}
           </button>
           <button
             type="button"
-            className="ex-btn ex-btn-sm ex-btn-ghost"
+            className="lec-del"
+            title="删除这道题"
             onClick={() => {
               if (window.confirm(`删除 ${problem.label || problem.id}？（答案与检查记录一并删除）`)) onDelete();
             }}
-            title="删除这道题"
           >
             ✕
           </button>
@@ -94,17 +94,23 @@ export function ProblemCard({
 
       {editing ? (
         <div>
-          <textarea className="ex-textarea" value={text} onChange={(e) => setText(e.currentTarget.value)} spellCheck={false} />
-          <div className="ex-answer-tools">
-            <button type="button" className="ex-btn ex-btn-primary ex-btn-sm" onClick={() => void saveText()} disabled={savingText}>
+          <textarea className="lec-textarea" value={text} onChange={(e) => setText(e.currentTarget.value)} spellCheck={false} />
+          <div className="lec-toolrow">
+            <button type="button" className="lec-btn" onClick={() => void saveText()} disabled={savingText}>
               {savingText ? '保存中…' : '保存题干'}
             </button>
-            <span className="ex-saved">支持 markdown 与 $公式$</span>
+            <span className="lec-hint" style={{ margin: 0 }}>
+              支持 markdown 与 $公式$
+            </span>
           </div>
         </div>
       ) : (
-        <div className="ex-problem-text">
-          {problem.text.trim() ? <MathText text={problem.text} compact /> : <span className="ex-empty">（题干缺失 —— 点「改题干」补上）</span>}
+        <div className="lec-statement">
+          {problem.text.trim() ? (
+            <MathText text={problem.text} compact />
+          ) : (
+            <span className="lec-hint">（题干缺失 —— 点「改题干」补上）</span>
+          )}
         </div>
       )}
 
@@ -119,8 +125,8 @@ export function ProblemCard({
       />
 
       {mistakeCount > 0 && (
-        <div className="ex-check-history" style={{ marginTop: 8 }}>
-          已加入错题本（{mistakeCount} 条记录）—— 可在右栏「错题本」补写教训。
+        <div className="lec-hint" style={{ marginTop: 8 }}>
+          已加入错题本（{mistakeCount} 条记录）—— 右栏「错题本」里补写教训。
         </div>
       )}
 

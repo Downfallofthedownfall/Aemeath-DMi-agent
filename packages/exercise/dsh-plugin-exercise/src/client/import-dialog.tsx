@@ -1,9 +1,11 @@
 // ============================================================
 // client/import-dialog.tsx — 导入 Übungsblatt（PDF）
 //
-// 流程：选/拖 PDF → 填课程与截止日 → POST import → host 用 pdfjs 抽文本 + 拆题。
-// 抽不出文本时（扫描版/纯公式）**不报错**，而是建一套空题集并把
-// `needs_manual_text` 置真，界面提示"手补题干" —— 这比"导入失败"有用得多。
+// 外观与 lecture 的表单一致（.lec-modal / .lec-field / .lec-input / .lec-drop）。
+// 流程：选/拖 PDF → 填课程与截止日 → POST import。
+//
+// 导入侧现在**默认用 LLM 拆题**（用户反馈：LaTeX 排版的 PDF 文本用正则
+// 基本切不准）。LLM 不可用时 host 会退回规则分块，界面把提示原样显示出来。
 // ============================================================
 
 import { useState } from 'react';
@@ -59,12 +61,9 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
       setWarnings(w);
       onImported(cid, r.sheet, w);
       onToast(
-        w.length
-          ? `已导入：${r.sheet.problems.length} 题（有 ${w.length} 条提示，见界面顶部）`
-          : `已导入：${r.sheet.problems.length} 题`,
+        w.length ? `已导入：${r.sheet.problems.length} 题（有 ${w.length} 条提示）` : `已导入：${r.sheet.problems.length} 题`,
       );
       setBusy(false);
-      // 有提示时留在弹层里让人读完；没提示直接关
       if (!w.length) onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -73,40 +72,43 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
   };
 
   return (
-    <div className="ex-modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="ex-modal">
+    <div className="lec-modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="lec-modal">
         <h2>导入 Übungsblatt</h2>
-        <p>PDF 会抽出文字并按「Aufgabe 1 / 1.」拆题；公式建议自己在题干里用 $...$ 补。</p>
+        <p>PDF 会抽出文字，**由 LLM 拆成题目**（识别不了就退回规则分块）。公式可在题干里用 $...$ 补。</p>
 
-        <div className="ex-field">
-          <label>课程标识（英文短名，会作为文件夹名）</label>
-          <input className="ex-input" value={courseId} onChange={(e) => setCourseId(e.currentTarget.value)} placeholder="physik-1" />
+        <div className="lec-field">
+          <div className="lec-label">
+            课程标识<span className="lec-req">*</span>（英文短名，会作为文件夹名）
+          </div>
+          <input className="lec-input" value={courseId} onChange={(e) => setCourseId(e.currentTarget.value)} placeholder="physik-1" />
         </div>
 
         <div style={{ display: 'flex', gap: 8 }}>
-          <div className="ex-field" style={{ flex: 1 }}>
-            <label>课程全名（可留空）</label>
-            <input className="ex-input" value={courseTitle} onChange={(e) => setCourseTitle(e.currentTarget.value)} placeholder="Physik I" />
+          <div className="lec-field" style={{ flex: 1 }}>
+            <div className="lec-label">课程全名（可留空）</div>
+            <input className="lec-input" value={courseTitle} onChange={(e) => setCourseTitle(e.currentTarget.value)} placeholder="Physik I" />
           </div>
-          <div className="ex-field" style={{ width: 110 }}>
-            <label>第几套</label>
-            <input className="ex-input" value={number} onChange={(e) => setNumber(e.currentTarget.value)} placeholder="自动" />
+          <div className="lec-field" style={{ width: 110 }}>
+            <div className="lec-label">第几套</div>
+            <input className="lec-input" value={number} onChange={(e) => setNumber(e.currentTarget.value)} placeholder="自动" />
           </div>
         </div>
 
         <div style={{ display: 'flex', gap: 8 }}>
-          <div className="ex-field" style={{ flex: 1 }}>
-            <label>主题（可留空）</label>
-            <input className="ex-input" value={title} onChange={(e) => setTitle(e.currentTarget.value)} placeholder="Mechanik" />
+          <div className="lec-field" style={{ flex: 1 }}>
+            <div className="lec-label">主题（可留空）</div>
+            <input className="lec-input" value={title} onChange={(e) => setTitle(e.currentTarget.value)} placeholder="Mechanik" />
           </div>
-          <div className="ex-field" style={{ width: 160 }}>
-            <label>截止日</label>
-            <input className="ex-input" type="date" value={due} onChange={(e) => setDue(e.currentTarget.value)} />
+          <div className="lec-field" style={{ width: 160 }}>
+            <div className="lec-label">截止日</div>
+            <input className="lec-input" type="date" value={due} onChange={(e) => setDue(e.currentTarget.value)} />
           </div>
         </div>
 
         <div
-          className={hot ? 'ex-drop hot' : 'ex-drop'}
+          className="lec-drop"
+          data-hot={hot ? '1' : '0'}
           onDragOver={(e) => {
             e.preventDefault();
             setHot(true);
@@ -119,12 +121,12 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
             if (f && f.name.toLowerCase().endsWith('.pdf')) setFile(f);
             else if (f) setError('只接受 PDF 文件');
           }}
-          onClick={() => document.getElementById('ex-pdf-input')?.click()}
+          onClick={() => document.getElementById('lec-pdf-input')?.click()}
         >
           {file ? `${file.name}（${Math.round(file.size / 1024)} KB）` : '把 PDF 拖到这里，或点击选择文件'}
         </div>
         <input
-          id="ex-pdf-input"
+          id="lec-pdf-input"
           type="file"
           accept="application/pdf,.pdf"
           style={{ display: 'none' }}
@@ -134,11 +136,11 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
           }}
         />
 
-        {error && <div className="ex-error" style={{ marginTop: 10 }}>{error}</div>}
+        {error && <div className="lec-warn" style={{ marginTop: 10 }}>{error}</div>}
         {warnings.length > 0 && (
-          <div className="ex-warn-list">
+          <div className="lec-warnbox">
             导入提示：
-            <ul>
+            <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
               {warnings.map((w, i) => (
                 <li key={i}>{w}</li>
               ))}
@@ -146,11 +148,11 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
           </div>
         )}
 
-        <div className="ex-modal-actions">
-          <button type="button" className="ex-btn" onClick={onClose} disabled={busy}>
+        <div className="lec-modal-actions">
+          <button type="button" className="lec-btn lec-btn-ghost" onClick={onClose} disabled={busy}>
             {warnings.length ? '完成' : '取消'}
           </button>
-          <button type="button" className="ex-btn ex-btn-primary" onClick={() => void submit()} disabled={busy}>
+          <button type="button" className="lec-btn" onClick={() => void submit()} disabled={busy}>
             {busy ? '解析中…' : '导入'}
           </button>
         </div>

@@ -173,7 +173,13 @@ export interface ExerciseHttpDeps {
   /** POST add_problem / delete_problem / resplit */
   onAddProblem(input: { courseId: string; sheetId: string; label?: string; text?: string }): Promise<{ ok: boolean; error?: string; sheet?: unknown }>;
   onDeleteProblem(input: { courseId: string; sheetId: string; problemId: string }): Promise<{ ok: boolean; error?: string; sheet?: unknown }>;
-  onResplit(input: { courseId: string; sheetId: string }): Promise<{ ok: boolean; error?: string; sheet?: unknown }>;
+  onResplit(input: { courseId: string; sheetId: string; useLlm?: boolean }): Promise<{
+    ok: boolean;
+    error?: string;
+    sheet?: unknown;
+    used_llm?: boolean;
+    note?: string;
+  }>;
 
   /** POST check（手动触发的 LLM 检查） */
   onCheck(input: { courseId: string; sheetId: string; problemId: string }): Promise<{ ok: boolean; error?: string; check?: unknown; sheet?: unknown }>;
@@ -476,7 +482,8 @@ export async function handleExerciseHttp(
             jsonError(res, 400, 'course_id/sheet_id required');
             return;
           }
-          const r = await deps.onResplit({ courseId, sheetId });
+          // use_llm 缺省 true：规则分块对 LaTeX 排版基本没用（用户实测）
+          const r = await deps.onResplit({ courseId, sheetId, useLlm: parsed.use_llm !== false });
           json(res, r.ok ? 200 : 400, r);
           return;
         }

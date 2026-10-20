@@ -41,6 +41,7 @@ import {
 } from './store.js';
 import { extractPdfText, type PdfExtractResult } from './pdf-text.js';
 import { splitProblems, type SplitProblem } from './split.js';
+import { segmentWithLlm } from './llm-split.js';
 import {
   buildProgressDigest,
   daysUntil,
@@ -456,6 +457,34 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     return text.trim();
   };
 
+  /**
+   * 切题：**先 LLM，再规则**。
+   *
+   * 用户实测：LaTeX 排版的 PDF 抽出来的文本用正则切基本没救
+   * （题号与正文粘连、公式碎成散字母、分页把题劈开）。
+   * 所以默认交给模型；模型不可用/输出不可信时退回规则，并把原因写进导入提示。
+   */
+  const splitProblemsFor = async (
+    text: string,
+    warnings: string[],
+  ): Promise<{ parts: SplitProblem[]; by: 'llm' | 'rules' }> => {
+    const trimmed = text.trim();
+    if (!trimmed) return { parts: [], by: 'rules' };
+
+    const seg = await segmentWithLlm(trimmed, askLlm);
+    if (seg.ok) {
+      log(
+        `LLM 分块成功：${seg.problems.length} 题（覆盖率 ${Math.round((seg.coverage ?? 1) * 100)}%，${seg.parts} 段）`,
+      );
+      return { parts: seg.problems, by: 'llm' };
+    }
+    warn(`LLM 分块失败：${seg.error ?? '未知原因'}`);
+    warnings.push(`LLM 分块不可用（${seg.error ?? '未知原因'}）—— 已用规则分块，可能需要在界面里手动调整`);
+
+    const rules = splitProblems(trimmed);
+    return { parts: rules, by: 'rules' };
+  };
+
   /** 把 split 结果变成 Problem[]。 */
   const problemsFromSplit = (parts: readonly SplitProblem[]): Problem[] =>
     parts.map((p, i) => ({
@@ -535,9 +564,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       }
     }
 
-    const parts = text.trim() ? splitProblems(text) : [];
+    const segmented = await splitProblemsFor(text, warnings);
+    const parts = segmented.parts;
     if (text.trim() && parts.length === 0) {
-      warnings.push('没识别出题号（Aufgabe 1 / 1. 都试过）——整篇作为一道题导入，可手动拆');
+      warnings.push('没切出题目（LLM 与规则都没识别出题号）——整篇作为一道题导入，可手动拆');
     }
     let problems: Problem[] = problemsFromSplit(parts);
     if (!problems.length && text.trim()) {
@@ -556,6 +586,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       source_pdf: pdfBytes ? 'source.pdf' : '',
       source_pages: extracted?.pageCount ?? 0,
       import_mode: pdfBytes ? 'pdf' : 'manual',
+      split_by: problems.length ? segmented.by : 'manual',
       imported_at: now,
       needs_manual_text: !!pdfBytes && !text.trim(),
       progress_digest: '',
@@ -608,6 +639,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       source_pdf: '',
       source_pages: 0,
       import_mode: 'manual',
+      split_by: 'manual',
       imported_at: Date.now(),
       needs_manual_text: false,
       progress_digest: '',
@@ -717,16 +749,39 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     return { ok: true, sheet };
   };
 
-  /** 用 source.md 重新拆题（用户改了原文之后）。**保留已有答案**（按 label 对齐）。 */
-  const resplit = async (input: { courseId: string; sheetId: string }) => {
+  /**
+   * 用 source.md 重新分块（用户改了原文之后）。**保留已有答案**（按 label 对齐）。
+   *
+   * `useLlm` 缺省 true：LaTeX 排版抽出来的文本用规则切基本切不准，
+   * 所以界面上的「重新分块」默认走 LLM；想省 token 才用规则那一个按钮。
+   */
+  const resplit = async (input: { courseId: string; sheetId: string; useLlm?: boolean }) => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
     if (!sheet) return { ok: false, error: '题集不存在' };
     const text = store.readSourceText(input.courseId, input.sheetId);
-    if (!text?.trim()) return { ok: false, error: '没有原文存档（source.md），无法重新拆题' };
-    const parts = splitProblems(text);
-    if (!parts.length) return { ok: false, error: '原文里没识别出题号' };
+    if (!text?.trim()) return { ok: false, error: '没有原文存档（source.md），无法重新分块' };
+
+    let parts: SplitProblem[];
+    let usedLlm = false;
+    let note = '';
+    if (input.useLlm !== false) {
+      const seg = await segmentWithLlm(text, askLlm);
+      if (seg.ok) {
+        parts = seg.problems;
+        usedLlm = true;
+        log(`LLM 重新分块：${parts.length} 题（覆盖率 ${Math.round((seg.coverage ?? 1) * 100)}%）`);
+      } else {
+        warn(`LLM 重新分块失败：${seg.error ?? '未知原因'} → 退回规则`);
+        note = `LLM 分块不可用（${seg.error ?? '未知原因'}），已用规则`;
+        parts = splitProblems(text);
+      }
+    } else {
+      parts = splitProblems(text);
+    }
+    if (!parts.length) return { ok: false, error: '原文里没识别出题目（规则与 LLM 都没有结果）' };
+
     const fresh = problemsFromSplit(parts);
-    // 按 label 对齐旧答案（题号是最稳的锚点；PDF 重新导入也不该丢答案）
+    // 按 label 对齐旧答案（题号是最稳的锚点；重新分块也不该丢答案）
     let kept = 0;
     for (const p of fresh) {
       const old = sheet.problems.find((o) => o.label === p.label);
@@ -739,9 +794,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       }
     }
     sheet.problems = fresh;
+    sheet.split_by = usedLlm ? 'llm' : 'rules';
     store.writeSheet(input.courseId, sheet);
-    log(`重新拆题：${sheet.problems.length} 题（保留 ${kept} 题的答案）`);
-    return { ok: true, sheet };
+    log(`重新分块：${sheet.problems.length} 题（${usedLlm ? 'LLM' : '规则'}，保留 ${kept} 题的答案）`);
+    return { ok: true, sheet, used_llm: usedLlm, note };
   };
 
   // ============================================================
@@ -1730,6 +1786,33 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
+  ctx.tools.register(
+    defineTool({
+      name: 'exercise_resplit',
+      description:
+        '用原文存档（source.md）重新分块某套题。默认 **LLM 分块**（PDF 抽出的文本用规则切基本切不准）；' +
+        '会产生的新题目按题号保留已有答案。用户说"这道题切错了/把两题切开了"时用。',
+      parameters: {
+        course_id: { type: 'string', required: true, description: '课程标识' },
+        sheet_id: { type: 'string', required: true, description: '套题标识' },
+        use_llm: { type: 'boolean', description: '是否用 LLM（缺省 true；false = 规则分块）' },
+      },
+      output: { schema: { type: 'json' }, render: renderJson },
+      execute: async (args: { course_id: string; sheet_id: string; use_llm?: boolean }) => {
+        const r = await resplit({ courseId: args.course_id, sheetId: args.sheet_id, useLlm: args.use_llm });
+        if (!r.ok) return fail(r.error ?? '重新分块失败');
+        const sheet = store.readSheet(args.course_id, args.sheet_id);
+        return ok({
+          sheet_id: args.sheet_id,
+          problems: sheet ? sheet.problems.length : 0,
+          used_llm: r.used_llm === true,
+          labels: sheet ? JSON.stringify(sheet.problems.map((p) => p.label)) : '[]',
+          note: r.note ?? '',
+        });
+      },
+    }),
+  );
+
   // ============================================================
   // HTTP 桥（前端）
   // ============================================================
@@ -1983,7 +2066,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   log(
     '工具已注册：exercise_list / exercise_new_sheet / exercise_open / exercise_problem / ' +
-      'exercise_save_answer / exercise_check / exercise_collect_mistake / exercise_lessons / ' +
+      'exercise_save_answer / exercise_resplit / exercise_check / exercise_collect_mistake / exercise_lessons / ' +
       'exercise_sync_worldbook / exercise_build_submission / exercise_progress / ' +
       'exercise_export_handoff / exercise_import_handoff',
   );

@@ -116,6 +116,8 @@ export const sheetSchema = z.object({
   source_pages: z.number().default(0),
   /** 导入方式：pdf = 从 PDF 抽文本；manual = 用户手填 */
   import_mode: z.enum(['pdf', 'manual']).default('manual'),
+  /** 题目是怎么切出来的：llm = 模型分块；rules = 规则兜底；manual = 手填/手拆（排障用） */
+  split_by: z.enum(['llm', 'rules', 'manual']).default('rules'),
   imported_at: z.number().default(0),
   /** PDF 抽不出有效文本（扫描件/纯公式）→ UI 提示手补题干 */
   needs_manual_text: z.boolean().default(false),
