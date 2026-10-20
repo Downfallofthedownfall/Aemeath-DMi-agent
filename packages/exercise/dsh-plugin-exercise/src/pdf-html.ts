@@ -23,6 +23,8 @@
 //      交给助教的 PDF 里**不能**出现"我们自己说这题对不对"。
 // ============================================================
 
+import { normalizeMathDelimiters } from './math-parse.js';
+
 // ============================================================
 // 对外类型（与 types.ts 的 Problem 解耦：导出层不依赖 zod，client 也能直接读）
 // ============================================================
@@ -296,7 +298,9 @@ function renderBlocks(escapedBlockText: string, displayBlocks: string[], renderM
 }
 
 function renderFragment(src: string, renderMath?: MathRenderer): string {
-  const normalized = normalizeSource(src);
+  // \[…\] / \(…\) / 裸露的 \begin{aligned} 统一成 $$… / $…$，
+  // 之后这条管线只认 $ 形式（用户写哪种都能打印出来）。
+  const normalized = normalizeMathDelimiters(normalizeSource(src));
   if (normalized.trim() === '') return '';
 
   // 1) 先转义：此后整条管线里不存在"原始用户 HTML"

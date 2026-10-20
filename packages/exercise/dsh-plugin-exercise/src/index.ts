@@ -944,7 +944,29 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const sheet = store.readSheet(input.courseId, input.sheetId);
     if (!sheet) return { ok: false, error: '题集不存在' };
     const text = store.readSourceText(input.courseId, input.sheetId) ?? '';
-    const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
+    let pageNumbers = store.listPageImages(input.courseId, input.sheetId);
+
+    // 老题集（多模态之前导入的）只有 source.pdf、没有页面截图 ——
+    // 重新分块时顺手**补渲染**，否则"点重新分块不会生成图片"（用户实测）。
+    if (pageNumbers.length === 0 && store.hasSourcePdf(input.courseId, input.sheetId)) {
+      try {
+        const pdfBytes = readFileSync(store.sourcePdfFile(input.courseId, input.sheetId));
+        const rendered = await renderPdfPages(new Uint8Array(pdfBytes));
+        for (const page of rendered) store.writePageImage(input.courseId, input.sheetId, page.page, page.bytes);
+        if (rendered.length) {
+          sheet.has_page_images = true;
+          sheet.source_pages = Math.max(sheet.source_pages, rendered.length);
+          pageNumbers = rendered.map((p) => p.page);
+          store.writeSheet(input.courseId, sheet);
+          log(
+            `补渲染页面截图：${rendered.length} 页（${Math.round(rendered.reduce((n, p) => n + p.bytes.byteLength, 0) / 1024)} KB）`,
+          );
+        }
+      } catch (e) {
+        warn(`补渲染页面截图失败：${(e as Error).message}（继续用文本分块）`);
+      }
+    }
+
     if (!text.trim() && pageNumbers.length === 0) {
       return { ok: false, error: '没有原文存档（source.md）也没有页面截图，无法重新分块' };
     }

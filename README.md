@@ -221,9 +221,9 @@ npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
 npm test -w @aemeath/dsh-plugin-lecture      # 282 (markers/storage/traversal-guard/BOM + transcriber/5-step-review/D4-gate/D12-guard/notation + tool-chain regression + math-symbol palette + P3 no-leak contract + P4 handoff importer + workbench/standalone-mode/delete/create-course/stale-detection regression)
-npm test -w @aemeath/dsh-plugin-exercise     # 194 (types+digest / PDF text extraction + problem split / LLM anchor segmentation / multimodal vision segmentation / file store / submission HTML / lecture-compatible handoff + worldbook / manual-check parsing (incl. loose JSON) + HTTP routing)
+npm test -w @aemeath/dsh-plugin-exercise     # 210 (types+digest / PDF text extraction + problem split / LLM anchor segmentation / multimodal vision segmentation / file store / submission HTML / lecture-compatible handoff + worldbook / manual-check parsing (incl. loose JSON) + HTTP routing)
 npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views: list/timeline/graph)
-# Total: 732 unit-test assertions (all green, 31 files — measured 2026-10-20)
+# Total: 748 unit-test assertions (all green, 31 files — measured 2026-10-20)
 # (lecture 282 + memory 193 + exercise 166 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4)
 ```
 
@@ -442,10 +442,10 @@ npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
 npm test -w @aemeath/dsh-plugin-lecture      # 282（标记语法/存储/穿越防护/BOM + 转录员/五步复盘/D4/D12/记号约定 + 工具链回归 + 符号边栏 + P3 不泄漏契约 + P4 握手接收 + 三栏工作台/独立界面模式/删除/新建课程/陈旧检测回归）
-npm test -w @aemeath/dsh-plugin-exercise     # 194（types+digest / PDF 抽文本 + 拆题 / LLM 锚点分块 / 多模态读图分块 / 文件存储 / 提交 HTML / 借用 lecture 的握手 + worldbook / 手动检查解析（含宽松 JSON）+ HTTP 路由）
+npm test -w @aemeath/dsh-plugin-exercise     # 210（types+digest / PDF 抽文本 + 拆题 / LLM 锚点分块 / 多模态读图分块 / 文件存储 / 提交 HTML / 借用 lecture 的握手 + worldbook / 手动检查解析（含宽松 JSON）+ HTTP 路由）
 npm test -w @aemeath/dsh-plugin-ui           # 12 （记忆工作区代理视图：列表/时间轴/图谱）
-# 合计：732 项断言（全绿，31 个测试文件，2026-10-20 实测）
-# （lecture 282 + memory 193 + exercise 194 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4）
+# 合计：748 项断言（全绿，31 个测试文件，2026-10-20 实测）
+# （lecture 282 + memory 193 + exercise 210 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4）
 ```
 
 ### 下一步
