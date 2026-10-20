@@ -218,31 +218,42 @@ await asyncT('segmentWithVision：没有页面图片 → 直接失败', async ()
   assert.equal(r.ok, false);
 });
 
-// ---- 符号插入（lecture 模板 → 纯文本 LaTeX）----
-t('symbolInsertion：\\placeholder{} 换成 {}，光标进第一个空组', () => {
+// ---- 符号插入（lecture 模板 → 纯文本 LaTeX + 自动包数学分隔符）----
+t('symbolInsertion：placeholder 换成 {}、自动包 $…$、光标进第一个空组', () => {
   const { text, caret } = symbolInsertion({ insert: '\\int_{\\placeholder{}}^{\\placeholder{}} ' });
-  assert.equal(text, '\\int_{}^{} ');
-  assert.equal(caret, '\\int_{'.length, '光标应落在第一个 {} 里');
+  assert.equal(text, '$\\int_{}^{}$ ');
+  assert.equal(caret, 1 + '\\int_{'.length, '光标要算上开分隔符，落在第一个 {} 里');
+  assert.equal(text[caret], '}');
 });
 
-t('symbolInsertion：模板 $1/$2 也换成 {}', () => {
+t('symbolInsertion：模板 $1/$2 也换成 {} 并包 $…$', () => {
   const { text } = symbolInsertion({ template: '\\sum_{$1}^{$2}' });
-  assert.equal(text, '\\sum_{}^{}');
+  assert.equal(text, '$\\sum_{}^{}$');
 });
 
-t('symbolInsertion：没有占位符时原样保留（如 ∫ / √(）', () => {
-  assert.equal(symbolInsertion({ insert: '\\int ' }).text, '\\int ');
+t('symbolInsertion：无空组时包起来、光标落在末尾（如 ∫ / √(）', () => {
+  assert.equal(symbolInsertion({ insert: '\\int ' }).text, '$\\int$ ');
   const sqrt = symbolInsertion({ insert: '\\sqrt(' });
-  assert.equal(sqrt.text, '\\sqrt(');
-  assert.equal(sqrt.caret, sqrt.text.length, '没有空组就落在末尾');
+  assert.equal(sqrt.text, '$\\sqrt($');
+  assert.equal(sqrt.caret, sqrt.text.length - 1, '没有空组就落在收尾分隔符之前');
+});
+
+t('symbolInsertion：多行 / \\begin{…} 结构用 $$…$$', () => {
+  const matrix = symbolInsertion({ insert: '\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}' });
+  assert.equal(matrix.text, '$$\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}$$');
+});
+
+t('symbolInsertion：模板已带 $ 时不再重复包裹', () => {
+  const { text } = symbolInsertion({ insert: '$\\alpha$' });
+  assert.equal(text, '$\\alpha$');
 });
 
 t('applyInsertion：在选区处替换并给出绝对光标位', () => {
   const sym = { insert: '\\int_{\\placeholder{}}^{\\placeholder{}} ' };
   const ins = symbolInsertion(sym);
   const r = applyInsertion('a + b', 4, 5, ins); // 选中 'b'
-  assert.equal(r.text, 'a + \\int_{}^{} ');
-  assert.equal(r.caret, 4 + '\\int_{'.length);
+  assert.equal(r.text, 'a + $\\int_{}^{}$ ');
+  assert.equal(r.caret, 4 + 1 + '\\int_{'.length);
   assert.equal(r.text[r.caret], '}', '光标在 {} 内部');
 });
 

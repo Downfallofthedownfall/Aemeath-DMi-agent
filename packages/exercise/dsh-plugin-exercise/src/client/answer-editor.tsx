@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProblemView } from './api.ts';
 import { MathText } from './math.tsx';
+import { hasMath } from '../math-parse.ts';
 
 export type Inserter = (text: string, caretOffset: number) => boolean;
 
@@ -235,6 +236,12 @@ export function AnswerEditor({
           {draft.trim() ? <MathText text={draft} /> : null}
         </div>
       </div>
+
+      {draft.trim() && !hasMath(draft) && /\\[A-Za-z]+/.test(draft) && (
+        <div className="lec-hint" style={{ marginTop: 6 }}>
+          这段里有 <code>\命令</code> 但没被当成公式 —— 用 <code>$…$</code> 包起来（或单独占一行写成一条公式）就会渲染。
+        </div>
+      )}
 
       <div className="lec-toolrow">
         <button type="button" className="lec-btn" onClick={onCheck} disabled={busy}>
