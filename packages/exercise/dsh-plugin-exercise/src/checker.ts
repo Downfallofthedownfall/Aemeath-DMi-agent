@@ -20,7 +20,17 @@ import { checkIssueSchema, type Verdict } from './types.js';
 
 /** LLM 通道（与 lecture 的 AskLlm 同形，便于复用同一种接线）。 */
 export interface AskLlm {
-  (prompt: string, opts: { maxTokens: number; purpose: string }): Promise<string | null>;
+  (
+    prompt: string,
+    opts: {
+      maxTokens: number;
+      purpose: string;
+      /** 结构型小任务（分块）：关掉推理，避免思考把 token 预算吃光（真机踩过）。 */
+      noReasoning?: boolean;
+      /** 跳过全局 LLM 运行时、直接走直连（上一次运行时的输出不可用时才这样重试）。 */
+      preferDirect?: boolean;
+    },
+  ): Promise<string | null>;
 }
 
 export interface CheckInput {

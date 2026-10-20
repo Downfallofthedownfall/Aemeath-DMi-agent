@@ -290,14 +290,30 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   };
 
   /** 走全局 dsh LLM 运行时（与主 agent 同一套 provider/key/model）。 */
-  const askViaRuntime = async (prompt: string, opts: { maxTokens: number; purpose: string }): Promise<string | null> => {
+  const askViaRuntime = async (
+    prompt: string,
+    opts: { maxTokens: number; purpose: string; noReasoning?: boolean; attempt?: number },
+  ): Promise<string | null> => {
     const rt = llmRuntime();
     if (!rt?.prepareCall) return null;
+    // ⚠️ 必须 bind：prepareCall 内部读 this.registration（TypertRemoteService），
+    // 直接解构出来单独调用会得到 "Cannot read properties of undefined (reading 'registration')"。
+    const prepareCall = rt.prepareCall.bind(rt);
     const route = await resolveLlmRoute();
     if (!route) return null;
     const deadline = AbortSignal.timeout(LLM_TIMEOUT_MS_LOCAL);
-    try {
-      const call = await rt.prepareCall({ provider: route.provider, model: route.model, maxTokens: opts.maxTokens }, deadline);
+    const request = async (noReasoning: boolean): Promise<string | null> => {
+      const call = await prepareCall(
+        {
+          provider: route.provider,
+          model: route.model,
+          maxTokens: opts.maxTokens,
+          // 结构型小任务（分块）关掉推理：真机上 deepseek-flash 会把 1500~12000 token
+          // 全花在 reasoning 上，finish=max-tokens、blocks=reasoning、正文为空。
+          ...(noReasoning ? { reasoningEffort: 'off' } : {}),
+        },
+        deadline,
+      );
       const assembler = new BlockAssembler();
       const stream = call.stream({
         ...call.config,
@@ -307,27 +323,64 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         signal: deadline,
       });
       for await (const chunk of stream) assembler.push(chunk as never);
-      const text = assembler
-        .blocks()
+      const blocks = assembler.blocks();
+      const text = blocks
         .map((b) => (b.type === 'text' ? b.text : ''))
         .join('\n')
         .trim();
-      if (!text) {
-        warn(`全局 LLM 返回空文本（${route.provider}/${route.model}）`);
-        return null;
+      if (text) return text;
+
+      const finish = assembler.finish;
+      const kinds = blocks.map((b) => b.type).join(',') || 'none';
+      const usage = JSON.stringify(assembler.usage ?? {});
+      warn(
+        `全局 LLM 返回空文本（${route.provider}/${route.model}，finish=${finish?.kind ?? 'unknown'}，` +
+          `blocks=${kinds}，usage=${usage}，maxTokens=${opts.maxTokens}，noReasoning=${noReasoning}）`,
+      );
+      const attempt = opts.attempt ?? 1;
+      if (finish?.kind === 'max-tokens' && attempt < 3) {
+        const next = Math.min(opts.maxTokens * 4, 16_000);
+        log(`空文本来自 max-tokens 截断 → 放大到 ${next} 并关闭推理重试（第 ${attempt + 1} 次）`);
+        return askViaRuntime(prompt, { ...opts, maxTokens: next, noReasoning: true, attempt: attempt + 1 });
       }
-      log(`LLM（全局 dsh）：${route.provider}/${route.model} ← ${opts.purpose}`);
+      return null;
+    };
+
+    try {
+      const text = await request(opts.noReasoning === true);
+      if (text) log(`LLM（全局 dsh）：${route.provider}/${route.model} ← ${opts.purpose}`);
       return text;
     } catch (e) {
-      warn(`全局 LLM 调用失败（${route.provider}/${route.model}）：${(e as Error).message}`);
+      const msg = (e as Error).message;
+      // 'off' 是 DeepSeek adapter 的取值；别的 provider 可能没有这个档位 →
+      // 去掉 reasoningEffort 再试一次，而不是整条通道失败。
+      if (opts.noReasoning && /reasoning|effort/i.test(msg)) {
+        warn(`该 provider 不支持 reasoningEffort=off（${msg}）→ 去掉该参数重试`);
+        try {
+          const text = await request(false);
+          if (text) log(`LLM（全局 dsh）：${route.provider}/${route.model} ← ${opts.purpose}（无 reasoning 开关）`);
+          return text;
+        } catch (e2) {
+          warn(`全局 LLM 调用失败（${route.provider}/${route.model}）：${(e2 as Error).message}`);
+          return null;
+        }
+      }
+      warn(`全局 LLM 调用失败（${route.provider}/${route.model}）：${msg}`);
+      if (process.env.EXERCISE_LLM_DEBUG === '1') warn(`stack: ${(e as Error).stack ?? ''}`);
       return null;
     }
   };
 
   const askLlm: AskLlm = async (prompt, opts) => {
     // ① 全局 dsh LLM（首选：同一套 provider/model/凭据）
-    const viaRuntime = await askViaRuntime(prompt, opts);
-    if (viaRuntime) return viaRuntime;
+    if (!opts.preferDirect) {
+      const viaRuntime = await askViaRuntime(prompt, {
+        maxTokens: opts.maxTokens,
+        purpose: opts.purpose,
+        noReasoning: opts.noReasoning,
+      });
+      if (viaRuntime) return viaRuntime;
+    }
 
     // ② 直连兜底（key 仍来自全局 credentials；仅在没有 llm 运行时的环境下走）
     const apiKey = await resolveLlmKey();
@@ -350,9 +403,25 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         signal: AbortSignal.timeout(LLM_TIMEOUT_MS_LOCAL),
       });
       if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
-      const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
-      log(`LLM（直连兜底）：${llm.model || 'deepseek-v4-flash'} ${Date.now() - t0}ms`);
-      return data.choices?.[0]?.message?.content ?? null;
+      const data = (await resp.json()) as {
+        choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];
+        usage?: Record<string, unknown>;
+      };
+      const choice = data.choices?.[0];
+      const content = choice?.message?.content ?? '';
+      const finishReason = choice?.finish_reason ?? 'unknown';
+      log(
+        `LLM（直连兜底）：${llm.model || 'deepseek-v4-flash'} ${Date.now() - t0}ms ` +
+          `len=${content.length} finish=${finishReason} usage=${JSON.stringify(data.usage ?? {})}`,
+      );
+      if (!content.trim()) {
+        warn(
+          `LLM 直连返回空文本（${opts.purpose}，finish=${finishReason}，` +
+            `reasoning=${(choice?.message?.reasoning_content ?? '').length} 字）`,
+        );
+        return null;
+      }
+      return content;
     } catch (e) {
       warn(`LLM 直连失败（${opts.purpose}）: ${(e as Error).message}`);
       return null;

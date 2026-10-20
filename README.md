@@ -191,7 +191,7 @@ what you can do**: you write the answer yourself, and the model is only allowed 
 
 | Aspect | Design |
 |---|---|
-| Import | Drop the sheet PDF in → `pdfjs` extracts text → **the LLM segments the problems** (long documents are chunked by page, and a coverage guard rejects lazy output), with a regex splitter as automatic fallback; scanned sheets fall back to "fill the statement in yourself" instead of failing. Left rail keeps "LLM re-split" / "rules re-split" buttons, and re-splitting preserves answers by problem number |
+| Import | Drop the sheet PDF in → `pdfjs` extracts text → **the LLM only finds problem boundaries** (40–120 char verbatim anchors; the text itself is sliced locally, so the model cannot rewrite it), with reasoning disabled for that request, page-aligned chunks for long documents, and a regex splitter as automatic fallback; scanned sheets fall back to "fill the statement in yourself" instead of failing. Left rail keeps "LLM re-split" / "rules re-split" buttons, and re-splitting preserves answers by problem number |
 | Solving | Answer editor with live KaTeX preview, autosave (900 ms / on blur), **always editable**; changing the answer marks older checks `stale` instead of deleting them |
 | Check | **Manual only** (button / `exercise_check`). Returns verdict + which step is wrong + Socratic hints + "what to verify next". Runs on the **global dsh LLM** — same provider, model and credentials as the main agent (no separate API key/model to configure). Truncated model output is repair-parsed, and a parse failure is recorded as `error` — never as "your answer is wrong" |
 | Mistakes | Cross-sheet mistake book (`_mistakes.json`) with your one-line lesson per entry; `mastered` toggles; auto-filled when a check says `wrong`/`partial` |
@@ -221,9 +221,9 @@ npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
 npm test -w @aemeath/dsh-plugin-lecture      # 282 (markers/storage/traversal-guard/BOM + transcriber/5-step-review/D4-gate/D12-guard/notation + tool-chain regression + math-symbol palette + P3 no-leak contract + P4 handoff importer + workbench/standalone-mode/delete/create-course/stale-detection regression)
-npm test -w @aemeath/dsh-plugin-exercise     # 166 (types+digest / PDF text extraction + problem split / LLM segmentation / file store / submission HTML / lecture-compatible handoff + worldbook / manual-check parsing + HTTP routing)
+npm test -w @aemeath/dsh-plugin-exercise     # 172 (types+digest / PDF text extraction + problem split / LLM anchor segmentation / file store / submission HTML / lecture-compatible handoff + worldbook / manual-check parsing + HTTP routing)
 npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views: list/timeline/graph)
-# Total: 704 unit-test assertions (all green, 31 files — measured 2026-10-20)
+# Total: 710 unit-test assertions (all green, 31 files — measured 2026-10-20)
 # (lecture 282 + memory 193 + exercise 166 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4)
 ```
 
@@ -412,7 +412,7 @@ electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留�
 
 | 方面 | 设计 |
 |---|---|
-| 导入 | 把作业 PDF 拖进来 → `pdfjs` 抽文本 → **LLM 拆题**（长文按页分段，覆盖率护栏挡偷懒输出），规则分块自动兜底；扫描件不报错，改成"题干你自己补"。左栏留「LLM 重新分块」/「规则重新分块」，重切**按题号保留答案** |
+| 导入 | 把作业 PDF 拖进来 → `pdfjs` 抽文本 → **LLM 只找题目边界**（40–120 字逐字锚点，正文由本地在原文上裁切，模型改不了正文），分块请求关闭推理，长文按页分段，规则分块自动兜底；扫描件不报错，改成"题干你自己补"。左栏留「LLM 重新分块」/「规则重新分块」，重切**按题号保留答案** |
 | 做题 | 答案编辑器 + 实时 KaTeX 预览 + 自动保存（900ms / 失焦），**永远可改**；改动会把旧检查标 `stale`（不删除历史） |
 | 检查 | **只能手动**（按钮 / `exercise_check`）。返回结论 + 哪一步错 + 苏格拉底式提问 + "下一步验证什么"。走**全局 dsh LLM** —— 与主 agent 同一个 provider、模型和凭据（**不需要**单独配 API key / 模型）。模型输出被截断时会抢救解析；解析失败记为 `error`，**绝不**记成"你答错了" |
 | 错题 | 跨套题错题本（`_mistakes.json`），每条带**你自己写的一句话教训**；`mastered` 可切换；检查判 `wrong`/`partial` 时自动收录 |
@@ -442,10 +442,10 @@ npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
 npm test -w @aemeath/dsh-plugin-lecture      # 282（标记语法/存储/穿越防护/BOM + 转录员/五步复盘/D4/D12/记号约定 + 工具链回归 + 符号边栏 + P3 不泄漏契约 + P4 握手接收 + 三栏工作台/独立界面模式/删除/新建课程/陈旧检测回归）
-npm test -w @aemeath/dsh-plugin-exercise     # 166（types+digest / PDF 抽文本 + 拆题 / LLM 分块 / 文件存储 / 提交 HTML / 借用 lecture 的握手 + worldbook / 手动检查解析 + HTTP 路由）
+npm test -w @aemeath/dsh-plugin-exercise     # 172（types+digest / PDF 抽文本 + 拆题 / LLM 锚点分块 / 文件存储 / 提交 HTML / 借用 lecture 的握手 + worldbook / 手动检查解析 + HTTP 路由）
 npm test -w @aemeath/dsh-plugin-ui           # 12 （记忆工作区代理视图：列表/时间轴/图谱）
-# 合计：704 项断言（全绿，31 个测试文件，2026-10-20 实测）
-# （lecture 282 + memory 193 + exercise 166 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4）
+# 合计：710 项断言（全绿，31 个测试文件，2026-10-20 实测）
+# （lecture 282 + memory 193 + exercise 172 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4）
 ```
 
 ### 下一步
