@@ -8,7 +8,7 @@
 // ============================================================
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { buildCheckPrompt, parseCheckOutput, runCheck, repairTruncatedJson } from '../lib/checker.js';
+import { buildCheckPrompt, parseCheckOutput, parseJsonLoose, runCheck, repairTruncatedJson } from '../lib/checker.js';
 import { checkWriteOrigin, handleExerciseHttp } from '../lib/http.js';
 
 let passed = 0;
@@ -352,6 +352,30 @@ t('checkWriteOrigin：无 Origin 放行；localhost 放行；null/外部拒', ()
   assert.equal(checkWriteOrigin({ headers: { origin: 'null' } }), false);
   assert.equal(checkWriteOrigin({ headers: { origin: 'https://evil.example' } }), false);
   assert.equal(checkWriteOrigin({ headers: { origin: '不是 URL' } }), false);
+});
+
+// ---- 宽松 JSON：LaTeX 的非法转义、截断 ----
+t('parseJsonLoose：LaTeX 的 \\, \\; \\! 被写进 JSON 字符串也能解析', () => {
+  const bad = '{"verdict":"partial","issues":[{"severity":"error","text":"$4.9\\,\\mathrm{m/s^2}$ 单位对了但 $\\;a$ 没写"}]}';
+  const obj = parseJsonLoose(bad);
+  assert.ok(obj, '应当能解析');
+  assert.equal(obj.issues.length, 1);
+  assert.match(obj.issues[0].text, /4\.9/);
+});
+
+t('parseJsonLoose：合法转义 \\n \\" \\\\ 不受影响', () => {
+  const good = '{"text":"a\\nb \\"q\\" \\\\ end"}';
+  const obj = parseJsonLoose(good);
+  assert.equal(obj.text, 'a\nb "q" \\ end');
+});
+
+t('parseCheckOutput：转义坏味不再退化成"0 条 issues"', () => {
+  const raw =
+    '{"verdict":"partial","score":0.3,"issues":[{"severity":"error","text":"$g\\,\\sin\\alpha$ 用法对"},{"severity":"info","text":"$\\mu$ 别乱用"}],"hints":["如果把 $\\alpha$ 换成 $\\beta$ 呢？"],"next_steps":["先写 $\\sum F$"]}';
+  const check = parseCheckOutput(raw);
+  assert.equal(check.verdict, 'partial');
+  assert.equal(check.issues.length, 2, 'issues 不能被丢掉');
+  assert.equal(check.hints.length, 1);
 });
 
 console.log(`\n[exercise-check-http] ${passed} 项断言通过`);

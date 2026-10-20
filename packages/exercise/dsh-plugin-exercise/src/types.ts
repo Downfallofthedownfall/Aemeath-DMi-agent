@@ -71,6 +71,10 @@ export const problemSchema = z.object({
   points: z.number().nullable().default(null),
   /** 原 PDF 页码（1 基；0 = 未知） */
   page: z.number().default(0),
+  /** 这题带插图/示意图（多模态读图判定；界面据此提示"看原卷截图"） */
+  has_figure: z.boolean().default(false),
+  /** 插图的一句话描述（多模态读图时由模型给出） */
+  figure_note: z.string().default(''),
   /** 用户答案（markdown + 公式；**始终可改**，D4） */
   answer: z.string().default(''),
   answer_updated_at: z.number().default(0),
@@ -116,8 +120,10 @@ export const sheetSchema = z.object({
   source_pages: z.number().default(0),
   /** 导入方式：pdf = 从 PDF 抽文本；manual = 用户手填 */
   import_mode: z.enum(['pdf', 'manual']).default('manual'),
-  /** 题目是怎么切出来的：llm = 模型分块；rules = 规则兜底；manual = 手填/手拆（排障用） */
-  split_by: z.enum(['llm', 'rules', 'manual']).default('rules'),
+  /** 题目是怎么切出来的：vision = 多模态读图；llm = 文本锚点；rules = 规则兜底；manual = 手填/手拆（排障用） */
+  split_by: z.enum(['vision', 'llm', 'rules', 'manual']).default('rules'),
+  /** 是否存了原卷页面截图（pages/page-NN.jpg）—— 有图就能看原题、也能给多模态检查用 */
+  has_page_images: z.boolean().default(false),
   imported_at: z.number().default(0),
   /** PDF 抽不出有效文本（扫描件/纯公式）→ UI 提示手补题干 */
   needs_manual_text: z.boolean().default(false),

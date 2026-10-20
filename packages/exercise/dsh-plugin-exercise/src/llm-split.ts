@@ -30,7 +30,7 @@
 // ============================================================
 
 import { z } from 'zod';
-import { repairTruncatedJson, type AskLlm } from './checker.js';
+import { parseJsonLoose, type AskLlm } from './checker.js';
 import type { SplitProblem } from './split.js';
 
 /** 单次送模型的字符上限（留出 prompt 与输出的余量）。 */
@@ -119,18 +119,7 @@ export function parseSegmentOutput(raw: string | null): AnchorPart[] | null {
   const end = text.lastIndexOf('}');
   const candidate = end > start ? text.slice(start, end + 1) : text.slice(start);
 
-  const attempt = (json: string): unknown | null => {
-    try {
-      return JSON.parse(json);
-    } catch {
-      return null;
-    }
-  };
-  let obj = attempt(candidate);
-  if (obj === null) {
-    const repaired = repairTruncatedJson(candidate);
-    if (repaired) obj = attempt(repaired);
-  }
+  const obj = parseJsonLoose(candidate);
   if (obj === null) return null;
 
   const parsed = outputSchema.safeParse(obj);

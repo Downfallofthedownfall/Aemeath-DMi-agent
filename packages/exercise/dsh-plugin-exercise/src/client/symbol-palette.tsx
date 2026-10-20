@@ -139,6 +139,9 @@ export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Elemen
                 type="button"
                 className="lec-symbtn"
                 title={`${s.label}${s.hint ? ` — ${s.hint}` : ''}`}
+                // 关键：点符号**不能**把焦点从答案框抢走，否则插不到光标处
+                // （用户要求："符号键盘也要可以点击后注入当前输入框，复制功能也保留"）
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => void insert(s)}
               >
                 {s.label}

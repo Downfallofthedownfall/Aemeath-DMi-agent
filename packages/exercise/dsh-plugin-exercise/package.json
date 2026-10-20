@@ -50,7 +50,7 @@
     "build": "tsc -p tsconfig.json && node build-client.mjs",
     "build:client": "node build-client.mjs",
     "typecheck:client": "tsc -p tsconfig.client.json",
-    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs && node test/check7.mjs"
+    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs && node test/check7.mjs && node test/check8.mjs"
   },
   "dsh": {
     "client": {
@@ -70,7 +70,8 @@
     "mathlive": "^0.111.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.149",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@napi-rs/canvas": "^0.1.100"
   },
   "peerDependencies": {
     "@aemeath/dsh-plugin-common": "file:../../../packages/shared/dsh-plugin-common",

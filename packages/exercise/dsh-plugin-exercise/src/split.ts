@@ -23,9 +23,13 @@ export interface SplitProblem {
   title: string;
   /** 题干正文（markdown 友好：保留换行，公式保持原样 LaTeX） */
   text: string;
-  /** 1 基页码（由 \f 计） */
+  /** 1 基页码（由 \f 计；多模态读图时是图片页码） */
   page: number;
   points: number | null;
+  /** 这题带插图/示意图（多模态读图时才可靠；文本链路一律 false/缺省） */
+  has_figure?: boolean;
+  /** 插图的一句话描述（"斜面 + 方块的受力图"） */
+  figure_note?: string;
 }
 
 // ============================================================

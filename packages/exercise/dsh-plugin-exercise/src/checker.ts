@@ -49,6 +49,8 @@ export interface CheckInput {
   priorMistakes?: string[];
   /** 解释语言：默认中文（用户母语），题目原文保持德语。 */
   lang?: 'zh' | 'de';
+  /** 有原题页面截图时：附图检查（多模态），题干里可能有图/公式 OCR 不准。 */
+  pageImage?: { base64: string; mediaType: string; page: number };
 }
 
 export interface ParsedCheck {
@@ -97,6 +99,12 @@ export function buildCheckPrompt(input: CheckInput): string {
   lines.push(`## 上下文`);
   lines.push(`- 课程：${input.courseTitle} · Übungsblatt ${input.sheetNumber}${input.sheetTitle ? `（${input.sheetTitle}）` : ''}`);
   lines.push(`- 题号：${input.problemLabel}${input.points != null ? `（${input.points} Punkte）` : ''}`);
+  if (input.pageImage) {
+    lines.push(
+      `- **本题原图见附件**（原卷第 ${input.pageImage.page} 页截图）。OCR 文本可能漏掉公式/插图，` +
+        `**以图片为准**；题干里的图、示意图、坐标系都在图上。判断学生答案时优先依据图。`,
+    );
+  }
   if (input.progressDigest) {
     lines.push('- 学生开这套题时的学习进度（用于调整语气与提示深度，不要直接念给他）：');
     for (const l of input.progressDigest.split('\n').slice(0, 12)) lines.push(`    ${l}`);
@@ -205,6 +213,40 @@ export function repairTruncatedJson(text: string): string | null {
  *
  * 仍然解析不了 → 返回 null（调用方记一条 verdict=error 的检查，保留原文供排障）。
  */
+/**
+ * 宽松 JSON 解析。模型输出里最常见的两种"坏味"：
+ *   ① **非法转义**：把 LaTeX 的 `\,` `\;` `\!` 直接写进 JSON 字符串
+ *      （JSON 只认 `\" \\ \/ \b \f \n \r \t \uXXXX`）→ 整条 JSON.parse 失败。
+ *      真机踩过：多模态检查明明给了 4 条 issues，解析却是 0 条。
+ *   ② **被截断**：max_tokens 砍在字符串中间。
+ * 依次尝试 原样 → 修转义 → 截断抢救，任一成功即返回对象。
+ */
+export function parseJsonLoose(text: string): unknown | null {
+  const attempt = (s: string): unknown | null => {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return null;
+    }
+  };
+  const escapeFix = (s: string): string => s.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+
+  const direct = attempt(text);
+  if (direct !== null) return direct;
+
+  const fixed = escapeFix(text);
+  const afterFix = attempt(fixed);
+  if (afterFix !== null) return afterFix;
+
+  for (const candidate of [fixed, text]) {
+    const repaired = repairTruncatedJson(candidate);
+    if (!repaired) continue;
+    const obj = attempt(repaired) ?? attempt(escapeFix(repaired));
+    if (obj !== null) return obj;
+  }
+  return null;
+}
+
 export function parseCheckOutput(raw: string | null): ParsedCheck | null {
   if (!raw) return null;
   let text = raw.trim();
@@ -215,19 +257,7 @@ export function parseCheckOutput(raw: string | null): ParsedCheck | null {
   const end = text.lastIndexOf('}');
   const candidate = end > start ? text.slice(start, end + 1) : text.slice(start);
 
-  const attempt = (json: string): unknown | null => {
-    try {
-      return JSON.parse(json);
-    } catch {
-      return null;
-    }
-  };
-
-  let obj = attempt(candidate);
-  if (obj === null) {
-    const repaired = repairTruncatedJson(candidate);
-    if (repaired) obj = attempt(repaired);
-  }
+  let obj = parseJsonLoose(candidate);
 
   // 最后一层：连修复都失败 → 只要 verdict 能抠出来，就按"只有结论"处理
   if (obj === null) {
@@ -265,17 +295,35 @@ export function parseCheckOutput(raw: string | null): ParsedCheck | null {
 /**
  * 跑一次检查。**不抛**：任何失败都折成 `{ ok:false, error }`，
  * 让上层能区分"模型挂了"与"答案错了"（前者不该进错题本）。
+ *
+ * 传了 `askVision` 且题目有页面截图时走**多模态**（图 + 学生答案）：
+ * OCR 漏掉的公式/插图在图上还在，判得更准。
  */
 export async function runCheck(
   input: CheckInput,
   askLlm: AskLlm,
-): Promise<{ ok: boolean; check: ParsedCheck | null; raw: string | null; error?: string }> {
+  askVision?: (prompt: string, images: readonly { mediaType: string; base64: string }[], opts: { maxTokens: number; purpose: string }) => Promise<string | null>,
+): Promise<{ ok: boolean; check: ParsedCheck | null; raw: string | null; error?: string; vision?: boolean }> {
   const prompt = buildCheckPrompt(input);
   // 2400 token 是实测出来的：1200 时模型把 issues 写长会被**截断在字符串中间**，
   // 整条有效批改变成"解析失败"（真机第一次检查就踩到了）。
-  const raw = await askLlm(prompt, { maxTokens: 2400, purpose: 'exercise-check' });
-  if (!raw) return { ok: false, check: null, raw: null, error: 'LLM 不可用（无 apiKey / 请求失败 / 超时）' };
+  const vision = input.pageImage && askVision ? askVision : undefined;
+  const raw = vision
+    ? await vision(prompt, [{ mediaType: input.pageImage!.mediaType, base64: input.pageImage!.base64 }], {
+        maxTokens: 2400,
+        purpose: 'exercise-check-vision',
+      })
+    : await askLlm(prompt, { maxTokens: 2400, purpose: 'exercise-check' });
+  if (!raw) {
+    return {
+      ok: false,
+      check: null,
+      raw: null,
+      error: 'LLM 不可用（无 apiKey / 请求失败 / 超时）',
+      vision: !!vision,
+    };
+  }
   const check = parseCheckOutput(raw);
-  if (!check) return { ok: false, check: null, raw, error: 'LLM 输出不可解析（已保留原文供排障）' };
-  return { ok: true, check, raw };
+  if (!check) return { ok: false, check: null, raw, error: 'LLM 输出不可解析（已保留原文供排障）', vision: !!vision };
+  return { ok: true, check, raw, vision: !!vision };
 }

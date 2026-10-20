@@ -42,6 +42,8 @@ import {
 import { extractPdfText, type PdfExtractResult } from './pdf-text.js';
 import { splitProblems, type SplitProblem } from './split.js';
 import { segmentWithLlm } from './llm-split.js';
+import { renderPdfPages, type RenderedPage } from './pdf-image.js';
+import { segmentWithVision, type AskVision, type VisionPage } from './vision.js';
 import {
   buildProgressDigest,
   daysUntil,
@@ -428,6 +430,80 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
   };
 
+  /**
+   * 多模态通道：把页面截图（data URI）交给模型读题 / 纠错。
+   *
+   * 为什么是直连而不是 `ctx.llm`：dsh 的 LLM 运行时把图片当**附件**（`ImageAttachmentRef`），
+   * 需要 `ctx.attachments` 先登记字节；习题这边只想要"把这张截图塞进请求"，
+   * 直连 OpenAI 兼容接口最直接。凭据仍是**全局那一份**，模型 id 也优先用运行时路由的模型
+   * （界面上选的是 deepseek-flash，就发这个），只是传输层不同。
+   *
+   * `thinking: {type:'disabled'}` 是关键：DeepSeek 的推理模型会把 max_tokens
+   * 全花在 reasoning 上，正文为空（真机踩过）。结构化读图/纠错不需要那层思考。
+   */
+  const askVision: AskVision = async (prompt, images, opts) => {
+    const apiKey = await resolveLlmKey();
+    if (!apiKey) {
+      warn(`多模态不可用（${opts.purpose}）：没有全局凭据 DEEPSEEK_API_KEY`);
+      return null;
+    }
+    const route = await resolveLlmRoute().catch(() => null);
+    const model = route?.model || llm.model || 'deepseek-v4-flash';
+    const content: unknown[] = [{ type: 'text', text: prompt }];
+    for (const img of images) {
+      content.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.base64}` } });
+    }
+    const body = {
+      model,
+      messages: [{ role: 'user', content }],
+      response_format: { type: 'json_object' },
+      thinking: { type: 'disabled' },
+      max_tokens: opts.maxTokens,
+      temperature: 0.1,
+    };
+    const t0 = Date.now();
+    const post = async (m: string): Promise<Response> =>
+      fetch(`${llm.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ ...body, model: m }),
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS_LOCAL),
+      });
+    try {
+      let resp = await post(model);
+      if (resp.status === 400 || resp.status === 404) {
+        // 模型 id 不被接受（不同 provider 目录的命名不同）→ 退回经典 id 再试一次
+        const alt = 'deepseek-v4-flash';
+        if (model !== alt) {
+          warn(`多模态：模型 ${model} 被拒（HTTP ${resp.status}）→ 换 ${alt} 重试`);
+          resp = await post(alt);
+        }
+      }
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${(await resp.text()).slice(0, 300)}`);
+      const data = (await resp.json()) as {
+        choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];
+        usage?: Record<string, unknown>;
+      };
+      const choice = data.choices?.[0];
+      const text = (choice?.message?.content ?? '').trim();
+      log(
+        `多模态（${model}）：${images.length} 图 ${Date.now() - t0}ms len=${text.length} ` +
+          `finish=${choice?.finish_reason ?? '?'} usage=${JSON.stringify(data.usage ?? {})}`,
+      );
+      if (!text) {
+        warn(
+          `多模态返回空文本（${opts.purpose}，finish=${choice?.finish_reason ?? '?'}，` +
+            `reasoning=${(choice?.message?.reasoning_content ?? '').length} 字）`,
+        );
+        return null;
+      }
+      return text;
+    } catch (e) {
+      warn(`多模态调用失败（${opts.purpose}）：${(e as Error).message}`);
+      return null;
+    }
+  };
+
   // 启动自检：连上了全局 LLM 运行时没有（只打日志，不影响功能）
   void (async () => {
     const rt = llmRuntime();
@@ -536,10 +612,27 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   const splitProblemsFor = async (
     text: string,
     warnings: string[],
-  ): Promise<{ parts: SplitProblem[]; by: 'llm' | 'rules' }> => {
+    pages: readonly VisionPage[] = [],
+  ): Promise<{ parts: SplitProblem[]; by: 'vision' | 'llm' | 'rules' }> => {
+    // ① 多模态读图（最准：公式/插图/多栏都不依赖 OCR）
+    if (pages.length) {
+      const vision = await segmentWithVision(pages, askVision);
+      if (vision.ok) {
+        const figs = vision.problems.filter((p) => p.has_figure === true).length;
+        log(
+          `多模态分块成功：${vision.problems.length} 题（${vision.pages} 页截图` +
+            `${figs ? `，其中 ${figs} 题带图` : ''}）`,
+        );
+        return { parts: vision.problems, by: 'vision' };
+      }
+      warn(`多模态分块失败：${vision.error ?? '未知原因'}`);
+      warnings.push(`多模态读图分块失败（${vision.error ?? '未知原因'}）—— 已退回文本分块`);
+    }
+
     const trimmed = text.trim();
     if (!trimmed) return { parts: [], by: 'rules' };
 
+    // ② 文本锚点分块（模型只给边界）
     const seg = await segmentWithLlm(trimmed, askLlm);
     if (seg.ok) {
       log(
@@ -550,6 +643,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     warn(`LLM 分块失败：${seg.error ?? '未知原因'}`);
     warnings.push(`LLM 分块不可用（${seg.error ?? '未知原因'}）—— 已用规则分块，可能需要在界面里手动调整`);
 
+    // ③ 规则兜底
     const rules = splitProblems(trimmed);
     return { parts: rules, by: 'rules' };
   };
@@ -563,6 +657,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       text: stripHeadingLine(p.text, p.label),
       points: p.points ?? parsePoints(p.text),
       page: p.page,
+      has_figure: p.has_figure === true,
+      figure_note: p.figure_note ?? '',
       answer: '',
       answer_updated_at: 0,
       answer_edited_by: 'user' as const,
@@ -622,21 +718,36 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
     let extracted: PdfExtractResult | null = null;
     let text = input.text ?? '';
+    let rendered: RenderedPage[] = [];
     if (pdfBytes) {
+      // ① 先渲染页面截图：多模态读图 + 界面"原题截图"都靠它（文本只是后备）
+      try {
+        rendered = await renderPdfPages(new Uint8Array(pdfBytes));
+        log(`页面截图：${rendered.length} 页（${Math.round(rendered.reduce((n, p) => n + p.bytes.byteLength, 0) / 1024)} KB）`);
+      } catch (e) {
+        warnings.push(`页面截图失败：${(e as Error).message}（将退回文本模式）`);
+        warn(`页面渲染失败：${(e as Error).message}`);
+      }
+      // ② 文本抽取（后备链路 + 检索/人可读）
       try {
         extracted = await extractPdfText(new Uint8Array(pdfBytes));
         warnings.push(...extracted.warnings);
         if (extracted.hasText) text = extracted.text;
-        else warnings.push('这份 PDF 抽不出文本（扫描件/纯图片/公式为主）——已建空白套，请手动补题干');
+        else warnings.push('这份 PDF 抽不出文本（扫描件/纯图片/公式为主）—— 已改用页面截图读题');
       } catch (e) {
-        warnings.push(`PDF 解析失败：${(e as Error).message}（已建空白套）`);
+        warnings.push(`PDF 文本解析失败：${(e as Error).message}`);
       }
     }
 
-    const segmented = await splitProblemsFor(text, warnings);
+    const visionPages: VisionPage[] = rendered.map((p) => ({
+      page: p.page,
+      mediaType: p.mediaType,
+      base64: Buffer.from(p.bytes).toString('base64'),
+    }));
+    const segmented = await splitProblemsFor(text, warnings, visionPages);
     const parts = segmented.parts;
     if (text.trim() && parts.length === 0) {
-      warnings.push('没切出题目（LLM 与规则都没识别出题号）——整篇作为一道题导入，可手动拆');
+      warnings.push('没切出题目（多模态/LLM 与规则都没识别出题号）——整篇作为一道题导入，可手动拆');
     }
     let problems: Problem[] = problemsFromSplit(parts);
     if (!problems.length && text.trim()) {
@@ -653,11 +764,12 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       issued: input.issued ?? localDateString(new Date()),
       due: input.due ?? '',
       source_pdf: pdfBytes ? 'source.pdf' : '',
-      source_pages: extracted?.pageCount ?? 0,
+      source_pages: extracted?.pageCount || rendered.length,
       import_mode: pdfBytes ? 'pdf' : 'manual',
       split_by: problems.length ? segmented.by : 'manual',
+      has_page_images: rendered.length > 0,
       imported_at: now,
-      needs_manual_text: !!pdfBytes && !text.trim(),
+      needs_manual_text: !!pdfBytes && !text.trim() && rendered.length === 0,
       progress_digest: '',
       progress_digest_at: 0,
       problems,
@@ -668,8 +780,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       version: 1,
     };
 
-    // 原卷 + 文本存档（文本存档即使没抽到也写一份空文件？不——空文件会让人误以为"原文是空的"）
+    // 原卷 + 页面截图 + 文本存档
     if (pdfBytes) store.writeSourcePdf(courseId, sheet.id, pdfBytes);
+    for (const page of rendered) store.writePageImage(courseId, sheet.id, page.page, page.bytes);
     if (text.trim()) store.writeSourceText(courseId, sheet.id, text);
 
     const withDigest = attachDigest(courseId, sheet);
@@ -709,6 +822,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       source_pages: 0,
       import_mode: 'manual',
       split_by: 'manual',
+      has_page_images: false,
       imported_at: Date.now(),
       needs_manual_text: false,
       progress_digest: '',
@@ -791,6 +905,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       text,
       points: parsePoints(text),
       page: 0,
+      has_figure: false,
+      figure_note: '',
       answer: '',
       answer_updated_at: 0,
       answer_edited_by: 'user',
@@ -827,17 +943,44 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   const resplit = async (input: { courseId: string; sheetId: string; useLlm?: boolean }) => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
     if (!sheet) return { ok: false, error: '题集不存在' };
-    const text = store.readSourceText(input.courseId, input.sheetId);
-    if (!text?.trim()) return { ok: false, error: '没有原文存档（source.md），无法重新分块' };
+    const text = store.readSourceText(input.courseId, input.sheetId) ?? '';
+    const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
+    if (!text.trim() && pageNumbers.length === 0) {
+      return { ok: false, error: '没有原文存档（source.md）也没有页面截图，无法重新分块' };
+    }
 
     let parts: SplitProblem[];
-    let usedLlm = false;
+    let by: 'vision' | 'llm' | 'rules' = 'rules';
     let note = '';
-    if (input.useLlm !== false) {
+    if (input.useLlm !== false && pageNumbers.length > 0) {
+      // 有原卷截图 → 多模态重切（最准；也顺手刷新 has_figure）
+      const visionPages: VisionPage[] = pageNumbers.map((n) => {
+        const img = store.readPageImage(input.courseId, input.sheetId, n)!;
+        return { page: n, mediaType: img.mediaType, base64: img.bytes.toString('base64') };
+      });
+      const v = await segmentWithVision(visionPages, askVision);
+      if (v.ok) {
+        parts = v.problems;
+        by = 'vision';
+        log(`多模态重新分块：${parts.length} 题（${v.pages} 页截图）`);
+      } else {
+        warn(`多模态重新分块失败：${v.error ?? '未知原因'} → 退回文本`);
+        note = `多模态读图失败（${v.error ?? '未知原因'}），已退回文本分块`;
+        const seg = await segmentWithLlm(text, askLlm);
+        if (seg.ok) {
+          parts = seg.problems;
+          by = 'llm';
+        } else {
+          warn(`文本重切也失败：${seg.error ?? '未知原因'} → 规则`);
+          parts = splitProblems(text);
+          by = 'rules';
+        }
+      }
+    } else if (input.useLlm !== false) {
       const seg = await segmentWithLlm(text, askLlm);
       if (seg.ok) {
         parts = seg.problems;
-        usedLlm = true;
+        by = 'llm';
         log(`LLM 重新分块：${parts.length} 题（覆盖率 ${Math.round((seg.coverage ?? 1) * 100)}%）`);
       } else {
         warn(`LLM 重新分块失败：${seg.error ?? '未知原因'} → 退回规则`);
@@ -847,7 +990,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     } else {
       parts = splitProblems(text);
     }
-    if (!parts.length) return { ok: false, error: '原文里没识别出题目（规则与 LLM 都没有结果）' };
+    if (!parts.length) return { ok: false, error: '没识别出题目（多模态/LLM 与规则都没有结果）' };
 
     const fresh = problemsFromSplit(parts);
     // 按 label 对齐旧答案（题号是最稳的锚点；重新分块也不该丢答案）
@@ -863,10 +1006,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       }
     }
     sheet.problems = fresh;
-    sheet.split_by = usedLlm ? 'llm' : 'rules';
+    sheet.split_by = by;
     store.writeSheet(input.courseId, sheet);
-    log(`重新分块：${sheet.problems.length} 题（${usedLlm ? 'LLM' : '规则'}，保留 ${kept} 题的答案）`);
-    return { ok: true, sheet, used_llm: usedLlm, note };
+    log(`重新分块：${sheet.problems.length} 题（${by}，保留 ${kept} 题的答案）`);
+    return { ok: true, sheet, used_llm: by !== 'rules', note };
   };
 
   // ============================================================
@@ -893,6 +1036,12 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       .slice(0, 3)
       .map((m) => `${m.problem_label || m.problem_id}：${m.lesson || m.issues.join('；')}`);
 
+    // 有原卷截图就带上：OCR 漏掉的公式/插图在图上还在（多模态检查）
+    const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
+    const pageNo = p.page > 0 && pageNumbers.includes(p.page) ? p.page : pageNumbers[0] ?? 0;
+    const pageImg = pageNo ? store.readPageImage(input.courseId, input.sheetId, pageNo) : null;
+    if (pageImg) log(`检查附带原图：第 ${pageNo} 页（多模态）`);
+
     const result = await runCheck(
       {
         courseTitle: course?.title ?? input.courseId,
@@ -906,8 +1055,12 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         notes: p.notes,
         progressDigest: sheet.progress_digest,
         priorMistakes: prior,
+        pageImage: pageImg
+          ? { base64: pageImg.bytes.toString('base64'), mediaType: pageImg.mediaType, page: pageNo }
+          : undefined,
       },
       askLlm,
+      askVision,
     );
 
     const now = Date.now();
@@ -1935,6 +2088,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       buildSymbols: () => ({ groups: [], notation: null, combining: null }),
       readSourceText: (c, s) => store.readSourceText(c, s),
       sourcePdfPath: (c, s) => (store.hasSourcePdf(c, s) ? store.sourcePdfFile(c, s) : null),
+      readPageImage: (c, s, page) => store.readPageImage(c, s, page),
       submissionPdfPath: (c, s) => {
         const sheet = store.readSheet(c, s);
         if (!sheet?.submission_pdf) return null;

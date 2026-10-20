@@ -38,6 +38,10 @@ export interface ProblemView {
   text: string;
   points: number | null;
   page: number;
+  /** 多模态读图判定：这题带插图/示意图 */
+  has_figure: boolean;
+  /** 插图的一句话描述 */
+  figure_note: string;
   answer: string;
   answer_updated_at: number;
   answer_edited_by: 'user' | 'agent';
@@ -76,6 +80,10 @@ export interface SheetView {
   source_pdf: string;
   source_pages: number;
   import_mode: 'pdf' | 'manual';
+  /** 题目是怎么切出来的（vision = 多模态读图） */
+  split_by: 'vision' | 'llm' | 'rules' | 'manual';
+  /** 有原卷页面截图（pages/page-NN.jpg） */
+  has_page_images: boolean;
   imported_at: number;
   needs_manual_text: boolean;
   progress_digest: string;

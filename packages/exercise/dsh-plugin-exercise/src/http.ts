@@ -139,6 +139,8 @@ export interface ExerciseHttpDeps {
   readSourceText(courseId: string, sheetId: string): string | null;
   /** GET source_pdf / submission 的物理路径（不存在返回 null） */
   sourcePdfPath(courseId: string, sheetId: string): string | null;
+  /** 原卷页面截图（多模态读图渲染的 JPEG）；没有 → null */
+  readPageImage(courseId: string, sheetId: string, page: number): { bytes: Uint8Array; mediaType: string } | null;
   submissionPdfPath(courseId: string, sheetId: string): string | null;
   /** GET print：提交页 HTML（浏览器手动打印/预览） */
   buildPrintHtml(courseId: string, sheetId: string, opts: { draft: boolean }): { ok: true; html: string } | { ok: false; error: string };
@@ -328,6 +330,31 @@ export async function handleExerciseHttp(
           // 下载还是预览：?download=1
           const dl = url.searchParams.get('download') === '1';
           servePdfFile(res, p, dl ? `${course}-${sheet}.pdf` : undefined);
+          return;
+        }
+
+        case 'page': {
+          // 原卷页面截图（多模态读图渲染出来的 JPEG）。界面用它显示"原题截图"。
+          if (!course || !sheet) {
+            jsonError(res, 400, 'course/sheet required');
+            return;
+          }
+          const pageNo = Number(url.searchParams.get('page') ?? '1');
+          if (!Number.isFinite(pageNo) || pageNo < 1) {
+            jsonError(res, 400, 'page must be >= 1');
+            return;
+          }
+          const img = deps.readPageImage(course, sheet, Math.floor(pageNo));
+          if (!img) {
+            jsonError(res, 404, `没有第 ${pageNo} 页截图（这套题可能没有页面图片）`);
+            return;
+          }
+          res.writeHead(200, {
+            'Content-Type': img.mediaType,
+            'Content-Length': String(img.bytes.byteLength),
+            'Cache-Control': 'private, max-age=600',
+          });
+          res.end(Buffer.from(img.bytes));
           return;
         }
 

@@ -25,6 +25,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
+import { pageImageName, pageFromImageName } from './pdf-image.js';
 import {
   courseIndexSchema,
   sheetSchema,
@@ -341,6 +342,49 @@ export class ExerciseStore {
   hasSourcePdf(courseId: string, sheetId: string): boolean {
     const f = this.sourcePdfFile(courseId, sheetId);
     return existsSync(f) && statSync(f).size > 1024;
+  }
+
+  // ---------- 原卷页面截图（多模态读图 + 界面"原题截图"） ----------
+
+  pagesDir(courseId: string, sheetId: string): string {
+    return join(this.sheetDir(courseId, sheetId), 'pages');
+  }
+
+  pageImageFile(courseId: string, sheetId: string, page: number): string {
+    return join(this.pagesDir(courseId, sheetId), pageImageName(page));
+  }
+
+  /** 落盘一页截图（JPEG）。返回写入字节数。 */
+  writePageImage(courseId: string, sheetId: string, page: number, bytes: Uint8Array): number {
+    const dir = this.pagesDir(courseId, sheetId);
+    this.ensureDir(dir);
+    writeFileSync(this.pageImageFile(courseId, sheetId, page), bytes);
+    return bytes.byteLength;
+  }
+
+  /** 读一页截图（没有 → null）。 */
+  readPageImage(courseId: string, sheetId: string, page: number): { bytes: Buffer; mediaType: 'image/jpeg' } | null {
+    const file = this.pageImageFile(courseId, sheetId, page);
+    if (!existsSync(file)) return null;
+    try {
+      return { bytes: readFileSync(file), mediaType: 'image/jpeg' };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 已经存了哪些页（升序页码）。 */
+  listPageImages(courseId: string, sheetId: string): number[] {
+    const dir = this.pagesDir(courseId, sheetId);
+    if (!existsSync(dir)) return [];
+    try {
+      return readdirSync(dir)
+        .map((f) => pageFromImageName(f))
+        .filter((n) => n > 0)
+        .sort((a, b) => a - b);
+    } catch {
+      return [];
+    }
   }
 
   /** 生成人可读的 markdown 导出（含题目/答案/检查结论/经验）。 */

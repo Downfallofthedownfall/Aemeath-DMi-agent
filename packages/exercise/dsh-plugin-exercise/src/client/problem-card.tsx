@@ -1,17 +1,19 @@
 // ============================================================
-// client/problem-card.tsx — 一道题的卡片（题干 + 解答 + 检查）
+// client/problem-card.tsx — 一道题的卡片（题干 + 原题截图 + 解答 + 检查）
 //
-// 外观照 lecture 的笔记卡（.lec-problem 用的是同一批 --aem-* token）：
-//   卡片圆角/阴影/边框与课堂笔记一致；题干放进 .lec-statement（自己滚，
-//   长题不会把解答框顶出屏幕）；状态用 .lec-badge[data-kind] 表达。
+// 外观照 lecture 的笔记卡（.lec-problem 用同一批 --aem-* token）。
 //
-// 题干可编辑：PDF 抽文本对公式为主的作业并不可靠，用户必须能改/补；
-// 改完可以「LLM 重新分块」（按题号保留已写答案）。
+// 2026-10-20 增补（用户实测："OCR 不太准还会漏掉图片，放一张截图更好"）：
+//   每道题下面可以展开**原卷页面截图**（导入时渲染的 pages/page-NN.jpg）。
+//   题干文本仍保留（能搜、能改、能喂检索），但"以图为准"：
+//   带图的题会显示「含图」徽章 + 模型给的图注。
+//
+// 题干可编辑：多模态转录也可能漏字，用户必须能改。
 // ============================================================
 
 import { useState } from 'react';
 import type { ProblemView } from './api.ts';
-import { AnswerEditor, type Inserter } from './answer-editor.tsx';
+import { AnswerEditor } from './answer-editor.tsx';
 import { CheckPanel } from './check-panel.tsx';
 import { MathText } from './math.tsx';
 
@@ -26,11 +28,12 @@ const STATUS_LABEL: Record<string, string> = {
 
 export interface ProblemCardProps {
   problem: ProblemView;
+  /** 原题截图 URL（没有页面图片 → undefined） */
+  pageImageUrl?: string;
   onSave: (patch: { answer?: string; notes?: string; text?: string; title?: string; points?: number | null }) => Promise<void>;
   onCheck: () => void;
   onCollectMistake: () => void;
   onDelete: () => void;
-  registerInserter: (fn: Inserter) => void;
   onToast: (msg: string) => void;
   busy: boolean;
   mistakeCount: number;
@@ -38,11 +41,11 @@ export interface ProblemCardProps {
 
 export function ProblemCard({
   problem,
+  pageImageUrl,
   onSave,
   onCheck,
   onCollectMistake,
   onDelete,
-  registerInserter,
   onToast,
   busy,
   mistakeCount,
@@ -50,6 +53,7 @@ export function ProblemCard({
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(problem.text);
   const [savingText, setSavingText] = useState(false);
+  const [showPage, setShowPage] = useState(problem.has_figure);
 
   const status = problem.status;
 
@@ -72,6 +76,7 @@ export function ProblemCard({
         <span className="lec-problem-no">{problem.label || problem.id}</span>
         {problem.points != null && <span className="lec-badge" data-kind="points">{problem.points} P</span>}
         <span className="lec-badge" data-kind={status}>{STATUS_LABEL[status] ?? status}</span>
+        {problem.has_figure && <span className="lec-badge" data-kind="figure">含图</span>}
         {problem.page > 0 && <span className="lec-badge" data-kind="todo">原卷第 {problem.page} 页</span>}
         {problem.answer_edited_by === 'agent' && <span className="lec-badge">agent 代笔</span>}
         {problem.title && <span className="lec-problem-title">{problem.title}</span>}
@@ -109,7 +114,27 @@ export function ProblemCard({
           {problem.text.trim() ? (
             <MathText text={problem.text} compact />
           ) : (
-            <span className="lec-hint">（题干缺失 —— 点「改题干」补上）</span>
+            <span className="lec-hint">（题干缺失 —— 点「改题干」补上，或看下面的原题截图）</span>
+          )}
+        </div>
+      )}
+
+      {problem.figure_note && <div className="lec-fignote">图注：{problem.figure_note}</div>}
+
+      {pageImageUrl && (
+        <div className="lec-pagefig" data-figure={problem.has_figure ? '1' : '0'}>
+          <div className="lec-toolrow" style={{ marginTop: 4 }}>
+            <button type="button" className="lec-btn lec-btn-ghost" onClick={() => setShowPage((v) => !v)}>
+              {showPage ? '收起原题截图' : `原题截图（第 ${problem.page || 1} 页）`}
+            </button>
+            <a className="lec-btn lec-btn-ghost" href={pageImageUrl} target="_blank" rel="noreferrer">
+              新窗口打开
+            </a>
+          </div>
+          {showPage && (
+            <div className="lec-pageimg">
+              <img src={pageImageUrl} alt={`原卷第 ${problem.page || 1} 页`} loading="lazy" />
+            </div>
           )}
         </div>
       )}
@@ -117,7 +142,6 @@ export function ProblemCard({
       <AnswerEditor
         problem={problem}
         onSave={onSave}
-        registerInserter={registerInserter}
         onCheck={onCheck}
         onCollectMistake={onCollectMistake}
         onToast={onToast}

@@ -1038,6 +1038,36 @@ const CSS = `
 .${EX_CLASS} .lec-symgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(50px, 1fr)); gap: 5px; margin-top: 6px; }
 .${EX_CLASS} .lec-symsearch { width: 100%; box-sizing: border-box; height: 28px; padding: 0 9px; margin-bottom: 8px; border-radius: var(--aem-radius-ctl); border: 1px solid var(--aem-line); background: var(--aem-surface); color: var(--aem-ink); font: inherit; font-size: 12px; outline: none; }
 
+/* ---- 答案编辑器：分栏实时渲染（写的时候右边就是排好版的公式） ---- */
+. .lec-tab { white-space: nowrap; }
+.${EX_CLASS} .lec-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+.${EX_CLASS} .lec-editor[data-mode="write"] { grid-template-columns: 1fr; }
+.${EX_CLASS} .lec-editor[data-mode="write"] .lec-preview-pane { display: none; }
+.${EX_CLASS} .lec-editor[data-mode="render"] { grid-template-columns: 1fr; }
+.${EX_CLASS} .lec-editor[data-mode="render"] .lec-textarea { display: none; }
+.${EX_CLASS} .lec-preview-pane {
+  max-height: 260px; overflow-y: auto; overscroll-behavior: contain;
+  padding: 10px 12px; border-radius: var(--aem-radius-ctl);
+  border: 1px solid var(--aem-line); background: var(--aem-surface);
+  font-size: 12.5px; line-height: 1.75;
+}
+.${EX_CLASS} .lec-preview-pane:empty::before { content: "（排版预览）"; color: var(--aem-ink-dim); }
+.${EX_CLASS} .lec-editor[data-mode="render"] .lec-preview-pane { max-height: 46vh; }
+@media (max-width: 900px) { .${EX_CLASS} .lec-editor { grid-template-columns: 1fr; } }
+
+/* ---- 原题截图（多模态渲染出来的原卷页面） ---- */
+.${EX_CLASS} .lec-pagefig { margin: 8px 0 4px; }
+/* 原图容器：限高 + 自己滚，展开时不会把解答框顶到屏幕外 */
+.${EX_CLASS} .lec-pagefig .lec-pageimg {
+  margin-top: 6px; max-height: 58vh; overflow: auto; overscroll-behavior: contain;
+  border-radius: var(--aem-radius-ctl); border: 1px solid var(--aem-line); background: #fff;
+}
+.${EX_CLASS} .lec-pagefig img {
+  display: block; width: 100%; height: auto; background: #fff;
+}
+.${EX_CLASS} .lec-pagefig[data-figure="1"] { border-left: 3px solid var(--aem-accent); padding-left: 8px; }
+.${EX_CLASS} .lec-fignote { font-size: 11.5px; color: var(--aem-ink-soft); margin-top: 4px; }
+.${EX_CLASS} .lec-badge[data-kind="figure"] { background: var(--aem-accent-soft); color: var(--aem-accent); }
 /* toast */
 .${EX_CLASS} .lec-toast {
   position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);

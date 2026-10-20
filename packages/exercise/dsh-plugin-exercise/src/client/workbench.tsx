@@ -30,7 +30,7 @@ import { ProblemCard } from './problem-card.tsx';
 import { MistakesPanel } from './mistakes-panel.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { ImportDialog } from './import-dialog.tsx';
-import type { Inserter } from './answer-editor.tsx';
+import { insertIntoActiveEditor } from './answer-editor.tsx';
 import { MathText } from './math.tsx';
 import { EX_CLASS } from './styles.ts';
 
@@ -66,7 +66,6 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
   const [navOpen, setNavOpen] = useState(true);
   /** 每门课的折叠状态（`true` = 收起）；未记录的课按"当前选中那门展开"处理。 */
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const inserterRef = useRef<Inserter | null>(null);
   const toastTimer = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -74,10 +73,6 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     setToast(msg);
     if (toastTimer.current != null) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(''), 4200);
-  }, []);
-
-  const registerInserter = useCallback((fn: Inserter) => {
-    inserterRef.current = fn;
   }, []);
 
   const loadCourses = useCallback(async (): Promise<CourseView[]> => {
@@ -605,13 +600,17 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                   <ProblemCard
                     key={p.id}
                     problem={p}
+                    pageImageUrl={
+                      sheet.has_page_images && courseId
+                        ? `${API_BASE}?action=page&course=${encodeURIComponent(courseId)}&sheet=${encodeURIComponent(sheet.id)}&page=${p.page || 1}`
+                        : undefined
+                    }
                     busy={busyProblem === p.id}
                     mistakeCount={p.mistakes.length}
                     onSave={(patch) => saveProblem(p.id, patch)}
                     onCheck={() => void checkProblem(p.id)}
                     onCollectMistake={() => void collectMistake(p.id)}
                     onDelete={() => void deleteProblem(p.id)}
-                    registerInserter={registerInserter}
                     onToast={showToast}
                   />
                 ))}
@@ -640,10 +639,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
           <div className="lec-sidebody">
             {tab === 'symbols' && (
               <SymbolPanel
-                onInsert={(text, caret) => {
-                  const fn = inserterRef.current;
-                  return fn ? fn(text, caret) : false;
-                }}
+                onInsert={(text, caret) => insertIntoActiveEditor(text, caret)}
                 onToast={showToast}
               />
             )}

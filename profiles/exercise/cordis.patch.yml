@@ -66,14 +66,6 @@
               - '科学表明'
               - '数据显示'
 
-    # —— 前端 UI 插件（aemeath 设计语言；browser 半区经 dsh.client 进入 __DSH_BOOT__）——
-    - id: aemeath-ui
-      name: '@aemeath/dsh-plugin-ui'
-      config:
-        locale: ''
-        ttsEnabled: false
-        ttsVolume: 1
-
     # —— 习题插件（host：工具 + HTTP 桥 + PDF 管线；client：三栏工作台）——
     - id: aemeath-exercise
       name: '@aemeath/dsh-plugin-exercise'
@@ -99,6 +91,16 @@
         # 空 = 自动发现 Chrome/Edge/Chromium（Windows Edge 一定在）
         chromePath: ''
 
+# —— 前端 UI 插件（aemeath 设计语言；browser 半区经 dsh.client 进入 __DSH_BOOT__）——
+#    ⚠️ 放在**顶层**而不是 insert 列表里：aemeath-ui 会把前端上报的 locale
+#    写回它的配置；放在 insert 里它找不到条目 → 会往文件末尾**追加重复条目**
+#    （真机踩过：每次启动多一份 - id: aemeath-ui）。
+- id: aemeath-ui
+  name: '@aemeath/dsh-plugin-ui'
+  config:
+    locale: ''
+    ttsEnabled: false
+    ttsVolume: 1
 # —— 重新启用文件系统工具（题目/答案要落盘）——
 - id: tool-fs
   disabled: false
