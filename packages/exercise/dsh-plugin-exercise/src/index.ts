@@ -45,6 +45,7 @@ import { segmentWithLlm } from './llm-split.js';
 import { renderPdfPages, type RenderedPage } from './pdf-image.js';
 import { segmentWithVision, type AskVision, type VisionPage } from './vision.js';
 import { collectMathIssuesInText } from './mathlive-compat.js';
+import { renderTextExport, syncTextExport, type CourseSnapshot } from './text-export.js';
 import {
   buildProgressDigest,
   daysUntil,
@@ -115,6 +116,12 @@ export const Config = z.object({
   lectureDataDir: z.string().default('packages/library/physicist/lectures'),
   /** 检查结果 wrong/partial 时自动进错题本（仍可手动改/删）。 */
   autoCollectMistakes: z.boolean().default(true),
+  /**
+   * 纯文本导出目录（markdown，给 git 管理用）。
+   * 空 = 数据目录同级的 `exercises-md/`（`<dataDir>/../exercises-md`）。
+   * 想进版本库就把这个目录从 .gitignore 里放出来。
+   */
+  textExportDir: z.string().default(''),
   /** 生成提交包时的默认学生姓名（留空 → PDF 上留签名线）。 */
   studentName: z.string().default(''),
   /** 是否把原卷合并进提交包。 */
@@ -141,6 +148,7 @@ export interface ExerciseConfig {
   worldbookLibraryDir?: string;
   lectureDataDir?: string;
   autoCollectMistakes?: boolean;
+  textExportDir?: string;
   studentName?: string;
   includeSourcePdf?: boolean;
   submissionOrder?: string;
@@ -195,6 +203,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   const worldbookDir = config.worldbookLibraryDir ?? 'packages/worldbook/data/physicist';
   const lectureDataDir = config.lectureDataDir ?? 'packages/library/physicist/lectures';
   const autoCollect = config.autoCollectMistakes ?? true;
+  // 文本导出目录：空 = packages/library/physicist-md/（**不在** gitignore 覆盖范围内，git add 就能管）
+  const textExportDir = config.textExportDir || 'packages/library/physicist-md';
   const studentName = config.studentName ?? '';
   const includeSourceDefault = config.includeSourcePdf ?? true;
   const submissionOrder = config.submissionOrder === 'solutions-first' ? 'solutions-first' : 'sheet-first';
@@ -1447,6 +1457,40 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   };
 
   // ============================================================
+  // 纯文本导出（markdown，给 git 管理用）
+  // ============================================================
+
+  /**
+   * 把习题库导出成纯文本。
+   *
+   * 用户要求：「加一个导出为文本的功能，这样方便 git 管理」。
+   * 确定性（内容不变就不产生 diff）+ 只清理自己写过的文件（见 text-export.ts）。
+   */
+  const exportText = async (input: { courseId?: string } = {}) => {
+    const ids = input.courseId ? [input.courseId] : store.listCourses();
+    const courses: CourseSnapshot[] = [];
+    for (const id of ids) {
+      const index = store.readIndex(id);
+      if (!index) continue;
+      courses.push({ index, sheets: store.listSheets(id) });
+    }
+    if (!courses.length) return { ok: false, error: '还没有课程（先导入或新建一套题）' } as const;
+
+    const mistakes = store.readMistakes().filter((m) => !input.courseId || m.course_id === input.courseId);
+    const files = renderTextExport({ courses, mistakes });
+    try {
+      const r = syncTextExport(textExportDir, files);
+      log(
+        `文本导出：${r.dir}（写 ${r.written.length} · 未变 ${r.unchanged.length}` +
+          `${r.removed.length ? ` · 删 ${r.removed.length}` : ''}）`,
+      );
+      return { ok: true, ...r, files: [...files.keys()].sort() } as const;
+    } catch (e) {
+      return { ok: false, error: `写导出目录失败：${(e as Error).message}` } as const;
+    }
+  };
+
+  // ============================================================
   // 握手导出 / 导入
   // ============================================================
 
@@ -2010,6 +2054,31 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   ctx.tools.register(
     defineTool({
+      name: 'exercise_export_text',
+      description:
+        '把习题库导出成**纯文本 markdown**（题干/答案/检查/经验/错题），方便 git 管理：' +
+        '确定性输出（内容没变不产生 diff），套题删除后重新导出会移除对应文件。' +
+        '目录由 config.textExportDir 决定（默认数据目录同级的 exercises-md/）。',
+      parameters: {
+        course_id: { type: 'string', description: '只导出某一门课（缺省 = 全部）' },
+      },
+      output: { schema: { type: 'json' }, render: renderJson },
+      execute: async (args: { course_id?: string }) => {
+        const r = await exportText({ courseId: args.course_id });
+        if (!r.ok) return fail(r.error);
+        return ok({
+          dir: r.dir,
+          written: r.written.length,
+          unchanged: r.unchanged.length,
+          removed: r.removed.length,
+          files: JSON.stringify(r.files),
+        });
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
       name: 'exercise_export_handoff',
       description:
         '导出习题握手包（进度 + 错题 + 经验）供另一台机器的主 agent 导入。' +
@@ -2225,6 +2294,19 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           math_warnings: Array.isArray(d.math_warnings) ? (d.math_warnings as string[]) : undefined,
         };
       },
+            onExportText: async (input) => {
+        const r = await exportText(input);
+        return r.ok
+          ? {
+              ok: true,
+              dir: r.dir,
+              written: r.written,
+              unchanged: r.unchanged,
+              removed: r.removed,
+              files: r.files,
+            }
+          : { ok: false, error: r.error };
+      },
       onExportHandoff: async (input) => {
         const r = await exportHandoff(input);
         return r.ok ? { ok: true, files: r.files, summaries: r.summaries, dir: r.dir } : { ok: false, error: r.error };
@@ -2331,6 +2413,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   log(
     '工具已注册：exercise_list / exercise_new_sheet / exercise_open / exercise_problem / ' +
       'exercise_save_answer / exercise_resplit / exercise_check / exercise_collect_mistake / exercise_lessons / ' +
+        'exercise_export_text / ' +
       'exercise_sync_worldbook / exercise_build_submission / exercise_progress / ' +
       'exercise_export_handoff / exercise_import_handoff',
   );

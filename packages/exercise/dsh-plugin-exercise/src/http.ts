@@ -217,6 +217,17 @@ export interface ExerciseHttpDeps {
     hint?: string;
   }>;
 
+  /** POST export_text（纯文本 / markdown，给 git 管理用） */
+  onExportText(input: { courseId?: string }): Promise<{
+    ok: boolean;
+    error?: string;
+    dir?: string;
+    written?: string[];
+    unchanged?: string[];
+    removed?: string[];
+    files?: string[];
+  }>;
+
   /** POST export_handoff */
   onExportHandoff(input: { courseId?: string }): Promise<{ ok: boolean; error?: string; files?: string[]; summaries?: string[]; dir?: string }>;
 
@@ -611,6 +622,12 @@ export async function handleExerciseHttp(
             order,
             draft: parsed.draft === true,
           });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'export_text': {
+          const r = await deps.onExportText({ courseId: courseId || undefined });
           json(res, r.ok ? 200 : 400, r);
           return;
         }

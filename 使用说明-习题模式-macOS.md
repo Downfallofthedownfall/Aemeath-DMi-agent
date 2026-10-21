@@ -155,7 +155,24 @@ AEMEATH_EXERCISE_PORT=4000 ./scripts/exercise-mac.sh
 > 没装 Chrome/Edge 时：界面提示「打开打印页」→ 浏览器里 **⌘P → 存储为 PDF**。
 > 内部 verdict 徽章打印时自动隐藏，不会印到交给助教的那份上。
 
-### 6. 导出去主 agent（可选）
+### 6. 导出成文本（给 git 管理）
+
+左栏最下面 **「导出文本」**：把题库导出成 markdown（`README.md` / `mistakes.md` / 每门课一份 `README.md` + 每套题一份 `<套>.md`）。
+
+- **确定性**：内容没变就不重写、不产生 diff；改一题只重写那一个文件
+- 一题一段（题干 / 我的解答 / 备注 / 检查 / 错题 / 经验），答案保留原始 LaTeX
+- 删掉某套题后重新导出会移除对应 md；**你自己放进目录的文件不会被删**
+- 目录默认 `packages/library/physicist-md/`（可用 `textExportDir` 改），它**不在 gitignore 里**：
+
+```bash
+git add packages/library/physicist-md
+git commit -m "übungen: 第 3 套 + 错题整理"
+```
+
+> ⚠️ 这个目录里有你的答案和错题。不打算推到远端的话，把它加进 `.gitignore`，或只提交到私有仓库。
+> ⚠️ 每个文件头都写着"自动生成，请勿手改" —— 手改会在下次导出被覆盖；要改内容回界面改。
+
+### 7. 导出去主 agent（可选）
 
 右上「导出握手」→ 生成 `*-exercise-handoff.json`（课程进度 + 错题 + 经验，**不含**答案原文）。
 拿到 Windows 机器后，在主 agent 的习题界面点「导入握手」（先试运行给你看会写什么），
@@ -201,7 +218,8 @@ packages/library/physicist/exercises/
 | `submissionOrder` | `sheet-first` | `solutions-first` 则解答在前 |
 | `chromePath` | 空 | 空 = 自动找 Chrome/Edge；填绝对路径可指定 |
 | `llm.provider` / `llm.model` | 空 | **一般不用填**：留空就走全局 dsh 的 LLM（与主 agent 同一个 provider/模型/凭据）。只有想单独指定检查模型时才填 |
-| `ui-theme.preference` | `dark` | **与主 agent 保持一致**；改外观时两处一起改 |
+| `textExportDir` | `packages/library/physicist-md` | 纯文本导出目录（markdown）。**不在 gitignore 里**，`git add` 就能管；里面有你的答案，不想进远端就自己加 ignore |
+| ui-theme.preference | dark | **与主 agent 保持一致**；改外观时两处一起改 |
 
 ---
 

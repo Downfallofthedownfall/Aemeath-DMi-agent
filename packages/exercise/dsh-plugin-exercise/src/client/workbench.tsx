@@ -248,6 +248,29 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     }
   };
 
+  /** 导出纯文本（markdown）：确定性输出，给 git 管理用。 */
+  const exportText = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const r = await apiPost<{
+        dir: string;
+        written: string[];
+        unchanged: string[];
+        removed: string[];
+        files: string[];
+      }>('export_text', {});
+      await refreshAfterWrite();
+      showToast(
+        `已导出文本到 ${r.dir}\n写 ${r.written.length} 个 · 未变 ${r.unchanged.length}` +
+          `${r.removed.length ? ` · 删 ${r.removed.length}` : ''}（共 ${r.files.length} 个文件）`,
+      );
+    } catch (e) {
+      showToast(`导出失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const buildSubmission = async (): Promise<void> => {
     if (!courseId || !sheet) return;
     setBusy(true);
@@ -542,10 +565,20 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                 ＋ 添加题目
               </button>
               {sheet?.submitted_at ? (
-                <button type="button" className="lec-btn lec-btn-ghost" style={{ width: '100%' }} onClick={() => openPdf('submission', true)}>
+                <button type="button" className="lec-btn lec-btn-ghost" style={{ width: '100%', marginBottom: 6 }} onClick={() => openPdf('submission', true)}>
                   下载上次提交包
                 </button>
               ) : null}
+              <button
+                type="button"
+                className="lec-btn lec-btn-ghost"
+                style={{ width: '100%' }}
+                onClick={() => void exportText()}
+                disabled={busy}
+                title="把全部习题导出成 markdown（确定性输出，方便 git diff）"
+              >
+                导出文本
+              </button>
             </div>
             {error ? <div className="lec-warn" style={{ padding: '0 10px' }}>{error}</div> : null}
           </aside>
