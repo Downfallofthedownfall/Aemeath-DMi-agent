@@ -1,15 +1,17 @@
 // ============================================================
 // symbol-insert.ts — 把 lecture 的符号模板变成"纯文本答案框"能用的插入文本
 //
-// 背景（用户实测，三轮修正）：
+// 三轮修正后的最终形态（用户定案 2026-10-21）：
 //   ① 「符号全是 placeholder」：lecture 的 insert 是给 MathLive 的
 //      （`\int_{\placeholder{}}^{\placeholder{}}`），普通 textarea 里就是字面量。
 //      → `toPlainLatex()` 把 `_{\placeholder{}}` / `_{$1}` 转成 `_{}`。
-//   ② 「插入后不渲染」：lecture 数据是**数学模式内的片段**，不带 `$` 分隔符；
-//      而习题答案框是"markdown + 公式"混排，必须有分隔符。
-//      → 插入时**自动包一层**：普通符号 `$…$`，含换行/`\begin{…}` 的结构用 `$$…$$`；
-//        已经带 `$` 的模板不动（避免 `$$` 套 `$`）。
-//   ③ 光标：包了分隔符之后，偏移要把开分隔符的长度算进去。
+//   ② 「插入后不渲染」：曾短暂地在插入时自动包 `$…$`。
+//      → **已撤销**（用户："不要注入 $ 了，反正大部分时间都是在 LaTeX 里写一长串，
+//        所以 $ 我自己手动就行了"）。
+//        插入的就是**裸 LaTeX**，`$` 由用户自己写。
+//        单独成行的裸 LaTeX 仍然会渲染（math-parse 的 isBareLatexLine），
+//        所以"开一行写一条公式"这条路不需要 `$`；句子里混排才需要。
+//   ③ 光标：落在第一个空组里（`\sum_{}^{}` → `{}` 之间），点完直接打上限。
 //
 // 纯函数，单测见 test/check8.mjs。
 // ============================================================
@@ -45,34 +47,14 @@ export function toPlainLatex(insert: string): string {
 /**
  * 计算"点一下符号"要插什么、光标落哪。
  *
- * - 已含 `$` 的模板：原样（不再包）
- * - 含换行 / `\begin{…}`：`$$…$$`
- * - 其余：`$…$`
- * - `caret` 是相对插入文本的偏移（含开分隔符）；调用方加到插入位置上即可
+ * **不包 `$`**（用户定案）：插入裸 LaTeX，分隔符由用户自己写。
+ * 模板自带 `$` 的也原样保留（那种数据本来就是要整段插入的）。
  */
 export function symbolInsertion(sym: SymbolLike): SymbolInsertion {
   const raw = sym.template && sym.template.trim() ? sym.template : (sym.insert ?? '');
-  const core0 = toPlainLatex(raw);
-
-  // 结尾空白放在分隔符**外面**：`$\int$ ` 比 `$\int $` 更贴近视觉
-  const m = /(\s+)$/.exec(core0);
-  const trailing = m ? m[1]! : '';
-  const core = trailing ? core0.slice(0, -trailing.length) : core0;
-
-  const inner = core.search(/\{\}|\(\)|\[\]/);
-  const innerOffset = inner === -1 ? core.length : inner + 1;
-
-  if (core.includes('$')) {
-    // 模板自带分隔符：不动它
-    return { text: core0, caret: innerOffset + trailing.length };
-  }
-
-  const display = core.includes('\n') || /\\begin\{/.test(core);
-  const open = display ? '$$' : '$';
-  return {
-    text: `${open}${core}${open}${trailing}`,
-    caret: open.length + innerOffset,
-  };
+  const text = toPlainLatex(raw);
+  const idx = text.search(/\{\}|\(\)|\[\]/);
+  return { text, caret: idx === -1 ? text.length : idx + 1 };
 }
 
 /** 在选区处插入（纯函数，便于单测；DOM 部分在 client 侧）。 */
