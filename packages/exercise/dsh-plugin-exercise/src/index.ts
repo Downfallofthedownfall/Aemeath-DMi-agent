@@ -44,6 +44,7 @@ import { splitProblems, type SplitProblem } from './split.js';
 import { segmentWithLlm } from './llm-split.js';
 import { renderPdfPages, type RenderedPage } from './pdf-image.js';
 import { segmentWithVision, type AskVision, type VisionPage } from './vision.js';
+import { collectMathIssuesInText } from './mathlive-compat.js';
 import {
   buildProgressDigest,
   daysUntil,
@@ -1413,6 +1414,22 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     sheet.submission_pages = res.pages ?? 0;
     store.writeSheet(input.courseId, sheet);
     store.writeSheetMarkdown(input.courseId, sheet);
+
+    // 公式里有没有 KaTeX 不认识的命令（讲义 MathLive 宏已在渲染期归一，
+    // 这里抓的是"归一之后仍然解析不了"的）：PDF 会和预览一样显示红字，
+    // 至少要让用户知道是哪个命令、该写成什么。
+    const mathWarnings: string[] = [];
+    for (const p of sheet.problems) {
+      const issues = collectMathIssuesInText(`${p.text}\n${p.answer}`);
+      for (const i of issues) {
+        const line = `${p.label || p.id}：KaTeX 不认识 ${i.command}（${i.hint}）`;
+        if (!mathWarnings.includes(line)) mathWarnings.push(line);
+      }
+    }
+    if (mathWarnings.length) {
+      warn(`提交包里有 ${mathWarnings.length} 处公式命令问题：\n  ${mathWarnings.join('\n  ')}`);
+    }
+
     log(
       `提交包已生成：${outPdf}（${res.pages} 页 / ${Math.round((res.bytes ?? 0) / 1024)} KB）` +
         `renderer=${res.renderer ?? chrome.name} merged=${res.merged}`,
@@ -1423,6 +1440,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       pages: res.pages ?? 0,
       bytes: res.bytes ?? 0,
       renderer: res.renderer ?? chrome.name,
+      math_warnings: mathWarnings,
       url: `/aemeath/api/exercise/submission?course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}&download=1`,
       print_url: `/aemeath/api/exercise/print?course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}`,
     } as const;
@@ -2204,6 +2222,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           print_url: typeof d.print_url === 'string' ? d.print_url : undefined,
           renderer: typeof d.renderer === 'string' ? d.renderer : undefined,
           hint: typeof d.hint === 'string' ? d.hint : undefined,
+          math_warnings: Array.isArray(d.math_warnings) ? (d.math_warnings as string[]) : undefined,
         };
       },
       onExportHandoff: async (input) => {

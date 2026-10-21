@@ -12,6 +12,7 @@
 
 import { useMemo } from 'react';
 import katex from 'katex';
+import { normalizeMathLive } from '../mathlive-compat.ts';
 import {
   buildRenderBlocks,
   hasMath,
@@ -34,10 +35,16 @@ function ensureMathCss(): void {
   document.head.appendChild(link);
 }
 
-/** 渲染一段 LaTeX（失败 → 可读源码，绝不丢内容）。 */
+/**
+ * 渲染一段 LaTeX（失败 → 可读源码，绝不丢内容）。
+ *
+ * 渲染前先过 **MathLive 兼容层**：讲义复制过来的 `\differentialD` 之类 KaTeX 不认，
+ * `throwOnError:false` 会把它画成红字塞进公式内部（`\frac` 的分母会被撑坏）。
+ */
 export function renderTex(tex: string, display: boolean): string {
+  const src = normalizeMathLive(tex).tex;
   try {
-    return katex.renderToString(tex, {
+    return katex.renderToString(src, {
       displayMode: display,
       throwOnError: false,
       errorColor: '#c0392b',

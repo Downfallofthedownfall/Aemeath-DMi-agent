@@ -19,10 +19,11 @@
 // 保存：900ms 防抖 + 失焦；答案一改，host 会把旧检查标 stale（D6）。
 // ============================================================
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProblemView } from './api.ts';
 import { MathText } from './math.tsx';
 import { hasMath } from '../math-parse.ts';
+import { collectMathLiveReplacements, collectMathIssuesInText } from '../mathlive-compat.ts';
 
 export type Inserter = (text: string, caretOffset: number) => boolean;
 
@@ -90,6 +91,9 @@ export function AnswerEditor({
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [mode, setMode] = useState<EditorMode>('split');
+  // 公式内容层面的提示（渲染期兼容 + 未知命令）
+  const mathReplacements = useMemo(() => collectMathLiveReplacements(draft), [draft]);
+  const mathIssues = useMemo(() => collectMathIssuesInText(draft), [draft]);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const timer = useRef<number | null>(null);
@@ -240,6 +244,39 @@ export function AnswerEditor({
       {draft.trim() && !hasMath(draft) && /\\[A-Za-z]+/.test(draft) && (
         <div className="lec-hint" style={{ marginTop: 6 }}>
           这段里有 <code>\命令</code> 但没被当成公式 —— 用 <code>$…$</code> 包起来（或单独占一行写成一条公式）就会渲染。
+        </div>
+      )}
+
+      {/* 公式内容层面的问题（这条与上一条分工不同：上一行是"没认成公式"，这里是"认成了但内容错"） */}
+      {mathReplacements.length > 0 && (
+        <div className="lec-hint" style={{ marginTop: 6 }}>
+          讲义里的 MathLive 宏已自动按通用写法渲染：
+          {mathReplacements.map((r) => (
+            <span key={r.from}>
+              {' '}
+              <code>{r.from}</code> → <code>{r.to}</code>
+            </span>
+          ))}
+          {mathReplacements.some((r) => r.note) && (
+            <>
+              <br />
+              {mathReplacements
+                .filter((r) => r.note)
+                .map((r) => r.note)
+                .join('；')}
+            </>
+          )}
+        </div>
+      )}
+      {mathIssues.length > 0 && (
+        <div className="lec-warn" style={{ marginTop: 6, fontWeight: 400 }}>
+          KaTeX 无法解析这些命令，公式里会显示红字：
+          {mathIssues.map((i) => (
+            <div key={i.command} style={{ marginTop: 2 }}>
+              <code>{i.command}</code>
+              {i.position > 0 ? `（位置 ${i.position}）` : ''} —— {i.hint}
+            </div>
+          ))}
         </div>
       )}
 

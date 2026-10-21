@@ -253,12 +253,20 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     setBusy(true);
     setPrintUrl('');
     try {
-      const r = await apiPost<{ url: string; pages: number; bytes: number; renderer?: string }>('build_submission', {
-        course_id: courseId,
-        sheet_id: sheet.id,
-      });
+      const r = await apiPost<{ url: string; pages: number; bytes: number; renderer?: string; math_warnings?: string[] }>(
+        'build_submission',
+        {
+          course_id: courseId,
+          sheet_id: sheet.id,
+        },
+      );
       await refreshAfterWrite();
-      showToast(`提交包已生成：${r.pages} 页（${Math.round(r.bytes / 1024)} KB，${r.renderer ?? '浏览器'}）—— 正在下载`);
+      showToast(
+        `提交包已生成：${r.pages} 页（${Math.round(r.bytes / 1024)} KB，${r.renderer ?? '浏览器'}）—— 正在下载` +
+          (r.math_warnings?.length
+            ? `\n⚠ 有 ${r.math_warnings.length} 处公式命令 KaTeX 不认（PDF 里会是红字）：\n${r.math_warnings.join('\n')}`
+            : ''),
+      );
       window.open(r.url, '_blank');
     } catch (e) {
       const err = e as ApiError;

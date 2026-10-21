@@ -17,6 +17,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, basename } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import katex from 'katex';
+import { normalizeMathLive } from './mathlive-compat.js';
 
 let katexDirCache: string | null | undefined;
 
@@ -37,9 +38,12 @@ function katexDir(): string | null {
  *
  * `throwOnError: false` 是刻意的：**用户写错的公式不该让整张提交 PDF 生成失败**。
  * KaTeX 会把它渲染成红字错误提示，用户一看就知道哪一处没写对。
+ *
+ * 渲染前先过 MathLive 兼容层（`\differentialD` → `\mathrm{d}` 等），
+ * 与界面 `client/math.tsx` 用**同一个函数**，保证屏幕与打印一致。
  */
 export function renderMathToHtml(tex: string, display: boolean): string {
-  const src = (tex ?? '').trim();
+  const src = normalizeMathLive((tex ?? '').trim()).tex;
   if (!src) return '';
   try {
     return katex.renderToString(src, {
