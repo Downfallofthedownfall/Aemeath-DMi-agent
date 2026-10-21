@@ -1098,4 +1098,50 @@ t('长公式不撑破中栏（自己横向滚动）', () => {
   );
 });
 
+t('复制公式要得到 LaTeX 源码（不是渲染后的字符）', () => {
+  // 真机反馈："复制出来的不是 latex 格式"。
+  //
+  // MathLive 渲染后的公式，字符虽是真实 Unicode，但复制出来带一堆
+  // 结构性的换行和空白（`i=1\n∑\nn\n α ...`）—— 粘到别处既难看
+  // 也没法再当公式编辑。
+  //
+  // 做法：拦截 copy 事件，把公式元素换成 `$…$` 文本。
+  assert.match(markupSrc, /export function useLatexAwareCopy/, '应有复制拦截 hook');
+  assert.match(markupSrc, /data-latex/, '公式元素要带原始 LaTeX');
+  assert.match(markupSrc, /setData\('text\/plain'/, '应写回纯文本剪贴板');
+  // 源码里是模板字符串 `$${latex}$` —— 即 $ + ${latex} + $
+  assert.match(markupSrc, /\$\{latex\}\$/, '应包成 $…$');
+  // 必须挂在界面上，否则等于没写
+  assert.match(wbLive2, /useLatexAwareCopy\(\)/, '工作台应启用该 hook');
+});
+
+t('复制拦截不能妨碍普通复制', () => {
+  // 选区里没有公式时**直接返回**，走浏览器默认行为。
+  // 否则纯文字复制会被我们的拼接逻辑破坏（换行、缩进、富文本）。
+  const seg = markupSrc.match(/const onCopy = \(e: ClipboardEvent\)[\s\S]{0,1400}/);
+  assert.ok(seg, '找不到 onCopy');
+  assert.match(seg[0], /maths\.length === 0\) return/, '没有公式应放行');
+  // 取不到文本时也要放行（别把人家的复制弄丢）
+  assert.match(seg[0], /if \(!text\) return/, '拼接失败应放行');
+});
+
+t('选中单个公式也能复制（选区落在它内部）', () => {
+  // 实测坑：双击/拖选一个公式时，克隆出的 frag 里只有公式的**子节点**，
+  // 没有 data-latex，按"有没有公式"判断会误判为没有 → 复制出空白。
+  const seg = markupSrc.match(/const onCopy = \(e: ClipboardEvent\)[\s\S]{0,1400}/);
+  assert.ok(seg, '找不到 onCopy');
+  assert.match(seg[0], /closest\('\[data-latex\]'\)/, '应检查选区是否落在公式内部');
+});
+
+t('复制出的文本要保留块级换行', () => {
+  // 实测坑：用 innerText 取游离/绝对定位容器的文本，
+  // `<h3>速记块 1</h3><div>正文…</div>` 被粘成一行
+  // `速记块 1这是短公式…`。所以自己按块级标签插换行。
+  assert.match(markupSrc, /function fragToText/, '应用自己的拼接函数');
+  assert.match(markupSrc, /BLOCK_TAGS/, '应识别块级标签');
+  const seg = markupSrc.match(/const BLOCK_TAGS[\s\S]{0,200}/);
+  assert.ok(seg, '找不到 BLOCK_TAGS');
+  assert.match(seg[0], /H1.*H6|'H3'/, '标题算块级');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

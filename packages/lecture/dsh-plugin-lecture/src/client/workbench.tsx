@@ -22,7 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReviewPanel } from './review-panel.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { MathComposer, type MathComposerApi } from './math-composer.tsx';
-import { MathMarkup } from './math-markup.tsx';
+import { MathMarkup, useLatexAwareCopy } from './math-markup.tsx';
 import { LECTURE_CLASS } from './styles.ts';
 
 const API = '/aemeath/api/lecture';
@@ -157,6 +157,8 @@ type RightTab = 'symbols' | 'review';
  * @param standalone 独立窗口（铺满整窗）还是嵌在主 agent 里（侧栏弹层）。
  */
 export function Workbench({ onClose, standalone = false }: { onClose: () => void; standalone?: boolean }): JSX.Element {
+  // 复制笔记时把公式还原成 `$…$` LaTeX 源码（真机反馈："复制出来的不是 latex 格式"）
+  useLatexAwareCopy();
   const [courses, setCourses] = useState<CourseView[]>([]);
   const [courseId, setCourseId] = useState('');
   const [unitId, setUnitId] = useState('');

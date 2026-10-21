@@ -154,11 +154,112 @@ function InlineMath({ latex }: { latex: string }): JSX.Element {
   return (
     <span
       className="lec-math-inline"
+      // 供「复制成 LaTeX」用（见 useLatexAwareCopy）。
+      // ⚠️ 存**原始 latex**，不是 displayLatex 处理过的 —— 复制出去要能直接粘回输入框。
+      data-latex={latex}
       // MathLive 的 convertLatexToMarkup 输出的是它自己生成的受控标记；
       // 用户文本绝不走这里（见文件头的说明）。
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
+}
+
+/** 块级标签（拼接纯文本时前后要加换行）。 */
+const BLOCK_TAGS = new Set([
+  'DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'LI', 'PRE', 'BLOCKQUOTE', 'SECTION', 'ARTICLE', 'TABLE', 'TR',
+]);
+
+/**
+ * 把 DocumentFragment 拼成纯文本。
+ *
+ * 为什么不用 `innerText`：它在**游离/绝对定位**节点上的换行行为
+ * 各浏览器不一致（实测 detached 容器把 `<h3>` 和后面的 `<div>`
+ * 粘成一行：`速记块 1这是短公式…`）。自己按块级标签插换行最可控。
+ */
+function fragToText(frag: DocumentFragment): string {
+  let out = '';
+  const walk = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.textContent ?? '';
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = (node as Element).tagName.toUpperCase();
+    const block = BLOCK_TAGS.has(tag);
+    if (block) out += '\n';
+    node.childNodes.forEach(walk);
+    if (block) out += '\n';
+  };
+  frag.childNodes.forEach(walk);
+  // 去掉多余空行（每层块级都会加换行，容易叠出来）
+  return out.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * 复制时把公式换回 **LaTeX 源码**。
+ *
+ * 真机反馈："复制出来的不是 latex 格式"。
+ *
+ * 背景：
+ *   MathLive 渲染后的公式，字符虽然是真 Unicode，但复制出来带一堆
+ *   结构性的换行和空白（`i=1\n∑\nn\n α \ni\n ...`）——
+ *   粘到别处既难看也没法再当公式编辑。
+ *
+ * 做法：
+ *   拦截 copy 事件，克隆选区，把每个带 data-latex 的公式元素
+ *   替换成 `$…$` 文本，再写回剪贴板。
+ *   于是"复制整段笔记"得到的就是**和存储格式一致的 markdown**，
+ *   能直接粘回输入框、发给别人、粘进任何 markdown 编辑器。
+ *
+ * 不干扰正常复制：
+ *   选区里**没有公式**就直接返回，走浏览器默认行为。
+ */
+export function useLatexAwareCopy(): void {
+  useEffect(() => {
+    const onCopy = (e: ClipboardEvent): void => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+      const range = sel.getRangeAt(0);
+
+      // 情形 A：选区**整个落在某个公式内部**（双击/拖选一个公式）。
+      //   这时克隆出来的 frag 里只有公式的**子节点**，没有 data-latex，
+      //   按 B 的逻辑会判定"没有公式"而不拦截 → 复制出空白。
+      //   实测就是这样：选中单个公式得到 ""。
+      const startEl =
+        range.startContainer.nodeType === Node.ELEMENT_NODE
+          ? (range.startContainer as Element)
+          : range.startContainer.parentElement;
+      const host = startEl?.closest('[data-latex]');
+      if (host && range.cloneContents().querySelectorAll('[data-latex]').length === 0) {
+        const latex = host.getAttribute('data-latex') ?? '';
+        if (latex) {
+          e.clipboardData?.setData('text/plain', `$${latex}$`);
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // 情形 B：选区包含公式（整块笔记、跨段选中）
+      const frag = range.cloneContents();
+      const maths = frag.querySelectorAll('[data-latex]');
+      if (maths.length === 0) return; // 没有公式 → 不干预
+
+      maths.forEach((el) => {
+        const latex = el.getAttribute('data-latex') ?? '';
+        el.replaceWith(document.createTextNode(`$${latex}$`));
+      });
+
+      const text = fragToText(frag);
+      if (!text) return; // 取不到就交给默认行为，别把人家的复制弄丢
+
+      e.clipboardData?.setData('text/plain', text);
+      e.preventDefault();
+    };
+
+    document.addEventListener('copy', onCopy);
+    return () => document.removeEventListener('copy', onCopy);
+  }, []);
 }
 
 /**
