@@ -1055,4 +1055,47 @@ t('插入符号时不会拼出 $$（光标在 $ 后面要补空格）', () => {
   assert.match(seg[0], /pad/, '应补一个空格隔开');
 });
 
+t('公式能被选中复制（MathLive 默认禁选，必须覆盖）', () => {
+  // 真机反馈："速记块里的公式无法复制"。
+  //
+  // 根因：mathlive-static.css 给 .ML__latex 设了 `user-select: none` ——
+  // 那是给**编辑器**用的（编辑时不想让用户乱选内部节点）。
+  // 但我们是**静态展示**，禁选会导致选中整段笔记时公式位置变成空白，
+  // 复制出去公式全丢。
+  //
+  // 公式里的字符是真实 Unicode（a+b 就是 U+61 U+2B U+62，不是 PUA），
+  // 所以放开选中就能正常复制。
+  assert.match(
+    stylesSrc,
+    /\.lec-math-inline \.ML__latex[\s\S]{0,200}?user-select:\s*text\s*!important/,
+    '必须把 .ML__latex 的 user-select 覆盖回 text',
+  );
+  // 内层节点也要（MathLive 给每一层都设了 none）
+  assert.match(
+    stylesSrc,
+    /\.lec-math-inline \.ML__latex \*/,
+    '内层节点也要覆盖（MathLive 逐层设了 none）',
+  );
+});
+
+t('长公式不撑破中栏（自己横向滚动）', () => {
+  // 真机反馈："公式太长右边会溢出"
+  assert.match(
+    stylesSrc,
+    /\.lec-math-inline \{[\s\S]{0,400}?max-width:\s*100%/,
+    '公式应有 max-width: 100%',
+  );
+  assert.match(
+    stylesSrc,
+    /\.lec-math-inline \{[\s\S]{0,400}?overflow-x:\s*auto/,
+    '超宽时应内部横向滚动',
+  );
+  // 段落兜底（极长公式整段也可滚）
+  assert.match(
+    stylesSrc,
+    /\.lec-md-p,[\s\S]{0,80}?\.lec-md-li \{[\s\S]{0,200}?overflow-x:\s*auto/,
+    '段落也应允许横向滚动兜底',
+  );
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

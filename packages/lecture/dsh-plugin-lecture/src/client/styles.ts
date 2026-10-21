@@ -796,9 +796,46 @@ const CSS = `
   display: inline-block;
   vertical-align: middle;
   margin: 0 1px;
+  /* 长公式不撑破中栏：超宽时自己横向滚动（见下面的 overflow） */
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 滚动条别把行高顶开 */
+  scrollbar-width: thin;
 }
 .${LECTURE_CLASS} .lec-math-inline .ML__latex {
   font-size: 1.05em;
+}
+
+/* ⚠️ 恢复公式的**可选中性**（真机反馈："速记块里的公式无法复制"）。
+ *
+ *   MathLive 的 mathlive-static.css 给 .ML__latex 设了 user-select: none
+ *   —— 那是给**编辑器**用的（编辑时不想让用户乱选内部节点）。
+ *   我们这里是**静态展示**，禁选会导致：
+ *     · 选中整段笔记时，公式位置变成空白（复制出去公式全丢了）
+ *
+ *   公式里的字符是真实 Unicode（a+b 就是 U+61 U+2B U+62，不是 PUA），
+ *   所以放开选中就能正常复制出 a+b。
+ *
+ *   必须 !important：mathlive-static.css 是运行时用 link 注入的，
+ *   与本样式表的先后顺序不受我们控制。
+ *
+ *   注：本文件是 TS 模板字符串，注释里**不能出现反引号**
+ *   （会把模板字符串提前结束，编译时报 CSS 语法错）。
+ */
+.${LECTURE_CLASS} .lec-math-inline .ML__latex,
+.${LECTURE_CLASS} .lec-math-inline .ML__latex * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+/* 过长的公式：整段落允许横向滚动兜底
+   （单行里塞不下的极长公式，至少不会把中栏顶宽） */
+.${LECTURE_CLASS} .lec-md-p,
+.${LECTURE_CLASS} .lec-md-li {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
 /* 渲染器不可用时的源码回退 */
 .${LECTURE_CLASS} .lec-math-src {
