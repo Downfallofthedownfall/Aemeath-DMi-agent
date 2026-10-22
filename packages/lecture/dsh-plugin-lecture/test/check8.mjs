@@ -1008,7 +1008,7 @@ t('一个框写文字和公式（不再分模式）', () => {
 t('符号插入到光标处（markdown 语法）', () => {
   const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
   assert.match(mc, /markdownOf/, '应把符号 LaTeX 转成 markdown 片段');
-  const seg = mc.match(/const insertInto = useCallback\([\s\S]{0,1200}/);
+  const seg = mc.match(/const insertInto = useCallback\([\s\S]{0,2400}/);
   assert.ok(seg, '应有 insertInto');
   assert.match(seg[0], /selectionStart/, '应读光标位置');
   assert.match(seg[0], /setSelectionRange/, '插完应把光标放到插入内容之后');
@@ -1047,13 +1047,10 @@ t('旧数据兼容：裸 LaTeX 块也要渲染（用户当时的抱怨）', () =
   assert.match(seg[0], /includes\('\$'\)/, '有 $ 的走正常行内公式路径');
 });
 
-t('插入符号时不会拼出 $$（光标在 $ 后面要补空格）', () => {
-  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
-  const seg = mc.match(/const insertInto = useCallback\([\s\S]{0,900}/);
-  assert.ok(seg, '找不到 insertInto');
-  assert.match(seg[0], /endsWith\('\$'\)/, '应检查前一个非空白字符是不是 $');
-  assert.match(seg[0], /pad/, '应补一个空格隔开');
-});
+// 注：早期这里只断言「光标在 $ 后面要补空格」（endsWith('$')）。
+// 那个方案只防住了**前导**，漏了公式结尾 `$` **之前**的情况 ——
+// 就是后来真机报的"有些符号注入会带着 $$"。
+// 现行断言在后面「插符号不能拼出 $$」与「光标在公式内部就插裸 LaTeX」两节里。
 
 t('公式能被选中复制（MathLive 默认禁选，必须覆盖）', () => {
   // 真机反馈："速记块里的公式无法复制"。
@@ -1142,6 +1139,44 @@ t('复制出的文本要保留块级换行', () => {
   const seg = markupSrc.match(/const BLOCK_TAGS[\s\S]{0,200}/);
   assert.ok(seg, '找不到 BLOCK_TAGS');
   assert.match(seg[0], /H1.*H6|'H3'/, '标题算块级');
+});
+
+t('插符号不能拼出 $$（两个方向都要防）', () => {
+  // 真机反馈："有些符号注入会带着 $$"。
+  //
+  // 早先只检查了插入点**前面**是不是 `$`，漏了**后面**：
+  // 光标停在公式结尾那个 `$` 之前时（编辑公式时很常见），
+  // 插入的 `$…$` 会和后面那个 `$` 拼成 `$$`。
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  const seg = mc.match(/const insertInto = useCallback\([\s\S]{0,1600}/);
+  assert.ok(seg, '找不到 insertInto');
+  // 前导 + 尾随都要判断
+  assert.match(seg[0], /prevChar/, '应检查插入点前面的字符');
+  assert.match(seg[0], /nextChar/, '**也要**检查插入点后面的字符');
+  assert.match(seg[0], /lead/, '应有前导空格');
+  assert.match(seg[0], /tail/, '应有尾随空格');
+  // 光有变量名不算 —— 必须真的依赖后一个字符（否则等于留了个空壳）
+  assert.match(seg[0], /const lead\s*=[^\n]*prevChar/, '前导空格要依据前一个字符');
+  assert.match(seg[0], /const tail\s*=[^\n]*nextChar/, '尾随空格要依据后一个字符');
+});
+
+t('光标在公式内部就插裸 LaTeX（不再套 $）', () => {
+  // 这是 `$$` 的**根本解法**：已经在 `$…$` 里了，就不该再包一层。
+  // 包了即使加了空格，也会把一个公式拆成两个。
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  assert.match(mc, /export function insideMath/, '应有「光标是否在公式内」判定');
+  const fn = mc.match(/export function insideMath[\s\S]{0,500}/);
+  assert.ok(fn, '找不到 insideMath');
+  // 数当前行的 $ 个数，奇数为内部
+  assert.match(fn[0], /% 2 === 1/, '奇偶判定');
+  assert.match(fn[0], /lastIndexOf\(/, '只看当前行');
+  assert.match(fn[0], /\\n/, '按换行切行');
+  // 转义的 \$ 不算定界符（负向后顾）
+  assert.match(fn[0], /\(\?<!/, '应有负向后顾排除转义的 \\$');
+  // 关键是插入时真的用了它
+  const seg = mc.match(/const insertInto = useCallback\([\s\S]{0,1600}/);
+  assert.match(seg[0], /insideMath\(value, start\)/, 'insertInto 应使用该判定');
+  assert.match(seg[0], /!alreadyInMath/, '在公式内时不包 $');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

@@ -39,7 +39,7 @@ export interface MathComposerApi {
  * 把符号键盘的 LaTeX 变成**可编辑的 markdown 片段**。
  *
  * - `\int_{\placeholder{}}^{}` → `$\int_{}^{}$`（去掉编辑期占位符再加美元符）
- * - `∇` / `d/dx` 这类本来就是纯文本的，原样插入（不包 `$`，避免多余）
+ * - `∇` / `d/dx` 这类本来就是纯文本的，原样插入（不包 `$`）
  */
 export function markdownOf(latex: string, plainFallback?: string): string {
   const stripped = latex.replace(/\\placeholder\{\}/g, '');
@@ -47,6 +47,38 @@ export function markdownOf(latex: string, plainFallback?: string): string {
   if (/\\[a-zA-Z]/.test(stripped)) return `$${stripped.trim()}$`;
   // 没反斜杠 → 纯文本符号，优先用可读回退
   return (plainFallback ?? stripped).trim();
+}
+
+/**
+ * 光标此刻是不是**在一行内公式 `$…$` 的内部**。
+ *
+ * 为什么需要（真机反馈："有些符号注入会带着 $$"）：
+ *   光标停在公式结尾那个 `$` **之前**时（编辑公式时很常见），
+ *   再把新符号包成 `$…$` 插进去，就会和后面那个 `$` 拼成 `$$`：
+ *
+ *       $a+b|$   ← 光标在这，插入 $\nabla$
+ *       $a+b$\nabla$$     ← 末尾多出一对 $
+ *
+ *   正确做法是：既然已经在公式里，就插**裸 LaTeX**，不再套 `$`。
+ *
+ * 判定只看**当前行**：跨行数 `$` 没有意义（每行是独立的段落）。
+ * 转义的 `\$` 不算定界符。
+ */
+export function insideMath(value: string, pos: number): boolean {
+  const lineStart = value.lastIndexOf('\n', pos - 1) + 1;
+  const before = value.slice(lineStart, pos);
+  const dollars = (before.match(/(?<!\\)\$/g) ?? []).length;
+  return dollars % 2 === 1;
+}
+
+/** 符号的 LaTeX 体（去掉编辑期占位符）。 */
+function latexBody(latex: string): string {
+  return latex.replace(/\\placeholder\{\}/g, '').trim();
+}
+
+/** 这个符号是不是真 LaTeX（有反斜杠命令），而不是 ∇、d/dx 这种纯文本。 */
+function isLatex(latex: string): boolean {
+  return /\\[a-zA-Z]/.test(latex.replace(/\\placeholder\{\}/g, ''));
 }
 
 export function MathComposer({
@@ -77,23 +109,37 @@ export function MathComposer({
   }, [text, resize]);
 
   /** 往光标处插入（保留选区语义：有选中就替换选中）。 */
-  const insertInto = useCallback((snippet: string): void => {
+  const insertInto = useCallback((latex: string, plainFallback?: string): void => {
     const el = taRef.current;
     if (!el) {
-      setText((v) => v + snippet);
+      setText((v) => v + markdownOf(latex, plainFallback));
       return;
     }
     const start = el.selectionStart ?? el.value.length;
     const end = el.selectionEnd ?? start;
-    // ⚠️ 光标正好落在 `$` 后面时（比如刚写完一个公式），
-    //    直接插 `$…$` 会拼出 `$$…$`，两个公式会粘在一起解析错。
-    //    这时先补一个空格隔开。
-    const prev = el.value.slice(0, start).replace(/\s+$/, '');
-    const pad = snippet.startsWith('$') && prev.endsWith('$') ? ' ' : '';
-    const next = el.value.slice(0, start) + pad + snippet + el.value.slice(end);
+    const value = el.value;
+
+    // 1) 决定插什么
+    //    · 光标在公式内部 → 插**裸 LaTeX**（再包 `$` 会拼出 `$$`）
+    //    · 光标在公式外部 → 真 LaTeX 包成 `$…$`；纯文本符号（∇、d/dx）原样插
+    const body = isLatex(latex) ? latexBody(latex) : (plainFallback ?? latexBody(latex)).trim();
+    const alreadyInMath = insideMath(value, start);
+    const wrap = isLatex(latex) && !alreadyInMath;
+    const core = wrap ? `$${body}$` : body;
+
+    // 2) 和相邻的 `$` 隔开，避免粘成 `$$`
+    //    —— 光标在公式**结尾**的 `$` 之后（前导）或**开头**的 `$` 之前（尾随）。
+    const prevChar = value.slice(0, start).replace(/\s+$/, '').slice(-1);
+    const nextChar = value.slice(end).replace(/^\s+/, '').slice(0, 1);
+    const lead = wrap && prevChar === '$' ? ' ' : '';
+    const tail = wrap && nextChar === '$' ? ' ' : '';
+
+    const patch = lead + core + tail;
+    const next = value.slice(0, start) + patch + value.slice(end);
     setText(next);
     requestAnimationFrame(() => {
-      const pos = start + pad.length + snippet.length;
+      // 光标落在插入内容之后（tail 之后，方便接着打字）
+      const pos = start + patch.length;
       el.focus();
       el.setSelectionRange(pos, pos);
     });
@@ -121,7 +167,9 @@ export function MathComposer({
     if (!apiRef) return;
     apiRef.current = {
       insert(latex: string, plainFallback?: string): void {
-        insertInto(markdownOf(latex, plainFallback));
+        // 注意传**原始** latex（不是 markdownOf 处理过的）——
+        // insertInto 需要知道"是不是真 LaTeX"，才能决定要不要包 $。
+        insertInto(latex, plainFallback);
       },
       focus(): void {
         taRef.current?.focus();
