@@ -28,7 +28,7 @@ import type { SplitProblem } from './split.js';
 export type AskVision = (
   prompt: string,
   images: readonly { mediaType: string; base64: string }[],
-  opts: { maxTokens: number; purpose: string },
+  opts: { maxTokens: number; purpose: string; /** 推理强度（多模态默认 off；批改带学生手画图时用 high/max） */ reasoning?: 'off' | 'low' | 'high' | 'max' },
 ) => Promise<string | null>;
 
 export interface VisionPage {

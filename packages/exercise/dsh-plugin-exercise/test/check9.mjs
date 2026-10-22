@@ -182,4 +182,19 @@ t('normalizeMathDelimiters：裸命令行包成 $$…$$（PDF 与屏幕一致）
   assert.equal(normalizeMathDelimiters('用 \\sum 求和'), '用 \\sum 求和');
 });
 
+t('整行只有 `$…$` 时必须是行内公式，不能再当"裸 LaTeX"（真机红字 bug 回归）', () => {
+  assert.equal(isBareLatexLine('$T = 2\\pi\\sqrt{l/g}$'), false, '已经带分隔符的不能再包');
+  assert.equal(isBareLatexLine('$$x$$'), false);
+  assert.equal(isBareLatexLine('\\[x\\]'), false);
+  assert.equal(isBareLatexLine('\\(x\\)'), false);
+  const blocks = buildRenderBlocks('$T = 2\\pi\\sqrt{l/g}$');
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].kind, 'p');
+  assert.equal(blocks[0].segments.length, 1);
+  assert.equal(blocks[0].segments[0].kind, 'math');
+  assert.equal(blocks[0].segments[0].display, false);
+  // 带 `$$` 的块级仍然正常
+  assert.equal(buildRenderBlocks('$$x$$')[0].kind, 'math');
+});
+
 console.log(`\n[exercise-math-parse] ${passed} 项断言通过`);

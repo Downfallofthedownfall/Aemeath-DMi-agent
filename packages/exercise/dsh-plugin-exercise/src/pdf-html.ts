@@ -40,6 +40,8 @@ export interface SubmissionProblem {
   answer: string;    // same format
   verdict?: 'correct' | 'partial' | 'wrong' | 'unclear' | 'error' | null;
   note?: string;     // 用户备注（可选，小字）
+  /** 答案附图（data URI；由 host 从 store 读出后注入，保持渲染层无 IO） */
+  images?: Array<{ name: string; caption?: string; dataUri: string }>;
 }
 
 export interface SubmissionHtmlInput {
@@ -553,6 +555,9 @@ h1, h2, h3 { font-family: var(--sans); line-height: 1.3; }
 }
 
 .answer { font-family: var(--serif); font-size: 11pt; }
+.answer-figure { margin: 2mm 0; text-align: center; page-break-inside: avoid; }
+.answer-figure img { max-width: 100%; max-height: 120mm; border: 0.3mm solid #d8d2c4; border-radius: 1mm; background: #fff; }
+.answer-figure figcaption { margin-top: 1mm; font-size: 8.5pt; color: var(--muted); }
 .statement { font-family: var(--serif); font-size: 10.5pt; }
 .statement p, .answer p { margin: 1.5mm 0; }
 .statement ul, .answer ul, .statement ol, .answer ol { margin: 1.5mm 0; padding-left: 6mm; }
@@ -740,6 +745,15 @@ export function buildSubmissionHtml(input: SubmissionHtmlInput): string {
 
     const statement = renderFragment(textSrc, renderMath) || `<p class="muted">${t.noText}</p>`;
     const answer = renderFragment(answerSrc, renderMath) || `<p class="muted">${t.noAnswer}</p>`;
+    // 答案附图（手画示意图）：data URI 内联，PDF 生成走 file:// 也能显示
+    const pics = (p.images ?? [])
+      .map(
+        (img) =>
+          `<figure class="answer-figure"><img src="${img.dataUri}" alt="${escapeHtml(img.caption || img.name)}" />` +
+          (img.caption ? `<figcaption>${escapeHtml(img.caption)}</figcaption>` : '') +
+          `</figure>`,
+      )
+      .join('\n');
     const noteRaw = String(p.note ?? '');
     const note = noteRaw.trim()
       ? `<div class="note"><span class="note-label">${t.note}</span>${renderFragment(noteRaw, renderMath)}</div>`
@@ -759,6 +773,7 @@ export function buildSubmissionHtml(input: SubmissionHtmlInput): string {
       '<div class="answer">',
       `<h3 class="answer-head">${t.answer}</h3>`,
       answer,
+      pics,
       '</div>',
       note,
       '</article>',

@@ -19,6 +19,8 @@ import { z } from 'zod';
 import { checkIssueSchema, type Verdict } from './types.js';
 
 /** LLM 通道（与 lecture 的 AskLlm 同形，便于复用同一种接线）。 */
+export type ReasoningEffort = 'off' | 'low' | 'high' | 'max';
+
 export interface AskLlm {
   (
     prompt: string,
@@ -29,6 +31,11 @@ export interface AskLlm {
       noReasoning?: boolean;
       /** 跳过全局 LLM 运行时、直接走直连（上一次运行时的输出不可用时才这样重试）。 */
       preferDirect?: boolean;
+      /**
+       * 推理强度（`off|low|high|max`）。批改/答辩默认 max —— "重在精不在快"；
+       * 分块这类结构任务用 off。
+       */
+      reasoning?: ReasoningEffort;
     },
   ): Promise<string | null>;
 }
@@ -49,6 +56,10 @@ export interface CheckInput {
   priorMistakes?: string[];
   /** 解释语言：默认中文（用户母语），题目原文保持德语。 */
   lang?: 'zh' | 'de';
+  /** 学生答案里附的手画图（多模态一起看：受力图/草图对判断很关键） */
+  answerImages?: Array<{ base64: string; mediaType: string; name: string }>;
+  /** 推理强度（批改默认 max：重在精不在快） */
+  reasoning?: ReasoningEffort;
   /** 有原题页面截图时：附图检查（多模态），题干里可能有图/公式 OCR 不准。 */
   pageImage?: { base64: string; mediaType: string; page: number };
 }
@@ -120,6 +131,12 @@ export function buildCheckPrompt(input: CheckInput): string {
   lines.push(`## 上下文`);
   lines.push(`- 课程：${input.courseTitle} · Übungsblatt ${input.sheetNumber}${input.sheetTitle ? `（${input.sheetTitle}）` : ''}`);
   lines.push(`- 题号：${input.problemLabel}${input.points != null ? `（${input.points} Punkte）` : ''}`);
+  if (input.answerImages?.length) {
+    lines.push(
+      `- **学生答案里附了 ${input.answerImages.length} 张手画图**（见附件，排在原题图之后）。` +
+        '他的受力图/草稿可能只画在图上 —— 把图里的内容也算进答案再判断。',
+    );
+  }
   if (input.pageImage) {
     lines.push(
       `- **本题原图见附件**（原卷第 ${input.pageImage.page} 页截图）。OCR 文本可能漏掉公式/插图，` +
@@ -327,18 +344,30 @@ export function parseCheckOutput(raw: string | null): ParsedCheck | null {
 export async function runCheck(
   input: CheckInput,
   askLlm: AskLlm,
-  askVision?: (prompt: string, images: readonly { mediaType: string; base64: string }[], opts: { maxTokens: number; purpose: string }) => Promise<string | null>,
+  askVision?: (
+    prompt: string,
+    images: readonly { mediaType: string; base64: string }[],
+    opts: { maxTokens: number; purpose: string; reasoning?: ReasoningEffort },
+  ) => Promise<string | null>,
 ): Promise<{ ok: boolean; check: ParsedCheck | null; raw: string | null; error?: string; vision?: boolean }> {
   const prompt = buildCheckPrompt(input);
   // 2400 token 是实测出来的：1200 时模型把 issues 写长会被**截断在字符串中间**，
   // 整条有效批改变成"解析失败"（真机第一次检查就踩到了）。
-  const vision = input.pageImage && askVision ? askVision : undefined;
+  // 图片：原题截图在前，学生手画图在后（prompt 里也按这个顺序描述的）
+  const images = [
+    ...(input.pageImage ? [{ mediaType: input.pageImage.mediaType, base64: input.pageImage.base64 }] : []),
+    ...(input.answerImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
+  ];
+  const vision = images.length && askVision ? askVision : undefined;
+  // 检查追求"精"不追求"快"：推理默认 max（见 config.llm.checkReasoning），token 也给足，
+  // 否则高推理会把预算烧在 reasoning 上、正文被截断（真机踩过）。
   const raw = vision
-    ? await vision(prompt, [{ mediaType: input.pageImage!.mediaType, base64: input.pageImage!.base64 }], {
-        maxTokens: 2400,
+    ? await vision(prompt, images, {
+        maxTokens: 8000,
         purpose: 'exercise-check-vision',
+        reasoning: input.reasoning,
       })
-    : await askLlm(prompt, { maxTokens: 2400, purpose: 'exercise-check' });
+    : await askLlm(prompt, { maxTokens: 8000, purpose: 'exercise-check', reasoning: input.reasoning });
   if (!raw) {
     return {
       ok: false,
@@ -374,6 +403,8 @@ export interface RebuttalInput {
   userText: string;
   /** 之前几轮（旧→新） */
   history?: Array<{ user: string; ai: string; outcome: string }>;
+  /** 推理强度（默认 max：答辩同样重在精不在快） */
+  reasoning?: ReasoningEffort;
 }
 
 export interface ParsedRebuttal {
@@ -489,16 +520,21 @@ export function parseRebuttal(raw: string): ParsedRebuttal | null {
 export async function runRebuttal(
   input: RebuttalInput,
   askLlm: AskLlm,
-  askVision?: (prompt: string, images: readonly { mediaType: string; base64: string }[], opts: { maxTokens: number; purpose: string }) => Promise<string | null>,
+  askVision?: (
+    prompt: string,
+    images: readonly { mediaType: string; base64: string }[],
+    opts: { maxTokens: number; purpose: string; reasoning?: ReasoningEffort },
+  ) => Promise<string | null>,
 ): Promise<{ ok: boolean; rebuttal: ParsedRebuttal | null; raw: string | null; error?: string }> {
   const prompt = buildRebuttalPrompt(input);
-  const vision = input.check.pageImage && askVision ? askVision : undefined;
+  const images = [
+    ...(input.check.pageImage ? [{ mediaType: input.check.pageImage.mediaType, base64: input.check.pageImage.base64 }] : []),
+    ...(input.check.answerImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
+  ];
+  const vision = images.length && askVision ? askVision : undefined;
   const raw = vision
-    ? await vision(prompt, [{ mediaType: input.check.pageImage!.mediaType, base64: input.check.pageImage!.base64 }], {
-        maxTokens: 1600,
-        purpose: 'exercise-rebut',
-      })
-    : await askLlm(prompt, { maxTokens: 1600, purpose: 'exercise-rebut' });
+    ? await vision(prompt, images, { maxTokens: 6000, purpose: 'exercise-rebut', reasoning: input.reasoning })
+    : await askLlm(prompt, { maxTokens: 6000, purpose: 'exercise-rebut', reasoning: input.reasoning });
   if (!raw) return { ok: false, rebuttal: null, raw: null, error: 'LLM 不可用（无 apiKey / 请求失败 / 超时）' };
   const rebuttal = parseRebuttal(raw);
   if (!rebuttal) return { ok: false, rebuttal: null, raw, error: '答辩输出不可解析（已保留原文）' };

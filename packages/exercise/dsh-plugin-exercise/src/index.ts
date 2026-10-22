@@ -45,6 +45,7 @@ import { segmentWithLlm } from './llm-split.js';
 import { renderPdfPages, type RenderedPage } from './pdf-image.js';
 import { segmentWithVision, type AskVision, type VisionPage } from './vision.js';
 import { collectMathIssuesInText } from './mathlive-compat.js';
+import { imageFileName, sniffImageType } from './images.js';
 import { renderTextExport, syncTextExport, type CourseSnapshot } from './text-export.js';
 import {
   buildProgressDigest,
@@ -91,6 +92,7 @@ import {
   type Lesson,
   type Mistake,
   type Problem,
+  type ProblemImage,
   type Rebuttal,
   type Sheet,
 } from './types.js';
@@ -129,6 +131,11 @@ export const Config = z.object({
   includeSourcePdf: z.boolean().default(true),
   /** 合并顺序：sheet-first（原卷在前）| solutions-first（解答在前）。 */
   submissionOrder: z.string().default('sheet-first'),
+  /**
+   * 检查/答辩的推理强度：max（默认，重在精不在快）| high | low | off。
+   * 分块/读图这类结构化任务不受影响（它们固定 off）。
+   */
+  checkReasoning: z.string().default('max'),
   /** 浏览器路径（空 = 自动发现 Chrome/Edge/Chromium）。 */
   chromePath: z.string().default(''),
   llm: z.object({
@@ -154,6 +161,7 @@ export interface ExerciseConfig {
   includeSourcePdf?: boolean;
   submissionOrder?: string;
   chromePath?: string;
+  checkReasoning?: string;
   llm?: { provider?: string; apiKey?: string; baseUrl?: string; model?: string };
 }
 
@@ -204,6 +212,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   const worldbookDir = config.worldbookLibraryDir ?? 'packages/worldbook/data/physicist';
   const lectureDataDir = config.lectureDataDir ?? 'packages/library/physicist/lectures';
   const autoCollect = config.autoCollectMistakes ?? true;
+  // 批改/答辩的推理强度（用户定案：重在精不在快 → 默认 max）
+  const checkReasoning: 'off' | 'low' | 'high' | 'max' =
+    config.checkReasoning === 'off' || config.checkReasoning === 'low' || config.checkReasoning === 'high' || config.checkReasoning === 'max'
+      ? config.checkReasoning
+      : 'max';
   // 文本导出目录：空 = packages/library/physicist-md/（**不在** gitignore 覆盖范围内，git add 就能管）
   const textExportDir = config.textExportDir || 'packages/library/physicist-md';
   const studentName = config.studentName ?? '';
@@ -312,7 +325,14 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   const askViaRuntime = async (
     prompt: string,
-    opts: { maxTokens: number; purpose: string; noReasoning?: boolean; attempt?: number },
+    opts: {
+      maxTokens: number;
+      purpose: string;
+      noReasoning?: boolean;
+      attempt?: number;
+      /** 推理强度；批改/答辩给 `max`（重在精不在快），分块给 `off` */
+      reasoning?: 'off' | 'low' | 'high' | 'max';
+    },
   ): Promise<string | null> => {
     const rt = llmRuntime();
     if (!rt?.prepareCall) return null;
@@ -322,7 +342,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const route = await resolveLlmRoute();
     if (!route) return null;
     lastLlmRoute = `dsh:${route.provider}/${route.model}`;
-    lastLlmReasoning = opts.noReasoning ? 'off' : 'high';
+    lastLlmReasoning = opts.noReasoning ? 'off' : (opts.reasoning ?? 'high');
     const deadline = AbortSignal.timeout(LLM_TIMEOUT_MS_LOCAL);
     const request = async (noReasoning: boolean): Promise<string | null> => {
       const call = await prepareCall(
@@ -332,7 +352,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           maxTokens: opts.maxTokens,
           // 结构型小任务（分块）关掉推理：真机上 deepseek-flash 会把 1500~12000 token
           // 全花在 reasoning 上，finish=max-tokens、blocks=reasoning、正文为空。
-          ...(noReasoning ? { reasoningEffort: 'off' } : {}),
+          // 批改/答辩则显式要 max —— 用户定案"检查重在精不在快"。
+          ...(noReasoning ? { reasoningEffort: 'off' } : opts.reasoning ? { reasoningEffort: opts.reasoning } : {}),
         },
         deadline,
       );
@@ -400,6 +421,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         maxTokens: opts.maxTokens,
         purpose: opts.purpose,
         noReasoning: opts.noReasoning,
+        reasoning: opts.reasoning,
       });
       if (viaRuntime) return viaRuntime;
     }
@@ -475,57 +497,82 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     for (const img of images) {
       content.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.base64}` } });
     }
-    const body = {
-      model,
-      messages: [{ role: 'user', content }],
-      response_format: { type: 'json_object' },
-      thinking: { type: 'disabled' },
-      max_tokens: opts.maxTokens,
-      temperature: 0.1,
-    };
+    // 批改要看图，又要求"重在精不在快" → 显式要推理强度（实测 API 接受 reasoning_effort）。
+    // 但 reasoning token 也算进 max_tokens，所以预算给足；万一被截断成空文本，
+    // 再退回 thinking:disabled 重试一次（宁可少想，也不能让检查挂掉）。
+    const wantReasoning = opts.reasoning && opts.reasoning !== 'off' ? opts.reasoning : undefined;
     const t0 = Date.now();
-    const post = async (m: string): Promise<Response> =>
-      fetch(`${llm.baseUrl}/chat/completions`, {
+    const call = async (m: string, withReasoning: boolean): Promise<Response> => {
+      const body = {
+        model: m,
+        messages: [{ role: 'user', content }],
+        response_format: { type: 'json_object' },
+        max_tokens: opts.maxTokens,
+        temperature: 0.1,
+        ...(withReasoning ? { reasoning_effort: wantReasoning } : { thinking: { type: 'disabled' } }),
+      };
+      return fetch(`${llm.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ ...body, model: m }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(LLM_TIMEOUT_MS_LOCAL),
       });
-    try {
-      let resp = await post(model);
-      if (resp.status === 400 || resp.status === 404) {
-        // 模型 id 不被接受（不同 provider 目录的命名不同）→ 退回经典 id 再试一次
-        const alt = 'deepseek-v4-flash';
-        if (model !== alt) {
-          warn(`多模态：模型 ${model} 被拒（HTTP ${resp.status}）→ 换 ${alt} 重试`);
-          resp = await post(alt);
-        }
+    };
+    const read = async (resp: Response): Promise<{ text: string; finish: string; reasoningChars: number; usage: unknown } | null> => {
+      if (!resp.ok) {
+        warn(`多模态 HTTP ${resp.status}：${(await resp.text()).slice(0, 200)}`);
+        return null;
       }
-      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${(await resp.text()).slice(0, 300)}`);
       const data = (await resp.json()) as {
         choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];
         usage?: Record<string, unknown>;
       };
       const choice = data.choices?.[0];
-      const text = (choice?.message?.content ?? '').trim();
+      return {
+        text: (choice?.message?.content ?? '').trim(),
+        finish: choice?.finish_reason ?? '?',
+        reasoningChars: (choice?.message?.reasoning_content ?? '').length,
+        usage: data.usage ?? {},
+      };
+    };
+    lastLlmRoute = `direct:${model}`;
+    lastLlmReasoning = wantReasoning ?? 'off';
+    try {
+      let withReasoning = !!wantReasoning;
+      let resp = await call(model, withReasoning).catch(() => null);
+      if (resp && (resp.status === 400 || resp.status === 404)) {
+        // 模型 id 不被接受（不同 provider 目录的命名不同）→ 退回经典 id 再试一次
+        const alt = 'deepseek-v4-flash';
+        if (model !== alt) {
+          warn(`多模态：模型 ${model} 被拒（HTTP ${resp.status}）→ 换 ${alt} 重试`);
+          resp = await call(alt, withReasoning);
+        }
+      }
+      let got = resp ? await read(resp) : null;
       log(
-        `多模态（${model}）：${images.length} 图 ${Date.now() - t0}ms len=${text.length} ` +
-          `finish=${choice?.finish_reason ?? '?'} usage=${JSON.stringify(data.usage ?? {})}`,
+        `多模态（${model}，推理${withReasoning ? wantReasoning : '关'}）：${images.length} 图 ${Date.now() - t0}ms ` +
+          `len=${got?.text.length ?? 0} finish=${got?.finish ?? '?'} usage=${JSON.stringify(got?.usage ?? {})}`,
       );
-      if (!text) {
+      if (got && !got.text && withReasoning) {
         warn(
-          `多模态返回空文本（${opts.purpose}，finish=${choice?.finish_reason ?? '?'}，` +
-            `reasoning=${(choice?.message?.reasoning_content ?? '').length} 字）`,
+          `多模态返回空文本（推理吃满 max_tokens，finish=${got.finish}，reasoning=${got.reasoningChars} 字）` +
+            ` → 关推理重试一次`,
         );
+        withReasoning = false;
+        lastLlmReasoning = 'off(fallback)';
+        got = await read(await call(model, false));
+        log(`多模态重试：len=${got?.text.length ?? 0} finish=${got?.finish ?? '?'}`);
+      }
+      if (!got?.text) {
+        warn(`多模态返回空文本（${opts.purpose}，finish=${got?.finish ?? '?'}）`);
         return null;
       }
-      return text;
+      return got.text;
     } catch (e) {
       warn(`多模态调用失败（${opts.purpose}）：${(e as Error).message}`);
       return null;
     }
   };
-
   // 启动自检：连上了全局 LLM 运行时没有（只打日志，不影响功能）
   void (async () => {
     const rt = llmRuntime();
@@ -686,6 +733,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       answer_edited_by: 'user' as const,
       checks: [],
       rebuttals: [],
+      images: [],
       mistakes: [],
       notes: '',
     }));
@@ -935,6 +983,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       answer_edited_by: 'user',
       checks: [],
       rebuttals: [],
+      images: [],
       mistakes: [],
       notes: '',
     };
@@ -1089,6 +1138,15 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const pageNo = p.page > 0 && pageNumbers.includes(p.page) ? p.page : pageNumbers[0] ?? 0;
     const pageImg = pageNo ? store.readPageImage(input.courseId, input.sheetId, pageNo) : null;
     if (pageImg) log(`检查附带原图：第 ${pageNo} 页（多模态）`);
+    // 学生自己画的手画图（受力图/草图）也要看：最多 3 张，避免请求过大
+    const answerImages = p.images
+      .slice(0, 3)
+      .map((img) => {
+        const got = store.readImage(input.courseId, input.sheetId, img.name);
+        return got ? { base64: got.bytes.toString('base64'), mediaType: got.mediaType, name: img.name } : null;
+      })
+      .filter((x): x is { base64: string; mediaType: string; name: string } => !!x);
+    if (answerImages.length) log(`检查附带手画图：${answerImages.length} 张`);
 
     const result = await runCheck(
       {
@@ -1103,6 +1161,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         notes: p.notes,
         progressDigest: sheet.progress_digest,
         priorMistakes: prior,
+        reasoning: checkReasoning,
+        answerImages,
         pageImage: pageImg
           ? { base64: pageImg.bytes.toString('base64'), mediaType: pageImg.mediaType, page: pageNo }
           : undefined,
@@ -1161,6 +1221,73 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   };
 
   // ============================================================
+  // 答案附图（手画示意图）：存在 <sheet>/images/，检查/PDF/界面都带
+  // ============================================================
+
+
+  const addAttachment = async (input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+    base64: string;
+    caption?: string;
+  }): Promise<{ ok: boolean; error?: string; image?: ProblemImage; sheet?: Sheet }> => {
+    const sheet = store.readSheet(input.courseId, input.sheetId);
+    if (!sheet) return { ok: false, error: '题集不存在' };
+    const p = store.findProblem(sheet, input.problemId);
+    if (!p) return { ok: false, error: '题目不存在' };
+    if (p.images.length >= 8) return { ok: false, error: '这题最多 8 张图（够画示意图了）' };
+
+    const raw = (input.base64 ?? '').replace(/^data:[^;]+;base64,/, '').trim();
+    if (!raw) return { ok: false, error: '没有图片数据' };
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(raw, 'base64');
+    } catch {
+      return { ok: false, error: '图片 base64 解析失败' };
+    }
+    if (!bytes.length) return { ok: false, error: '图片为空' };
+    if (bytes.length > 10 * 1024 * 1024) return { ok: false, error: '单张图片超过 10MB —— 截图/压缩一下再传' };
+    const kind = sniffImageType(bytes);
+    if (!kind) return { ok: false, error: '只支持 PNG / JPEG / WebP / GIF' };
+
+    const now = Date.now();
+    const name = `img-${now.toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}.${kind.ext}`;
+    store.writeImage(input.courseId, input.sheetId, name, bytes);
+    const image: ProblemImage = {
+      id: `im${now.toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
+      name,
+      media_type: kind.media,
+      bytes: bytes.length,
+      caption: (input.caption ?? '').trim().slice(0, 200),
+      created_at: now,
+    };
+    p.images.push(image);
+    store.writeSheet(input.courseId, sheet);
+    store.writeSheetMarkdown(input.courseId, sheet);
+    log(`附图：${p.label || p.id} + ${name}（${Math.round(bytes.length / 1024)} KB）`);
+    return { ok: true, image, sheet };
+  };
+
+  const deleteAttachment = async (input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+    imageId: string;
+  }): Promise<{ ok: boolean; error?: string; sheet?: Sheet }> => {
+    const sheet = store.readSheet(input.courseId, input.sheetId);
+    if (!sheet) return { ok: false, error: '题集不存在' };
+    const p = store.findProblem(sheet, input.problemId);
+    if (!p) return { ok: false, error: '题目不存在' };
+    const idx = p.images.findIndex((i) => i.id === input.imageId);
+    if (idx < 0) return { ok: false, error: '图片不存在' };
+    const [gone] = p.images.splice(idx, 1);
+    if (gone) store.deleteImage(input.courseId, input.sheetId, gone.name);
+    store.writeSheet(input.courseId, sheet);
+    store.writeSheetMarkdown(input.courseId, sheet);
+    return { ok: true, sheet };
+  };
+  // ============================================================
   // 答辩（学生 vs 批改）：让模型重新独立推导，必须承认或给出证据
   // ============================================================
 
@@ -1183,6 +1310,13 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
     const pageNo = p.page > 0 && pageNumbers.includes(p.page) ? p.page : pageNumbers[0] ?? 0;
     const pageImg = pageNo ? store.readPageImage(input.courseId, input.sheetId, pageNo) : null;
+    const answerImages = p.images
+      .slice(0, 3)
+      .map((img) => {
+        const got = store.readImage(input.courseId, input.sheetId, img.name);
+        return got ? { base64: got.bytes.toString('base64'), mediaType: got.mediaType, name: img.name } : null;
+      })
+      .filter((x): x is { base64: string; mediaType: string; name: string } => !!x);
 
     const result = await runRebuttal(
       {
@@ -1197,6 +1331,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           answer: p.answer,
           notes: p.notes,
           progressDigest: sheet.progress_digest,
+          answerImages,
           pageImage: pageImg
             ? { base64: pageImg.bytes.toString('base64'), mediaType: pageImg.mediaType, page: pageNo }
             : undefined,
@@ -1204,6 +1339,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         previous: { verdict: target.verdict, issues: target.issues },
         userText: text,
         history: p.rebuttals.slice(-4).map((r) => ({ user: r.user_text, ai: r.reply, outcome: r.outcome })),
+        reasoning: checkReasoning,
       },
       askLlm,
       askVision,
@@ -1442,7 +1578,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // 提交 PDF
   // ============================================================
 
-  const submissionProblemsOf = (sheet: Sheet): SubmissionProblem[] =>
+  const submissionProblemsOf = (courseId: string, sheet: Sheet): SubmissionProblem[] =>
     sheet.problems.map((p) => ({
       label: p.label || p.id,
       title: p.title,
@@ -1451,6 +1587,15 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       answer: p.answer,
       verdict: lastFreshCheck(p.checks)?.verdict ?? null,
       note: p.notes,
+      // 手画示意图：读成 data URI 内联（PDF 走 file://，不能引用 http 资源）
+      images: p.images
+        .map((img) => {
+          const got = store.readImage(courseId, sheet.id, img.name);
+          return got
+            ? { name: img.name, caption: img.caption, dataUri: `data:${got.mediaType};base64,${got.bytes.toString('base64')}` }
+            : null;
+        })
+        .filter((x): x is { name: string; caption: string; dataUri: string } => !!x),
     }));
 
   const printHtmlOf = (courseId: string, sheetId: string, opts: { draft: boolean }): { ok: true; html: string } | { ok: false; error: string } => {
@@ -1461,7 +1606,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       courseTitle: course.title,
       courseId: course.course_id,
       sheet: { id: sheet.id, number: sheet.number, title: sheet.title, issued: sheet.issued, due: sheet.due },
-      problems: submissionProblemsOf(sheet),
+      problems: submissionProblemsOf(courseId, sheet),
       lessons: opts.draft ? sheet.lessons.map((l) => l.text) : [],
       studentName,
       mathAssetsBase: ASSETS_PREFIX,
@@ -2174,6 +2319,46 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   ctx.tools.register(
     defineTool({
+      name: 'exercise_attach_image',
+      description:
+        '给某道题附一张图（手画示意图/受力图/照片）。图会：① 在答案旁边显示；② 检查时随多模态一起发给模型；' +
+        '③ 印进提交 PDF。支持 png/jpeg/webp/gif（按内容嗅探，≤10MB）。传 `path`（本地文件）或 `base64`。',
+      parameters: {
+        course_id: { type: 'string', required: true, description: '课程标识' },
+        sheet_id: { type: 'string', required: true, description: '题集标识' },
+        problem_id: { type: 'string', required: true, description: '题目标识（p01…）' },
+        path: { type: 'string', description: '本地图片路径（相对 cwd 或绝对路径）；与 base64 二选一' },
+        base64: { type: 'string', description: '图片 base64（可带 data: 前缀）；与 path 二选一' },
+        caption: { type: 'string', description: '一句话说明（如"受力图"）' },
+      },
+      output: { schema: { type: 'json' }, render: renderJson },
+      execute: async (args: { course_id: string; sheet_id: string; problem_id: string; path?: string; base64?: string; caption?: string }) => {
+        let b64 = args.base64 ?? '';
+        if (!b64 && args.path) {
+          const file = isAbsolute(args.path) ? args.path : join(process.cwd(), args.path);
+          if (!existsSync(file)) return fail(`找不到文件：${args.path}`);
+          b64 = readFileSync(file).toString('base64');
+        }
+        if (!b64) return fail('需要 path 或 base64');
+        const r = await addAttachment({
+          courseId: args.course_id,
+          sheetId: args.sheet_id,
+          problemId: args.problem_id,
+          base64: b64,
+          caption: args.caption,
+        });
+        if (!r.ok) return fail(r.error ?? '附图失败');
+        return ok({
+          name: r.image?.name ?? '',
+          bytes: r.image?.bytes ?? 0,
+          media_type: r.image?.media_type ?? '',
+        });
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
       name: 'exercise_rebut',
       description:
         '答辩：学生认为批改错了，让爱弥斯**重新独立推导**再裁决。' +
@@ -2448,7 +2633,18 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           math_warnings: Array.isArray(d.math_warnings) ? (d.math_warnings as string[]) : undefined,
         };
       },
-            onRebuttal: async (input) => {
+            onReadAttachment: (input) => store.readImage(input.courseId, input.sheetId, input.name),
+      onAddAttachment: async (input) => {
+        const r = await addAttachment(input);
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, image: r.image, sheet: viewOf(input.courseId, input.sheetId) };
+      },
+      onDeleteAttachment: async (input) => {
+        const r = await deleteAttachment(input);
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, sheet: viewOf(input.courseId, input.sheetId) };
+      },
+      onRebuttal: async (input) => {
         const r = await rebutProblem(input);
         if (!r.ok) return { ok: false, error: r.error };
         return { ok: true, sheet: viewOf(input.courseId, input.sheetId) };
@@ -2572,7 +2768,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   log(
     '工具已注册：exercise_list / exercise_new_sheet / exercise_open / exercise_problem / ' +
       'exercise_save_answer / exercise_resplit / exercise_check / exercise_collect_mistake / exercise_lessons / ' +
-        'exercise_export_text / ' +
+        'exercise_attach_image / exercise_export_text / ' +
       'exercise_sync_worldbook / exercise_build_submission / exercise_progress / ' +
       'exercise_export_handoff / exercise_import_handoff',
   );

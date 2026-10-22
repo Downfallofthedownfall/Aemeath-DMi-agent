@@ -71,6 +71,10 @@ export interface AnswerEditorProps {
   onCollectMistake: () => void;
   onToast: (msg: string) => void;
   busy?: boolean;
+  /** 图片附件：上传（File → 后端存盘）/ 删除 / 取 URL */
+  onAttachImage?: (file: File) => Promise<void>;
+  onDeleteImage?: (imageId: string) => void;
+  imageUrl?: (name: string) => string;
 }
 
 const SAVE_DEBOUNCE_MS = 900;
@@ -84,6 +88,9 @@ export function AnswerEditor({
   onCollectMistake,
   onToast,
   busy = false,
+  onAttachImage,
+  onDeleteImage,
+  imageUrl,
 }: AnswerEditorProps): JSX.Element {
   const [draft, setDraft] = useState(problem.answer);
   const [notes, setNotes] = useState(problem.notes);
@@ -238,8 +245,42 @@ export function AnswerEditor({
         />
         <div className="lec-preview-pane" ref={previewRef}>
           {draft.trim() ? <MathText text={draft} /> : null}
+          {(problem.images ?? []).length > 0 && (
+            <div className="lec-figure-strip">
+              {(problem.images ?? []).map((img) => (
+                <figure key={img.id} className="lec-figure">
+                  <img src={imageUrl?.(img.name)} alt={img.caption || img.name} loading="lazy" />
+                  {img.caption ? <figcaption>{img.caption}</figcaption> : null}
+                  {onDeleteImage ? (
+                    <button type="button" className="lec-figure-del" title="删除这张图" onClick={() => onDeleteImage(img.id)}>
+                      ×
+                    </button>
+                  ) : null}
+                </figure>
+              ))}
+            </div>
+          )}
         </div>
       </div>
+
+      {onAttachImage ? (
+        <div className="lec-toolrow" style={{ marginTop: 6 }}>
+          <label className="lec-btn lec-btn-ghost" style={{ cursor: 'pointer', margin: 0 }}>
+            ＋ 图片（画图/照片）
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0];
+                e.currentTarget.value = '';
+                if (file) void onAttachImage(file);
+              }}
+            />
+          </label>
+          <span className="lec-hint">示意图/受力图会一起发给爱弥斯检查，也会印进提交 PDF</span>
+        </div>
+      ) : null}
 
       {draft.trim() && !hasMath(draft) && /\\[A-Za-z]+/.test(draft) && (
         <div className="lec-hint" style={{ marginTop: 6 }}>

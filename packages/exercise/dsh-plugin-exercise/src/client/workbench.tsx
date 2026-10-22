@@ -48,6 +48,18 @@ function dueText(m: SheetMetaView): string {
   return `还有 ${m.due_in_days} 天`;
 }
 
+/** File → base64（不带 data: 前缀；后端自己嗅探格式）。 */
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.onload = () => {
+      const s = String(reader.result ?? '');
+      resolve(s.includes(',') ? s.slice(s.indexOf(',') + 1) : s);
+    };
+    reader.readAsDataURL(file);
+  });
+}
 export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.Element {
   const [courses, setCourses] = useState<CourseView[]>([]);
   const [courseId, setCourseId] = useState('');
@@ -650,6 +662,41 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                     mistakeCount={p.mistakes.length}
                     onSave={(patch) => saveProblem(p.id, patch)}
                     onCheck={() => void checkProblem(p.id)}
+                    imageUrl={(name) =>
+                      `${API_BASE}?action=attachment&course=${encodeURIComponent(courseId)}&sheet=${encodeURIComponent(sheet.id)}&name=${encodeURIComponent(name)}`
+                    }
+                    onAttachImage={async (file) => {
+                      setBusyProblem(p.id);
+                      try {
+                        const base64 = await readFileAsBase64(file);
+                        const r = await apiPost<{ sheet: SheetView }>('add_attachment', {
+                          course_id: courseId,
+                          sheet_id: sheet.id,
+                          problem_id: p.id,
+                          base64,
+                          caption: file.name.replace(/\.[a-z0-9]+$/i, ''),
+                        });
+                        setSheet(r.sheet);
+                        showToast(`已附上图片：${file.name}（检查时会一起发给爱弥斯）`);
+                      } catch (e) {
+                        showToast(`上传失败：${(e as Error).message}`);
+                      } finally {
+                        setBusyProblem('');
+                      }
+                    }}
+                    onDeleteImage={async (imageId) => {
+                      try {
+                        const r = await apiPost<{ sheet: SheetView }>('delete_attachment', {
+                          course_id: courseId,
+                          sheet_id: sheet.id,
+                          problem_id: p.id,
+                          image_id: imageId,
+                        });
+                        setSheet(r.sheet);
+                      } catch (e) {
+                        showToast(`删除失败：${(e as Error).message}`);
+                      }
+                    }}
                     onRebuttal={async (text) => {
                       setBusyProblem(p.id);
                       try {

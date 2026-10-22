@@ -89,6 +89,20 @@ export const rebuttalSchema = z.object({
 });
 export type Rebuttal = z.infer<typeof rebuttalSchema>;
 
+/** 答案里附的图片（手画示意图/草图；检查与提交 PDF 都会带上）。 */
+export const problemImageSchema = z.object({
+  id: z.string(),
+  /** 落盘文件名（`img-<ts>-<rand>.jpg`） */
+  name: z.string(),
+  media_type: z.string().default('image/jpeg'),
+  /** 原始字节数（界面显示/限制用） */
+  bytes: z.number().default(0),
+  /** 一句话说明（可选，比如"受力图"） */
+  caption: z.string().default(''),
+  created_at: z.number().default(0),
+});
+export type ProblemImage = z.infer<typeof problemImageSchema>;
+
 export const problemSchema = z.object({
   /** 稳定 id（`p01`…），作为文件名/键使用 */
   id: z.string(),
@@ -112,6 +126,8 @@ export const problemSchema = z.object({
   /** 最后一次写入者：用户自己写 vs 让 agent 代笔（可追溯） */
   answer_edited_by: z.enum(['user', 'agent']).default('user'),
   checks: z.array(checkSchema).default([]),
+  /** 答案附图（手画示意图；检查时随多模态发给模型，PDF 也会印） */
+  images: z.array(problemImageSchema).default([]),
   /** 答辩历史（追加式；学生质疑批改时用） */
   rebuttals: z.array(rebuttalSchema).default([]),
   /** 关联的错题 id（错题本） */

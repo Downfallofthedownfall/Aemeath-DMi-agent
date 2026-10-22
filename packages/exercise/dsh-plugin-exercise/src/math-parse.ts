@@ -216,6 +216,10 @@ export function isBareLatexLine(line: string): boolean {
   if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff00-\uffef]/.test(t)) return false;
   // Windows 路径 / UNC（`C:\Users` 里的 `\Users` 不是命令）
   if (/[A-Za-z]:[\\/]/.test(t) || t.includes('\\\\')) return false;
+  // 已经带分隔符的（`$…$` / `$$…$$` / `\( \)` / `\[ \]`）不是"裸" LaTeX ——
+  // 否则整行 `$T = 2\pi\sqrt{l/g}$` 会被当成裸 LaTeX 再包一层 `$$`，
+  // KaTeX 见到里面的 `$` 直接报错，预览变成红字源码（真机 2026-10-22 踩到）。
+  if (t.includes('$') || t.startsWith('\\(') || t.startsWith('\\[')) return false;
   // 代码（反引号）
   if (t.includes('`')) return false;
   // 至少一个反斜杠命令，且**所有**命令都在白名单里

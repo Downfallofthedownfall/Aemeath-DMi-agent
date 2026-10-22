@@ -40,6 +40,15 @@ export interface CheckView {
   rebutted_at?: number;
 }
 
+export interface ProblemImageView {
+  id: string;
+  name: string;
+  media_type: string;
+  bytes: number;
+  caption: string;
+  created_at: number;
+}
+
 export interface RebuttalView {
   id: string;
   created_at: number;
@@ -69,6 +78,8 @@ export interface ProblemView {
   answer_edited_by: 'user' | 'agent';
   checks: CheckView[];
   rebuttals: RebuttalView[];
+  /** 答案附图（手画示意图） */
+  images: ProblemImageView[];
   mistakes: string[];
   notes: string;
   status: ProblemStatus;

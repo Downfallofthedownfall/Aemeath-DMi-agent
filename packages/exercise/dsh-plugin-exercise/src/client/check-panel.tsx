@@ -46,7 +46,17 @@ function CheckBody({ check, stale }: { check: CheckView; stale?: boolean }): JSX
           {timeOf(check.created_at)}
           {check.model ? ` · ${check.model}` : ''}
           {check.provider ? ` · ${check.provider}` : ''}
-          {check.reasoning ? ` · 推理${check.reasoning === 'off' ? '关' : '开'}` : ''}
+          {check.reasoning
+            ? ` · 推理${
+                check.reasoning === 'off'
+                  ? '关'
+                  : check.reasoning.startsWith('off')
+                    ? '关（降级）'
+                    : check.reasoning === 'max'
+                      ? ' max'
+                      : ` ${check.reasoning}`
+              }`
+            : ''}
           {stale ? ' · 针对旧答案' : ''}
         </span>
       </div>

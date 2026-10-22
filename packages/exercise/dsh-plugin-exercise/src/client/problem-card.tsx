@@ -34,6 +34,10 @@ export interface ProblemCardProps {
   onCheck: () => void;
   /** 答辩：把学生的话发给爱弥斯（重新推导后承认或坚持） */
   onRebuttal: (text: string) => Promise<void>;
+  /** 上传/删除答案附图，以及拼图片 URL */
+  onAttachImage?: (file: File) => Promise<void>;
+  onDeleteImage?: (imageId: string) => void;
+  imageUrl?: (name: string) => string;
   onCollectMistake: () => void;
   onDelete: () => void;
   onToast: (msg: string) => void;
@@ -47,6 +51,9 @@ export function ProblemCard({
   onSave,
   onCheck,
   onRebuttal,
+  onAttachImage,
+  onDeleteImage,
+  imageUrl,
   onCollectMistake,
   onDelete,
   onToast,
@@ -149,6 +156,9 @@ export function ProblemCard({
         onCollectMistake={onCollectMistake}
         onToast={onToast}
         busy={busy}
+        onAttachImage={onAttachImage}
+        onDeleteImage={onDeleteImage}
+        imageUrl={imageUrl}
       />
 
       {mistakeCount > 0 && (

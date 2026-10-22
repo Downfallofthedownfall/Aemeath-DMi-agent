@@ -23,8 +23,8 @@
 // 本模块是**纯文件层**：不依赖 dsh，可单测。
 // ============================================================
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { join, isAbsolute } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { basename, extname, join, isAbsolute } from 'node:path';
 import { pageImageName, pageFromImageName } from './pdf-image.js';
 import {
   courseIndexSchema,
@@ -384,6 +384,48 @@ export class ExerciseStore {
         .sort((a, b) => a - b);
     } catch {
       return [];
+    }
+  }
+
+  // ---------- 答案附图（手画示意图；检查/PDF 都带） ----------
+
+  imagesDir(courseId: string, sheetId: string): string {
+    return join(this.sheetDir(courseId, sheetId), 'images');
+  }
+
+  /** 图片文件名安全化（只留 `[A-Za-z0-9._-]`，防止 `../`）。 */
+  imageFile(courseId: string, sheetId: string, name: string): string {
+    const safe = basename(name).replace(/[^A-Za-z0-9._-]+/g, '_');
+    return join(this.imagesDir(courseId, sheetId), safe);
+  }
+
+  writeImage(courseId: string, sheetId: string, name: string, bytes: Uint8Array): number {
+    const dir = this.imagesDir(courseId, sheetId);
+    this.ensureDir(dir);
+    writeFileSync(this.imageFile(courseId, sheetId, name), bytes);
+    return bytes.byteLength;
+  }
+
+  readImage(courseId: string, sheetId: string, name: string): { bytes: Buffer; mediaType: string } | null {
+    const file = this.imageFile(courseId, sheetId, name);
+    if (!existsSync(file)) return null;
+    try {
+      const ext = extname(file).toLowerCase();
+      const mediaType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
+      return { bytes: readFileSync(file), mediaType };
+    } catch {
+      return null;
+    }
+  }
+
+  deleteImage(courseId: string, sheetId: string, name: string): boolean {
+    const file = this.imageFile(courseId, sheetId, name);
+    if (!existsSync(file)) return false;
+    try {
+      unlinkSync(file);
+      return true;
+    } catch {
+      return false;
     }
   }
 

@@ -1012,6 +1012,14 @@ const CSS = `
 .${EX_CLASS} .lec-issue[data-sev="warn"] .sev { color: light-dark(#8a6414, #f0cd8a); }
 .${EX_CLASS} .lec-stale { margin-top: 8px; padding: 6px 9px; border-radius: 6px; font-size: 11.5px; background: light-dark(#fff6e6, rgba(240, 180, 90, 0.14)); border: 1px solid light-dark(#f3dfb8, rgba(240, 180, 90, 0.3)); color: light-dark(#7a5a12, #f0cd8a); }
 
+/* 答案附图（手画示意图）：预览区底部的缩略图条 */
+.${EX_CLASS} .lec-figure-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--aem-line); }
+.${EX_CLASS} .lec-figure { position: relative; margin: 0; border: 1px solid var(--aem-line); border-radius: 8px; background: light-dark(#fff, rgba(255, 255, 255, 0.04)); padding: 4px; }
+.${EX_CLASS} .lec-figure img { display: block; max-width: 220px; max-height: 160px; border-radius: 5px; }
+.${EX_CLASS} .lec-figure figcaption { font-size: 10.5px; color: var(--aem-ink-dim); margin-top: 2px; max-width: 220px; }
+.${EX_CLASS} .lec-figure-del { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; line-height: 1; border-radius: 50%; border: 1px solid var(--aem-line); background: var(--aem-surface); color: var(--aem-ink-dim); cursor: pointer; font-size: 12px; padding: 0; }
+.${EX_CLASS} .lec-figure-del:hover { color: light-dark(#b03030, #ff8a80); border-color: currentColor; }
+
 /* 答辩（学生 vs 批改）：我的原话靠右、爱弥斯的回复靠左 */
 .${EX_CLASS} .lec-rebut-thread { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .${EX_CLASS} .lec-rebut-turn { display: flex; flex-direction: column; gap: 4px; }

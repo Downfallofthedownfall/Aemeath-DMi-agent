@@ -217,6 +217,26 @@ export interface ExerciseHttpDeps {
     hint?: string;
   }>;
 
+  /** GET attachment：读答案附图（private，需要 cookie） */
+  onReadAttachment(input: { courseId: string; sheetId: string; name: string }): { bytes: Buffer; mediaType: string } | null;
+
+  /** POST add_attachment：上传答案附图（base64） */
+  onAddAttachment(input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+    base64: string;
+    caption?: string;
+  }): Promise<{ ok: boolean; error?: string; image?: unknown; sheet?: unknown }>;
+
+  /** POST delete_attachment */
+  onDeleteAttachment(input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+    imageId: string;
+  }): Promise<{ ok: boolean; error?: string; sheet?: unknown }>;
+
   /** POST rebut（答辩：学生质疑批改，模型重新推导后承认或给出证据） */
   onRebuttal(input: { courseId: string; sheetId: string; problemId: string; text: string }): Promise<{
     ok: boolean;
@@ -333,6 +353,28 @@ export async function handleExerciseHttp(
             return;
           }
           json(res, 200, { ok: true, text });
+          return;
+        }
+
+        case 'attachment': {
+          const name = typeof url.searchParams.get('name') === 'string' ? String(url.searchParams.get('name')).slice(0, 200) : '';
+          const course = url.searchParams.get('course') ?? '';
+          const sheet = url.searchParams.get('sheet') ?? '';
+          if (!course || !sheet || !name) {
+            jsonError(res, 400, 'course / sheet / name required');
+            return;
+          }
+          const got = deps.onReadAttachment({ courseId: course, sheetId: sheet, name });
+          if (!got) {
+            jsonError(res, 404, '图片不存在');
+            return;
+          }
+          res.writeHead(200, {
+            'Content-Type': got.mediaType,
+            'Content-Length': String(got.bytes.length),
+            'Cache-Control': 'private, max-age=60',
+          });
+          res.end(got.bytes);
           return;
         }
 
@@ -540,6 +582,35 @@ export async function handleExerciseHttp(
             return;
           }
           const r = await deps.onCheck({ courseId, sheetId, problemId: str(parsed.problem_id, 24) });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'add_attachment': {
+          const problemId = parsed.problem_id ? str(parsed.problem_id, 64) : '';
+          if (!courseId || !sheetId || !problemId) {
+            jsonError(res, 400, 'course_id / sheet_id / problem_id required');
+            return;
+          }
+          const r = await deps.onAddAttachment({
+            courseId,
+            sheetId,
+            problemId,
+            base64: str(parsed.base64 ?? '', 20 * 1024 * 1024),
+            caption: parsed.caption ? str(parsed.caption, 200) : undefined,
+          });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'delete_attachment': {
+          const problemId = parsed.problem_id ? str(parsed.problem_id, 64) : '';
+          const imageId = parsed.image_id ? str(parsed.image_id, 64) : '';
+          if (!courseId || !sheetId || !problemId || !imageId) {
+            jsonError(res, 400, 'course_id / sheet_id / problem_id / image_id required');
+            return;
+          }
+          const r = await deps.onDeleteAttachment({ courseId, sheetId, problemId, imageId });
           json(res, r.ok ? 200 : 400, r);
           return;
         }
