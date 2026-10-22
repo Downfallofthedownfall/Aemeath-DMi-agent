@@ -224,9 +224,9 @@ npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
 npm test -w @aemeath/dsh-plugin-lecture      # 282 (markers/storage/traversal-guard/BOM + transcriber/5-step-review/D4-gate/D12-guard/notation + tool-chain regression + math-symbol palette + P3 no-leak contract + P4 handoff importer + workbench/standalone-mode/delete/create-course/stale-detection regression)
-npm test -w @aemeath/dsh-plugin-exercise     # 265 (types+digest / PDF text extraction + problem split / LLM anchor segmentation / multimodal vision segmentation / file store / submission HTML / lecture-compatible handoff + worldbook / manual-check parsing (incl. loose JSON) + HTTP routing)
+npm test -w @aemeath/dsh-plugin-exercise     # 263 (types+digest / PDF text extraction + problem split / LLM anchor segmentation / multimodal vision segmentation / file store / submission HTML / lecture-compatible handoff + worldbook / manual-check parsing (incl. loose JSON) + HTTP routing)
 npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views: list/timeline/graph)
-# Total: 803 unit-test assertions (all green, 31 files — measured 2026-10-20)
+# Total: 801 unit-test assertions (all green, 31 files — measured 2026-10-20)
 # (lecture 282 + memory 193 + exercise 166 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4)
 ```
 
@@ -416,7 +416,7 @@ electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留�
 | 方面 | 设计 |
 |---|---|
 | 导入 | 把作业 PDF 拖进来 → 每页**渲染成截图**（pdfjs + canvas，144dpi）→ **多模态模型看图**逐题转录（公式 LaTeX、插图标记、分值、页码；跨页续文按题号并回父题）。文本抽取是后备①、逐字锚点切分②、规则③ —— 任何一环失败都不挡导入。页面截图存 `pages/page-NN.jpg`，界面里就是**「原题截图」**；左栏重切走同一条链，**按题号保留答案** |
-| 做题 | 答案编辑器**边写边渲染 LaTeX**（分栏 / 只写 / 只看渲染，滚动同步）+ 自动保存（900ms / 失焦），**永远可改**；符号面板**整份照抄 lecture**（搜索/分组折叠/计数/记住上次的组），点一下**插到光标处**（`\placeholder{}` 转成真正的 LaTeX `{}`，**不自动加 `$`**，无焦点则复制）；改动会把旧检查标 `stale`（不删除历史） |
+| 做题 | 答案编辑器**边写边渲染 LaTeX**（分隔符显式：`$…$` / `$$…$$`，没写就不渲染；解析失败显示源码而不是红字）（分栏 / 只写 / 只看渲染，滚动同步）+ 自动保存（900ms / 失焦），**永远可改**；符号面板**整份照抄 lecture**（搜索/分组折叠/计数/记住上次的组），点一下**插到光标处**（`\placeholder{}` 转成真正的 LaTeX `{}`，**不自动加 `$`**，无焦点则复制）；改动会把旧检查标 `stale`（不删除历史） |
 | 检查 | **只能手动**（按钮 / `exercise_check`）。返回结论 + 哪一步错 + 苏格拉底式提问 + "下一步验证什么"。有页面截图时走**多模态**（原题图 + 你的答案），图和 OCR 烂掉的公式都以图为准。走**全局 dsh LLM** —— 与主 agent 同一个 provider、模型和凭据（**不需要**单独配 API key / 模型）。模型输出被截断时会抢救解析；解析失败记为 `error`，**绝不**记成"你答错了" |
 | 错题 | 跨套题错题本（`_mistakes.json`），每条带**你自己写的一句话教训**；`mastered` 可切换；检查判 `wrong`/`partial` 时自动收录 |
 | 知识 | 教训/经验写成 physicist 馆的世界书条目（`generated_exercise.json`），热重载 ≤3s —— 于是爱弥斯能在同类题上说"你上次在这里栽过" |
@@ -448,10 +448,10 @@ npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
 npm test -w @aemeath/dsh-plugin-lecture      # 282（标记语法/存储/穿越防护/BOM + 转录员/五步复盘/D4/D12/记号约定 + 工具链回归 + 符号边栏 + P3 不泄漏契约 + P4 握手接收 + 三栏工作台/独立界面模式/删除/新建课程/陈旧检测回归）
-npm test -w @aemeath/dsh-plugin-exercise     # 265（types+digest / PDF 抽文本 + 拆题 / LLM 锚点分块 / 多模态读图分块 / 文件存储 / 提交 HTML / 借用 lecture 的握手 + worldbook / 手动检查解析（含宽松 JSON）+ HTTP 路由）
+npm test -w @aemeath/dsh-plugin-exercise     # 263（types+digest / PDF 抽文本 + 拆题 / LLM 锚点分块 / 多模态读图分块 / 文件存储 / 提交 HTML / 借用 lecture 的握手 + worldbook / 手动检查解析（含宽松 JSON）+ HTTP 路由）
 npm test -w @aemeath/dsh-plugin-ui           # 12 （记忆工作区代理视图：列表/时间轴/图谱）
-# 合计：803 项断言（全绿，31 个测试文件，2026-10-20 实测）
-# （lecture 282 + memory 193 + exercise 265 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4）
+# 合计：801 项断言（全绿，31 个测试文件，2026-10-20 实测）
+# （lecture 282 + memory 193 + exercise 263 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4）
 ```
 
 ### 下一步

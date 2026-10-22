@@ -1020,6 +1020,8 @@ const CSS = `
 .${EX_CLASS} .lec-figure-del { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; line-height: 1; border-radius: 50%; border: 1px solid var(--aem-line); background: var(--aem-surface); color: var(--aem-ink-dim); cursor: pointer; font-size: 12px; padding: 0; }
 .${EX_CLASS} .lec-figure-del:hover { color: light-dark(#b03030, #ff8a80); border-color: currentColor; }
 
+/* 公式解析失败：显示源码（等宽 + 虚线下划线），不是"红字塞进公式里" */
+.${EX_CLASS} .ex-math-error, .${EX_CLASS} .ex-math-fallback { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.94em; color: var(--aem-ink); background: light-dark(#fdf6e3, rgba(240, 200, 120, 0.12)); border: 1px solid light-dark(#e8d9b0, rgba(240, 200, 120, 0.28)); border-radius: 4px; padding: 0 3px; white-space: pre-wrap; cursor: help; }
 /* 答辩（学生 vs 批改）：我的原话靠右、爱弥斯的回复靠左 */
 .${EX_CLASS} .lec-rebut-thread { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .${EX_CLASS} .lec-rebut-turn { display: flex; flex-direction: column; gap: 4px; }

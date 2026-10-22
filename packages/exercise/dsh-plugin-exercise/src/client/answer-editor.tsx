@@ -311,7 +311,7 @@ export function AnswerEditor({
       )}
       {mathIssues.length > 0 && (
         <div className="lec-warn" style={{ marginTop: 6, fontWeight: 400 }}>
-          KaTeX 无法解析这些命令，公式里会显示红字：
+          KaTeX 无法解析这些命令 —— 公式会原样显示源码：
           {mathIssues.map((i) => (
             <div key={i.command} style={{ marginTop: 2 }}>
               <code>{i.command}</code>

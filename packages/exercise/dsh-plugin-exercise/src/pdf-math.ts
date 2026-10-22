@@ -36,8 +36,9 @@ function katexDir(): string | null {
 /**
  * 渲染一个公式为 HTML。
  *
- * `throwOnError: false` 是刻意的：**用户写错的公式不该让整张提交 PDF 生成失败**。
- * KaTeX 会把它渲染成红字错误提示，用户一看就知道哪一处没写对。
+ * 用 `throwOnError: true` 渲染后再 catch：**用户写错的公式不该让整张 PDF 失败**，
+ * 但也不该把红字塞进公式内部（分母会被撑坏、看着像排版坏了）。
+ * 失败时退化成等宽源码 —— 至少还能看出写了什么。
  *
  * 渲染前先过 MathLive 兼容层（`\differentialD` → `\mathrm{d}` 等），
  * 与界面 `client/math.tsx` 用**同一个函数**，保证屏幕与打印一致。
@@ -46,10 +47,10 @@ export function renderMathToHtml(tex: string, display: boolean): string {
   const src = normalizeMathLive((tex ?? '').trim()).tex;
   if (!src) return '';
   try {
+    // 先严格渲染：解析失败就退化成"源码 + 等宽"（P18：红字混进公式内部更像排版坏了）
     return katex.renderToString(src, {
       displayMode: display,
-      throwOnError: false,
-      errorColor: '#c0392b',
+      throwOnError: true,
       strict: 'ignore',
       // 不允许 \href/\includegraphics 之类 —— 这是本地文档，没有信任边界问题，
       // 但保持关闭可以避免生成外链请求（打印时不该联网）。

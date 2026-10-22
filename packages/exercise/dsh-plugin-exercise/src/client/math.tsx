@@ -36,23 +36,28 @@ function ensureMathCss(): void {
 }
 
 /**
- * 渲染一段 LaTeX（失败 → 可读源码，绝不丢内容）。
+ * 渲染一段 LaTeX（失败 → 可读源码 + 一行原因，绝不丢内容）。
  *
- * 渲染前先过 **MathLive 兼容层**：讲义复制过来的 `\differentialD` 之类 KaTeX 不认，
- * `throwOnError:false` 会把它画成红字塞进公式内部（`\frac` 的分母会被撑坏）。
+ * 用户反馈（2026-10-22）："有时候会变成红色的字不渲染latex" —— KaTeX 的
+ * 旧写法 `throwOnError:false` 会把错误画成**红字塞进公式内部**（`\frac` 的分母被撑坏），
+ * 看着像排版坏了还不知道为什么。
+ * 现在：先严格渲染，失败就把**源码原样显示**（等宽、虚线下划线、悬停看原因），
+ * 并在编辑器的提示区列出是哪个命令不认识 —— 既不会"悄悄渲染"，也不会一片红。
  */
 export function renderTex(tex: string, display: boolean): string {
   const src = normalizeMathLive(tex).tex;
   try {
     return katex.renderToString(src, {
       displayMode: display,
-      throwOnError: false,
-      errorColor: '#c0392b',
+      throwOnError: true,
       strict: 'ignore',
       trust: false,
     });
-  } catch {
-    return `<code class="ex-math-fallback">${tex.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</code>`;
+  } catch (e) {
+    const reason = (e as Error).message.replace(/^KaTeX parse error:\s*/i, '').slice(0, 200);
+    const esc = src.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const title = reason.replace(/"/g, '&quot;');
+    return `<code class="ex-math-error" title="${title}">${esc}</code>`;
   }
 }
 

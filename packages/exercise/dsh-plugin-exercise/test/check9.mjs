@@ -14,7 +14,6 @@ import {
   splitInlineMath,
   splitMathSegments,
   normalizeMathDelimiters,
-  isBareLatexLine,
 } from '../lib/math-parse.js';
 
 let passed = 0;
@@ -148,45 +147,28 @@ t('normalizeMathDelimiters：\\[ \\] / \\( \\) / 裸环境 统一成 $ 形式（
 });
 
 // ---- 裸 LaTeX（不带 $ 的整行）----
-t('isBareLatexLine：裸命令行认；散文 / 路径 / 金额 / 反引号不认', () => {
-  assert.equal(isBareLatexLine('\\sum_{1}^{2}'), true, '符号面板插入的形态');
-  assert.equal(isBareLatexLine('\\frac{a}{b}'), true);
-  assert.equal(isBareLatexLine('\\alpha + \\beta'), true);
-  assert.equal(isBareLatexLine('\\int_{0}^{1} x^2 \\, dx'), true);
-  assert.equal(isBareLatexLine('C:\\Users\\xinka'), false, 'Windows 路径');
-  assert.equal(isBareLatexLine('用 \\sum 求和'), false, '中文散文');
-  assert.equal(isBareLatexLine('$5 and $6'), false, '金额');
-  assert.equal(isBareLatexLine('the \\sum of them'), false, '英文句子');
-  assert.equal(isBareLatexLine('\\Users'), false, '命令不在白名单');
-  assert.equal(isBareLatexLine('见 `\\sum` 命令'), false, '反引号 = 代码');
+t('裸 LaTeX 行**不再**自动渲染（用户报的"没写 $$ 也自己渲染"）', () => {
+  for (const s of ['\\sum_{1}^{2}', '\\frac{a}{b}', '\\alpha + \\beta', 'C:\\Users\\xinka', '用 \\sum 求和']) {
+    const blocks = buildRenderBlocks(s);
+    assert.equal(blocks[0].kind, 'p', `${s} 不该变成公式`);
+    assert.equal(blocks[0].segments.some((x) => x.kind === 'math'), false, `${s} 不该有数学段`);
+    assert.equal(hasMath(s), false, `${s} 不该触发 KaTeX 样式`);
+    assert.equal(normalizeMathDelimiters(s), s, `${s} 不该被包分隔符`);
+  }
 });
 
-t('buildRenderBlocks：整行裸 LaTeX → 块级公式；散文里的 \\sum 保持文本', () => {
-  const blocks = buildRenderBlocks('\\sum_{1}^{2}');
-  assert.equal(blocks.length, 1);
-  assert.equal(blocks[0].kind, 'math');
-  assert.equal(blocks[0].tex, '\\sum_{1}^{2}');
-  const prose = buildRenderBlocks('用 \\sum 求和时注意上下限');
-  assert.equal(prose[0].kind, 'p');
-  assert.equal(prose[0].segments.some((s) => s.kind === 'math'), false);
+t('显式分隔符仍然渲染：行内 $…$、块级 $$…$$、\\[ \\]、完整 \\begin{env}', () => {
+  const inline = buildRenderBlocks('所以 $a = g\\sin\\alpha$ 成立');
+  assert.equal(inline[0].kind, 'p');
+  assert.equal(inline[0].segments.some((s) => s.kind === 'math'), true);
+  assert.equal(buildRenderBlocks('$$a=1$$')[0].kind, 'math');
+  assert.equal(hasMath('$x$'), true);
+  assert.equal(normalizeMathDelimiters('\\[x\\]'), '$$x$$');
+  const env = buildRenderBlocks('\\begin{aligned} a &= b \\end{aligned}');
+  assert.equal(env[0].kind, 'math');
 });
 
-t('hasMath：裸命令行也算有公式（要注入 KaTeX 样式）', () => {
-  assert.equal(hasMath('\\sum_{1}^{2}'), true);
-  assert.equal(hasMath('C:\\Users\\xinka'), false);
-});
-
-t('normalizeMathDelimiters：裸命令行包成 $$…$$（PDF 与屏幕一致）', () => {
-  assert.equal(normalizeMathDelimiters('\\sum_{1}^{2}'), '$$\\sum_{1}^{2}$$');
-  assert.equal(normalizeMathDelimiters('C:\\Users\\xinka'), 'C:\\Users\\xinka');
-  assert.equal(normalizeMathDelimiters('用 \\sum 求和'), '用 \\sum 求和');
-});
-
-t('整行只有 `$…$` 时必须是行内公式，不能再当"裸 LaTeX"（真机红字 bug 回归）', () => {
-  assert.equal(isBareLatexLine('$T = 2\\pi\\sqrt{l/g}$'), false, '已经带分隔符的不能再包');
-  assert.equal(isBareLatexLine('$$x$$'), false);
-  assert.equal(isBareLatexLine('\\[x\\]'), false);
-  assert.equal(isBareLatexLine('\\(x\\)'), false);
+t('整行只有 `$…$` 时必须是行内公式（真机红字 bug 回归）', () => {
   const blocks = buildRenderBlocks('$T = 2\\pi\\sqrt{l/g}$');
   assert.equal(blocks.length, 1);
   assert.equal(blocks[0].kind, 'p');

@@ -154,84 +154,16 @@ export function splitMathSegments(src: string): Segment[] {
   return out;
 }
 
-/** 文本里有公式吗（决定要不要加载 KaTeX 样式）。 */
-export function hasMath(text: string): boolean {
-  if (splitMathSegments(text).some((s) => s.kind === 'math')) return true;
-  // 整行裸 LaTeX（用户从符号面板插入、或手打 `\sum_{1}^{2}` 不带 $）也算
-  return text.split(/\r?\n/).some((line) => isBareLatexLine(line));
-}
-
-// ============================================================
-// 裸 LaTeX 行（不带 `$` 的分隔符）
-//
-// 为什么需要：符号面板的数据来自 lecture（MathLive 表单里天生就是数学模式），
-// 插入 `\sum_{}^{}` 这种**不带分隔符**的串。用户"点符号 → 填上下限"是主输入路径，
-// 如果解析器只认 `$`，这条路产出的内容就永远只按纯文本显示（真机报的 bug）。
-//
-// 判据必须**收窄到"整行就是一条 LaTeX"**，否则会把散文/路径误判：
-//   · 有中日韩字符 → 不是（"用 \sum 求和" 这种是散文）
-//   · `C:\Users` / UNC 路径 → 不是
-//   · 提到反引号（代码）→ 不是
-//   · 命令名必须在白名单里（`\sum` `\frac` `\alpha`…），`\Users` 不在
-//   · 去掉命令后不能像"三个以上英文单词"的句子
-// ============================================================
-
-/** 无歧义的数学命令（白名单：宁可少认，也不能把散文当公式）。 */
-const MATH_CMDS = new Set([
-  'sum', 'prod', 'coprod', 'int', 'iint', 'iiint', 'oint', 'oiint',
-  'frac', 'dfrac', 'tfrac', 'sqrt', 'root', 'binom', 'overline', 'underline',
-  'hat', 'bar', 'vec', 'dot', 'ddot', 'tilde', 'widehat', 'widetilde', 'overrightarrow',
-  'partial', 'nabla', 'infty', 'lim', 'limsup', 'liminf', 'max', 'min', 'sup', 'inf', 'arg',
-  'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'arcsin', 'arccos', 'arctan',
-  'sinh', 'cosh', 'tanh', 'log', 'ln', 'exp', 'det', 'dim', 'ker', 'deg', 'gcd',
-  'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'varepsilon', 'zeta', 'eta', 'theta',
-  'vartheta', 'iota', 'kappa', 'lambda', 'mu', 'nu', 'xi', 'pi', 'rho', 'sigma',
-  'tau', 'upsilon', 'phi', 'varphi', 'chi', 'psi', 'omega',
-  'Gamma', 'Delta', 'Theta', 'Lambda', 'Xi', 'Pi', 'Sigma', 'Upsilon', 'Phi', 'Psi', 'Omega',
-  'cdot', 'times', 'div', 'pm', 'mp', 'ast', 'star', 'circ', 'bullet',
-  'leq', 'le', 'geq', 'ge', 'neq', 'ne', 'approx', 'equiv', 'sim', 'simeq', 'propto',
-  'll', 'gg', 'subset', 'supset', 'subseteq', 'supseteq', 'in', 'notin', 'cup', 'cap',
-  'emptyset', 'varnothing', 'forall', 'exists', 'neg', 'land', 'lor', 'lnot',
-  'to', 'rightarrow', 'leftarrow', 'leftrightarrow', 'Rightarrow', 'Leftarrow', 'Leftrightarrow',
-  'mapsto', 'uparrow', 'downarrow', 'mid', 'parallel', 'perp', 'angle', 'triangle',
-  'langle', 'rangle', 'lvert', 'rvert', 'vert', 'Vert', 'lfloor', 'rfloor', 'lceil', 'rceil',
-  'left', 'right', 'big', 'Big', 'bigg', 'Bigg', 'text', 'textrm', 'textbf', 'mathrm',
-  'mathbf', 'mathit', 'mathbb', 'mathcal', 'mathfrak', 'mathsf', 'operatorname',
-  'quad', 'qquad', 'hspace', 'vspace', 'phantom', 'boxed', 'underbrace', 'overbrace',
-  'begin', 'end', 'displaystyle', 'textstyle', 'cdots', 'ldots', 'dots', 'vdots', 'ddots',
-  'degree', 'prime', 'ell', 'hbar', 'Re', 'Im', 'aleph', 'colon', 'backslash',
-]);
-
-const MATH_PUNCT_RE = /^[\sA-Za-z0-9\\{}^_&|()[\]+\-*/=<>.,;:!%'"~#$@`]*$/;
-
 /**
- * 这一整行是不是"裸 LaTeX"（不带 `$`）？
+ * 文本里有公式吗（决定要不要加载 KaTeX 样式）。
  *
- * 只用于**整行**判定；行内混排的散文一律不认（避免误渲染）。
+ * 2026-10-22 起**只认显式分隔符**（`$…$` / `$$…$$` / `\( \)` / `\[ \]` /
+ * 完整的 `\begin{env}…\end{env}`）。之前还认"整行裸 LaTeX"，结果行为不可预测：
+ * 同一行写了 `\sin\alpha` 会自己渲染，插一个符号（带中文/多一个 `$`）又突然不渲染 ——
+ * 用户明确说这是 bug（"有时候会自己渲染latex，就算没写 $$"）。
  */
-export function isBareLatexLine(line: string): boolean {
-  const t = line.trim();
-  if (!t) return false;
-  // 中日韩字符 → 散文（"用 \sum 求和"）
-  if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff00-\uffef]/.test(t)) return false;
-  // Windows 路径 / UNC（`C:\Users` 里的 `\Users` 不是命令）
-  if (/[A-Za-z]:[\\/]/.test(t) || t.includes('\\\\')) return false;
-  // 已经带分隔符的（`$…$` / `$$…$$` / `\( \)` / `\[ \]`）不是"裸" LaTeX ——
-  // 否则整行 `$T = 2\pi\sqrt{l/g}$` 会被当成裸 LaTeX 再包一层 `$$`，
-  // KaTeX 见到里面的 `$` 直接报错，预览变成红字源码（真机 2026-10-22 踩到）。
-  if (t.includes('$') || t.startsWith('\\(') || t.startsWith('\\[')) return false;
-  // 代码（反引号）
-  if (t.includes('`')) return false;
-  // 至少一个反斜杠命令，且**所有**命令都在白名单里
-  const cmds = [...t.matchAll(/\\([A-Za-z]+)/g)].map((m) => m[1]!);
-  if (!cmds.length) return false;
-  if (!cmds.every((c) => MATH_CMDS.has(c) || MATH_ENVS.includes(c) || MATH_ENVS.includes(`${c}*`))) return false;
-  // 字符集：只允许数学/标点（出现中文标点、emoji 等就不认）
-  if (!MATH_PUNCT_RE.test(t)) return false;
-  // 去掉命令后不能像自然语言句子（"the sum of these values"）
-  const stripped = t.replace(/\\[A-Za-z]+/g, ' ');
-  if (/\b[a-z]{2,}\s+[a-z]{2,}\s+[a-z]{2,}\b/i.test(stripped)) return false;
-  return true;
+export function hasMath(text: string): boolean {
+  return splitMathSegments(text).some((s) => s.kind === 'math');
 }
 
 /**
@@ -253,11 +185,7 @@ export function normalizeMathDelimiters(src: string): string {
     let text = seg.text;
     // 行内 `\( … \)` → `$ … $`
     text = text.replace(/\\\(([\s\S]+?)\\\)/g, (_m, tex: string) => `$${String(tex).trim()}$`);
-    // 整行裸 LaTeX（符号面板插入的 `\sum_{}^{}`、手打的 `\frac{a}{b}`）→ `$$…$$`
-    text = text
-      .split('\n')
-      .map((line) => (isBareLatexLine(line) ? `$$${line.trim()}$$` : line))
-      .join('\n');
+
     pieces.push(text);
   }
   return pieces.join('');
@@ -362,9 +290,7 @@ export function buildRenderBlocks(src: string): RenderBlock[] {
         chunk.push({ kind: 'li', segments: splitInlineMath(block.text) });
       } else if (!block.text.trim()) {
         chunk.push({ kind: 'p', whitespace: true, segments: [] });
-      } else if (isBareLatexLine(block.text)) {
-        // 整行裸 LaTeX → 块级公式（符号面板插入的 `\sum_{}^{}` 就走这条）
-        chunk.push({ kind: 'math', tex: block.text.trim(), display: true });
+
       } else {
         chunk.push({ kind: 'p', segments: splitInlineMath(block.text) });
       }
