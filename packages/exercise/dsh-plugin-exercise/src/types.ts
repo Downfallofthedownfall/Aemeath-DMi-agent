@@ -55,8 +55,39 @@ export const checkSchema = z.object({
   /** 检查时的答案指纹：答案一变，本次检查即过期。 */
   answer_sha: z.string().default(''),
   stale: z.boolean().default(false),
+  /** 实际用的 provider / model（老数据为空；界面显示"谁批的"） */
+  provider: z.string().default(''),
+  /** 这次检查是否开了推理（off = 关；空 = 未知/老数据） */
+  reasoning: z.string().default(''),
+  /** 被答辩撤回的 issue 下标（0 基），UI 上划掉 */
+  withdrawn: z.array(z.number().int()).default([]),
+  /** 答辩后仍成立的问题（覆盖 issues 的展示） */
+  remaining: z.array(checkIssueSchema).default([]),
+  /** 是否已被答辩（conceded/upheld/partial 之后为 true） */
+  rebutted_at: z.number().default(0),
 });
 export type Check = z.infer<typeof checkSchema>;
+
+/** 一轮答辩（学生 vs 批改）。追加式保存，永不覆盖历史。 */
+export const rebuttalSchema = z.object({
+  id: z.string(),
+  created_at: z.number(),
+  /** 学生这一轮说了什么 */
+  user_text: z.string().default(''),
+  /** 爱弥斯的回复 */
+  reply: z.string().default(''),
+  outcome: z.enum(['conceded', 'upheld', 'partial']).default('partial'),
+  /** 被撤回的 issue 下标（相对当时的 check.issues） */
+  withdrawn: z.array(z.number().int()).default([]),
+  /** 你认为答案里对的部分 */
+  correct_parts: z.array(z.string()).default([]),
+  /** 仍然坚持的问题 */
+  remaining: z.array(checkIssueSchema).default([]),
+  /** 指向哪次检查（checks[].id） */
+  check_id: z.string().default(''),
+  model: z.string().default(''),
+});
+export type Rebuttal = z.infer<typeof rebuttalSchema>;
 
 export const problemSchema = z.object({
   /** 稳定 id（`p01`…），作为文件名/键使用 */
@@ -81,6 +112,8 @@ export const problemSchema = z.object({
   /** 最后一次写入者：用户自己写 vs 让 agent 代笔（可追溯） */
   answer_edited_by: z.enum(['user', 'agent']).default('user'),
   checks: z.array(checkSchema).default([]),
+  /** 答辩历史（追加式；学生质疑批改时用） */
+  rebuttals: z.array(rebuttalSchema).default([]),
   /** 关联的错题 id（错题本） */
   mistakes: z.array(z.string()).default([]),
   /** 用户自己的备注（"这题我老忘方向"），与 LLM 检查分开 */

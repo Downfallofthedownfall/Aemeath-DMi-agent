@@ -29,6 +29,28 @@ export interface CheckView {
   raw: string;
   answer_sha: string;
   stale: boolean;
+  /** 谁批的（`dsh:provider/model` 或 `direct:…`） */
+  provider?: string;
+  /** 推理是否开着（off = 关；空 = 未知/老数据） */
+  reasoning?: string;
+  /** 被答辩撤回的 issue 下标（0 基） */
+  withdrawn?: number[];
+  /** 答辩后仍然成立的问题（覆盖 issues 的展示） */
+  remaining?: CheckIssue[];
+  rebutted_at?: number;
+}
+
+export interface RebuttalView {
+  id: string;
+  created_at: number;
+  user_text: string;
+  reply: string;
+  outcome: 'conceded' | 'upheld' | 'partial';
+  withdrawn: number[];
+  correct_parts: string[];
+  remaining: CheckIssue[];
+  check_id: string;
+  model: string;
 }
 
 export interface ProblemView {
@@ -46,6 +68,7 @@ export interface ProblemView {
   answer_updated_at: number;
   answer_edited_by: 'user' | 'agent';
   checks: CheckView[];
+  rebuttals: RebuttalView[];
   mistakes: string[];
   notes: string;
   status: ProblemStatus;

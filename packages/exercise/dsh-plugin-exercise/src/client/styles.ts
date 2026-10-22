@@ -1012,6 +1012,16 @@ const CSS = `
 .${EX_CLASS} .lec-issue[data-sev="warn"] .sev { color: light-dark(#8a6414, #f0cd8a); }
 .${EX_CLASS} .lec-stale { margin-top: 8px; padding: 6px 9px; border-radius: 6px; font-size: 11.5px; background: light-dark(#fff6e6, rgba(240, 180, 90, 0.14)); border: 1px solid light-dark(#f3dfb8, rgba(240, 180, 90, 0.3)); color: light-dark(#7a5a12, #f0cd8a); }
 
+/* 答辩（学生 vs 批改）：我的原话靠右、爱弥斯的回复靠左 */
+.${EX_CLASS} .lec-rebut-thread { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.${EX_CLASS} .lec-rebut-turn { display: flex; flex-direction: column; gap: 4px; }
+.${EX_CLASS} .lec-rebut-mine { align-self: flex-end; max-width: 92%; padding: 6px 9px; border-radius: 8px 8px 2px 8px; background: light-dark(#f2eef7, rgba(150, 130, 190, 0.16)); border: 1px solid var(--aem-line); font-size: 12px; color: var(--aem-ink); white-space: pre-wrap; }
+.${EX_CLASS} .lec-rebut-ai { align-self: flex-start; max-width: 96%; padding: 7px 10px; border-radius: 8px 8px 8px 2px; background: light-dark(#fbf7ff, rgba(120, 96, 170, 0.12)); border: 1px solid light-dark(#e6dcf5, rgba(150, 130, 190, 0.28)); font-size: 12px; color: var(--aem-ink); }
+.${EX_CLASS} .lec-rebut-ai[data-outcome="conceded"] { background: light-dark(#f1fbf3, rgba(90, 190, 120, 0.14)); border-color: light-dark(#cfeada, rgba(90, 190, 120, 0.32)); }
+.${EX_CLASS} .lec-rebut-ai[data-outcome="upheld"] { background: light-dark(#fdf3f2, rgba(220, 120, 110, 0.12)); border-color: light-dark(#f0d6d2, rgba(220, 120, 110, 0.28)); }
+.${EX_CLASS} .lec-rebut-who { display: block; font-size: 10.5px; letter-spacing: 0.02em; color: var(--aem-ink-dim); margin-bottom: 2px; }
+.${EX_CLASS} .lec-rebut-input { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
+
 /* 错题卡 / 经验卡 */
 .${EX_CLASS} .lec-mistake { border: 1px solid var(--aem-line); border-radius: var(--aem-radius-card); background: var(--aem-surface); padding: 10px 11px; margin-bottom: 8px; }
 .${EX_CLASS} .lec-mistake[data-mastered="1"] { opacity: 0.62; }

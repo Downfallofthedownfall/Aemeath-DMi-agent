@@ -72,7 +72,15 @@ const parsedSchema = z.object({
 /**
  * 组装批改 prompt。
  *
- * 刻意把"禁止给完整答案"写进 system 段的第一条：模型很容易一上来就把标准解写出来，
+ * 2026-10-22 大改（用户反馈"检查跟智障一样，模板答案都被说成一堆错误"）：
+ *   ① **先自己独立解一遍**，再对照学生答案 —— 不这样做，模型会逐行"找不同"，
+ *      把等价写法（$\sin\alpha$ vs $\sin(\alpha)$、$g$ vs $9.81$）都当成错；
+ *   ② **只有数学上不成立才算 error**；记号/步骤详略/单位写法一律放 hints；
+ *   ③ 结果一致 → `correct` + issues 空，**鼓励明确说"对"**；
+ *   ④ 每条 issue 必须**引用学生原文片段**（≤30 字）+ 说明为什么错 —— 不许空泛；
+ *   ⑤ 历史错题只是"过去"的记录，学生可能已改对，**不得当作当前答案的错误**。
+ *
+ * 刻意把"禁止给完整答案"写进第一条：模型很容易一上来就把标准解写出来，
  * 那样用户就只是抄一遍，检查变成"答案生成器"。
  */
 export function buildCheckPrompt(input: CheckInput): string {
@@ -80,18 +88,31 @@ export function buildCheckPrompt(input: CheckInput): string {
   const lines: string[] = [];
   lines.push('你是一位德国大学的物理/数学 Übungsblatt 批改助教（Tutor）。你在**检查学生自己写的解答**，不是替他做题。');
   lines.push('');
-  lines.push('## 硬性规则（违反即视为批改失败）');
-  lines.push('1. **不要写出完整解答**。最多指出"哪一步不成立/缺少什么"，并给出**下一步该验证什么**。');
-  lines.push('2. 只有当你**真的能判断**时才下结论；看不清/信息不足 → verdict="unclear" 并说明缺什么。');
-  lines.push('3. 学生答案为空 → verdict="unclear"，issues 里说明"还没有答案"，hints 里给一个**破题问题**（不要给解法）。');
-  lines.push('4. 不要臆造题目条件。题目文本里没有的东西，不要假设它存在。');
-  lines.push('5. 数学表达式一律用 LaTeX（行内 `$...$`），保持题目原有的德语术语。');
+  lines.push('## 批改顺序（必须按这个顺序做）');
+  lines.push('1. **先自己独立解一遍**：用题目条件推出你自己的结果（结论/关键式子），在草稿里完成，不要写进输出。');
+  lines.push('2. **再对照学生答案**：只比较**数学内容**是否等价，逐项核对，写下差异。');
+  lines.push('3. **最后下结论**：学生的结论与关键步骤和你一致 → `correct`，issues 留空。');
+  lines.push('');
+  lines.push('## 判定标准（这是本次批改的硬性口径）');
+  lines.push('- **只有数学上不成立才算 `error`**：算错、用错公式、物理假设错、结论相反。');
+  lines.push('- **下列都不算 error**，最多写进 hints：记号写法（$\\sin\\alpha$ vs $\\sin(\\alpha)$、$\\mathrm{d}$ vs $d$）、');
+  lines.push('  步骤详略、单位写不写、中间式有没有跳步、排版和 LaTeX 写法、德语拼写。');
+  lines.push('- 用了**等价但不同**的方法（能量法 vs 牛顿第二定律）→ 不算错。');
+  lines.push('- 数值近似与理论值在 1% 内 → 不算错（不要把 $4.9$ 和 $4.905$ 判错）。');
+  lines.push('- 题目没给的条件不要假设它存在；但学生答案里**明确写出的假设**要按它来判断。');
+  lines.push('');
+  lines.push('## 不给答案 / 不臆造');
+  lines.push('1. **不要写出完整解答**。最多指出"哪一步不成立"，并给出**下一步该验证什么**。');
+  lines.push('2. 看不清/信息不足 → verdict="unclear" 并说明缺什么。');
+  lines.push('3. 学生答案为空 → verdict="unclear"，issues 说"还没有答案"，hints 给一个**破题问题**。');
+  lines.push('4. 数学表达式一律用 LaTeX（行内 `$...$`），保持题目原有的德语术语。');
   lines.push('');
   lines.push('## 输出格式（严格 JSON，不要 markdown 代码块，不要多余文字）');
   lines.push('{"verdict":"correct|partial|wrong|unclear","score":0.0,"issues":[{"severity":"error|warn|info","text":"…"}],"hints":["…"],"next_steps":["…"]}');
-  lines.push('- verdict：correct=结论与关键步骤都对；partial=思路对但有关键错误/缺步骤；wrong=结论错误；unclear=无法判断');
+  lines.push('- verdict：correct=结论与关键步骤都对（**对就说对**）；partial=结论对但关键一步有错/缺；wrong=结论错；unclear=无法判断');
   lines.push('- score：学生对**本题**的完成度自评 0..1（仅供参考）');
-  lines.push('- issues：最多 4 条，按严重度排序；每条**不超过 60 字**，指出具体位置（"第二行把 $\\omega$ 当成常数了"）');
+  lines.push('- issues：**最多 3 条**，只放真的错误；每条格式 `引用学生原话（≤30 字）→ 为什么不成立（≤40 字）`，');
+  lines.push('  例：`"a = g sin α" → 把法向力也算进了沿斜面方向，应为 $a=g\\sin\\alpha$`。没有错误就不要写。');
   lines.push('- hints：最多 2 条，苏格拉底式提问（"如果 $I$ 随时间变化，(2) 式还成立吗？"）');
   lines.push('- next_steps：最多 2 条，**具体动作**（"先对 $\\dot\\omega$ 求导再代入"），不要写推导');
   lines.push('- 输出必须是**完整、可解析**的 JSON（宁可少写一条，也不要在中途截断）');
@@ -110,7 +131,11 @@ export function buildCheckPrompt(input: CheckInput): string {
     for (const l of input.progressDigest.split('\n').slice(0, 12)) lines.push(`    ${l}`);
   }
   if (input.priorMistakes?.length) {
-    lines.push('- 他以前在同类题上踩过的坑（如果这次又踩了，优先指出）：');
+    lines.push(
+      '- **过去的**错题记录（不是本题当前答案的一部分；学生可能已经改对了）。' +
+        '只用于：如果**当前答案里**重现了同样的错误，可以在 hints 里点一句；' +
+        '**不得**把它们当成当前答案的错误写进 issues，也不要暗示"你还在犯这个错"。',
+    );
     for (const m of input.priorMistakes.slice(0, 5)) lines.push(`    · ${m.slice(0, 200)}`);
   }
   lines.push('');
@@ -326,4 +351,156 @@ export async function runCheck(
   const check = parseCheckOutput(raw);
   if (!check) return { ok: false, check: null, raw, error: 'LLM 输出不可解析（已保留原文供排障）', vision: !!vision };
   return { ok: true, check, raw, vision: !!vision };
+}
+
+// ============================================================
+// 答辩（用户："最好加一个和爱弥斯对线答辩我的答案的功能"）
+//
+// 场景：批改说答案错了，学生认为自己对 —— 让模型**重新独立推导**，
+// 并且必须二选一：
+//   · 学生确实对 → `conceded`（承认自己批错，并指出自己错在哪）
+//   · 学生确实错 → `upheld`（给出**具体反例/代入数值**，不能只是重复原判）
+//   · 说不清 → `partial`（指出双方各自哪里不对）
+//
+// 关键设计：把"原检查的 issues"作为**待反驳的主张**交进去（不是事实），
+// 这样模型不会理所当然地维护自己上一次的结论。
+// ============================================================
+
+export interface RebuttalInput {
+  check: CheckInput;
+  /** 上一次检查的结论与 issues（作为"被质疑的主张"） */
+  previous: Pick<ParsedCheck, 'verdict' | 'issues'>;
+  /** 本轮学生说的话 */
+  userText: string;
+  /** 之前几轮（旧→新） */
+  history?: Array<{ user: string; ai: string; outcome: string }>;
+}
+
+export interface ParsedRebuttal {
+  outcome: 'conceded' | 'upheld' | 'partial';
+  /** 给学生的回复（讲道理，不是重复原判） */
+  reply: string;
+  /** 原检查里被撤回的 issues（0 基下标） */
+  withdrawn: number[];
+  /** 如果仍然坚持：新增/修正的问题 */
+  remaining: Array<{ severity: 'error' | 'warn' | 'info'; text: string }>;
+  /** 学生答案里对的部分（先承认对的部分） */
+  correct_parts: string[];
+}
+
+const rebuttalSchema = z.object({
+  outcome: z.enum(['conceded', 'upheld', 'partial']).default('partial'),
+  reply: z.string().default(''),
+  withdrawn: z.array(z.number().int().min(0)).default([]),
+  remaining: z.array(checkIssueSchema).default([]),
+  correct_parts: z.array(z.string()).default([]),
+});
+
+export function buildRebuttalPrompt(input: RebuttalInput): string {
+  const { check, previous, userText, history } = input;
+  const lines: string[] = [];
+  lines.push('你是一位德国大学的 Übungsblatt 批改助教。学生对你之前的批改提出**答辩**，你要认真复核，不要为了维护面子坚持错误结论。');
+  lines.push('');
+  lines.push('## 你的任务（按顺序）');
+  lines.push('1. **忘掉之前的结论，从题目条件重新独立推导一遍**（先在草稿里算，不要写进输出）。');
+  lines.push('2. 判断学生这次说的事实/推理是否成立：他指出你误读了他的答案？还是他的推导确实对？');
+  lines.push('3. 明确三选一：');
+  lines.push('   - `conceded`：**学生是对的**，你之前批错了 → `withdrawn` 列出要撤回的 issues 下标，');
+  lines.push('     `reply` 里说清楚"我错在哪"（哪一步看错/算错），不要客套。');
+  lines.push('   - `upheld`：学生是错的 → `reply` 必须给出**具体证据**：代入具体数值/给出反例/指出他这一步的符号或物理错误；');
+  lines.push('     **不允许**只重复原结论或用"教材上就是这样"敷衍。');
+  lines.push('   - `partial`：双方各对一部分 → 分别说清。');
+  lines.push('4. 任何时候都要先承认学生答案里**对的部分**（`correct_parts`）。');
+  lines.push('');
+  lines.push('## 口径（与批改一致）');
+  lines.push('- 只有数学/物理上不成立才是错；记号、步骤详略、单位写法不算错。');
+  lines.push('- 数值差在 1% 内算对。用了等价方法（能量法 vs 牛顿定律）算对。');
+  lines.push('- 你看不清题目（OCR 缺失）就承认，不要把缺失当成学生的错。');
+  lines.push('');
+  lines.push('## 输出格式（严格 JSON，不要代码块）');
+  lines.push('{"outcome":"conceded|upheld|partial","reply":"…","withdrawn":[0,2],"remaining":[{"severity":"error|warn|info","text":"…"}],"correct_parts":["…"]}');
+  lines.push('- `reply`：≤200 字，中文，讲清道理；数学用行内 `$...$`。');
+  lines.push('- `withdrawn`：原检查里被撤回的 issues 的**下标**（0 开始）；没有就空数组。');
+  lines.push('- `remaining`：你仍然坚持的问题（最多 2 条），每条必须能落到学生答案的**具体片段**上。');
+  lines.push('');
+  lines.push('## 上下文');
+  lines.push(`- 课程：${check.courseTitle} · Übungsblatt ${check.sheetNumber}${check.sheetTitle ? `（${check.sheetTitle}）` : ''}`);
+  lines.push(`- 题号：${check.problemLabel}${check.points != null ? `（${check.points} Punkte）` : ''}`);
+  lines.push('');
+  lines.push('## 题目原文');
+  lines.push(check.problemText.trim() || '(题干缺失)');
+  lines.push('');
+  lines.push('## 学生的解答（当前版本）');
+  lines.push(check.answer.trim() || '(空)');
+  if (check.notes?.trim()) {
+    lines.push('');
+    lines.push('## 学生备注');
+    lines.push(check.notes.trim());
+  }
+  lines.push('');
+  lines.push('## 你上一次的批改（**被质疑的主张**，不是事实）');
+  lines.push(`verdict: ${previous.verdict}`);
+  previous.issues.forEach((i, idx) => lines.push(`  [${idx}] (${i.severity}) ${i.text}`));
+  if (!previous.issues.length) lines.push('  （当时 issues 为空）');
+  if (history?.length) {
+    lines.push('');
+    lines.push('## 之前几轮答辩（旧→新）');
+    for (const h of history.slice(-4)) {
+      lines.push(`- 学生：${h.user.slice(0, 200)}`);
+      lines.push(`  你（${h.outcome}）：${h.ai.slice(0, 200)}`);
+    }
+  }
+  lines.push('');
+  lines.push('## 学生这一轮的答辩');
+  lines.push(userText.trim());
+  lines.push('');
+  lines.push('请用**中文**写 `reply`/`remaining`/`correct_parts`（题目术语保留德语原文）。');
+  return lines.join('\n');
+}
+
+/** 解析答辩输出（宽松 JSON + 兜底）。 */
+export function parseRebuttal(raw: string): ParsedRebuttal | null {
+  const m = /\{[\s\S]*\}/.exec(raw.trim());
+  if (!m) return null;
+  const obj = parseJsonLoose(m[0]);
+  if (obj === null || typeof obj !== 'object') return null;
+  const o = obj as Record<string, unknown>;
+  const outcome =
+    o.outcome === 'conceded' || o.outcome === 'upheld' || o.outcome === 'partial' ? o.outcome : 'partial';
+  const asStrings = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x.trim()).map((x) => x.trim()) : [];
+  const withdrawn = Array.isArray(o.withdrawn)
+    ? o.withdrawn.filter((n): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0)
+    : [];
+  const remaining: ParsedRebuttal['remaining'] = Array.isArray(o.remaining)
+    ? o.remaining
+        .map((i) => (typeof i === 'string' ? { severity: 'warn' as const, text: i } : (i as { severity?: 'error' | 'warn' | 'info'; text?: string })))
+        .filter((i): i is { severity: 'error' | 'warn' | 'info'; text: string } => !!i && typeof i.text === 'string' && !!i.text.trim())
+        .slice(0, 4)
+    : [];
+  const parsed = rebuttalSchema.safeParse({ outcome, reply: typeof o.reply === 'string' ? o.reply : '', withdrawn, remaining, correct_parts: asStrings(o.correct_parts) });
+  if (!parsed.success) return null;
+  return parsed.data as ParsedRebuttal;
+}
+
+/**
+ * 跑一轮答辩。与 `runCheck` 一样**不抛**：失败折成 `{ ok:false }`。
+ */
+export async function runRebuttal(
+  input: RebuttalInput,
+  askLlm: AskLlm,
+  askVision?: (prompt: string, images: readonly { mediaType: string; base64: string }[], opts: { maxTokens: number; purpose: string }) => Promise<string | null>,
+): Promise<{ ok: boolean; rebuttal: ParsedRebuttal | null; raw: string | null; error?: string }> {
+  const prompt = buildRebuttalPrompt(input);
+  const vision = input.check.pageImage && askVision ? askVision : undefined;
+  const raw = vision
+    ? await vision(prompt, [{ mediaType: input.check.pageImage!.mediaType, base64: input.check.pageImage!.base64 }], {
+        maxTokens: 1600,
+        purpose: 'exercise-rebut',
+      })
+    : await askLlm(prompt, { maxTokens: 1600, purpose: 'exercise-rebut' });
+  if (!raw) return { ok: false, rebuttal: null, raw: null, error: 'LLM 不可用（无 apiKey / 请求失败 / 超时）' };
+  const rebuttal = parseRebuttal(raw);
+  if (!rebuttal) return { ok: false, rebuttal: null, raw, error: '答辩输出不可解析（已保留原文）' };
+  return { ok: true, rebuttal, raw };
 }

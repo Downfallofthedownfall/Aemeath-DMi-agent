@@ -32,6 +32,8 @@ export interface ProblemCardProps {
   pageImageUrl?: string;
   onSave: (patch: { answer?: string; notes?: string; text?: string; title?: string; points?: number | null }) => Promise<void>;
   onCheck: () => void;
+  /** 答辩：把学生的话发给爱弥斯（重新推导后承认或坚持） */
+  onRebuttal: (text: string) => Promise<void>;
   onCollectMistake: () => void;
   onDelete: () => void;
   onToast: (msg: string) => void;
@@ -44,6 +46,7 @@ export function ProblemCard({
   pageImageUrl,
   onSave,
   onCheck,
+  onRebuttal,
   onCollectMistake,
   onDelete,
   onToast,
@@ -154,7 +157,7 @@ export function ProblemCard({
         </div>
       )}
 
-      <CheckPanel problem={problem} onRecheck={onCheck} busy={busy} />
+      <CheckPanel problem={problem} onRecheck={onCheck} onRebuttal={onRebuttal} busy={busy} />
     </div>
   );
 }

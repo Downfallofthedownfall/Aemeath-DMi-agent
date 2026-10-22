@@ -198,6 +198,7 @@ what you can do**: you write the answer yourself, and the model is only allowed 
 | Knowledge | Lessons/mistakes become worldbook entries in the physicist library (`generated_exercise.json`), hot-reloaded ≤3 s — so the Copilot can say "you fell for this before" |
 | Handoff | **Reuses lecture's handoff**: schema extends `handoffSchema`, same `writeHandoff`; direction is one-way, received with the gatekeeper (`dry_run` by default) |
 | Submission | Solutions page (KaTeX rendered server-side, fonts inlined) merged with the original sheet via `pdf-lib` → **one PDF** for the Übungsbetrieb; internal verdicts are print-hidden |
+| Rebuttal | The check is a suggestion, so you can argue with it: "答辩" sends your objection, the model re-derives from scratch and must either concede (withdraws the issues, marks the mistake mastered) or hold its ground with concrete evidence (substitution/counterexample) - never just repeat the verdict. Threads are append-only |
 | Text export | One click exports the whole library as deterministic markdown (`README.md`, `mistakes.md`, per-course and per-sheet files with answers/checks/lessons) into `packages/library/physicist-md/` - outside .gitignore, so `git add` just works. Unchanged content is not rewritten, deleted sheets lose their file, and hand-placed files are never touched |
 | Progress | Every new sheet gets a progress_digest: last unfinished sheet, answered/checked counts, unmastered top topics, lecture review progress |
 
@@ -206,7 +207,7 @@ what you can do**: you write the answer yourself, and the model is only allowed 
 ```
 
 > Tools: `exercise_list` / `exercise_new_sheet` / `exercise_open` / `exercise_problem` /
-> `exercise_save_answer` / `exercise_resplit` / `exercise_check` / `exercise_collect_mistake` / `exercise_lessons` / `exercise_export_text` /
+> `exercise_save_answer` / `exercise_resplit` / `exercise_check` / `exercise_rebut` / `exercise_collect_mistake` / `exercise_lessons` / `exercise_export_text` /
 > `exercise_sync_worldbook` / `exercise_build_submission` / `exercise_progress` /
 > `exercise_export_handoff` / `exercise_import_handoff`.
 > Full design + verification log: [`docs/exercise-mode-plan.md`](docs/exercise-mode-plan.md).
@@ -222,9 +223,9 @@ npm test -w @aemeath/dsh-plugin-retriever    # 4  (chunker)
 npm test -w @aemeath/dsh-plugin-workflow     # 13 (routing/plan scratch + dimensions)
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  (parse/semester/search/summary/detail)
 npm test -w @aemeath/dsh-plugin-lecture      # 282 (markers/storage/traversal-guard/BOM + transcriber/5-step-review/D4-gate/D12-guard/notation + tool-chain regression + math-symbol palette + P3 no-leak contract + P4 handoff importer + workbench/standalone-mode/delete/create-course/stale-detection regression)
-npm test -w @aemeath/dsh-plugin-exercise     # 242 (types+digest / PDF text extraction + problem split / LLM anchor segmentation / multimodal vision segmentation / file store / submission HTML / lecture-compatible handoff + worldbook / manual-check parsing (incl. loose JSON) + HTTP routing)
+npm test -w @aemeath/dsh-plugin-exercise     # 254 (types+digest / PDF text extraction + problem split / LLM anchor segmentation / multimodal vision segmentation / file store / submission HTML / lecture-compatible handoff + worldbook / manual-check parsing (incl. loose JSON) + HTTP routing)
 npm test -w @aemeath/dsh-plugin-ui           # 12 (memory workspace proxy views: list/timeline/graph)
-# Total: 780 unit-test assertions (all green, 31 files — measured 2026-10-20)
+# Total: 792 unit-test assertions (all green, 31 files — measured 2026-10-20)
 # (lecture 282 + memory 193 + exercise 166 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4)
 ```
 
@@ -420,6 +421,7 @@ electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留�
 | 知识 | 教训/经验写成 physicist 馆的世界书条目（`generated_exercise.json`），热重载 ≤3s —— 于是爱弥斯能在同类题上说"你上次在这里栽过" |
 | 握手 | **直接借用 lecture 的 handoff**：schema 继承 `handoffSchema`、同一个 `writeHandoff`；方向单向，接收侧**必过守门员**（缺省 `dry_run`） |
 | 提交 | 解答页（服务端 KaTeX 渲染 + 字体内联）用 `pdf-lib` 与原卷合并 → **一份 PDF** 交给 Übungsbetrieb；内部 verdict 在打印时隐藏 |
+| 答辩 | 检查只是建议，可以反驳：「答辩」把你的意见发过去，模型**重新独立推导**，要么认错撤回（对应问题划线、错题自动标已掌握），要么给出具体证据（代入数值/反例）坚持；不会只重复结论。对话追加保存 |
 | 文本导出 | 一键把题库导出成确定性 markdown（`README.md` / `mistakes.md` / 每门课 + 每套题），落在 `packages/library/physicist-md/`（**不在 gitignore 里**，`git add` 就能管）；内容没变不重写、删套题会移除对应文件、手工放进去的文件绝不动 |
 | 进度 | 每开一套新题自动附 `progress_digest`：上次没做完哪套、已答/已检查、未掌握的高频主题、课堂复盘进度 |
 
@@ -428,7 +430,7 @@ electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留�
 ```
 
 > 工具：`exercise_list` / `exercise_new_sheet` / `exercise_open` / `exercise_problem` /
-> `exercise_save_answer` / `exercise_resplit` / `exercise_check` / `exercise_collect_mistake` / `exercise_lessons` / `exercise_export_text` /
+> `exercise_save_answer` / `exercise_resplit` / `exercise_check` / `exercise_rebut` / `exercise_collect_mistake` / `exercise_lessons` / `exercise_export_text` /
 > `exercise_sync_worldbook` / `exercise_build_submission` / `exercise_progress` /
 > `exercise_export_handoff` / `exercise_import_handoff`。
 > 完整设计与验证记录：[`docs/exercise-mode-plan.md`](docs/exercise-mode-plan.md)。
@@ -444,10 +446,10 @@ npm test -w @aemeath/dsh-plugin-retriever    # 4  （分块器）
 npm test -w @aemeath/dsh-plugin-workflow     # 13 （分流/plan 落 scratch + 量纲）
 npm test -w @aemeath/dsh-plugin-curriculum   # 9  （解析/学期/检索/摘要/详情）
 npm test -w @aemeath/dsh-plugin-lecture      # 282（标记语法/存储/穿越防护/BOM + 转录员/五步复盘/D4/D12/记号约定 + 工具链回归 + 符号边栏 + P3 不泄漏契约 + P4 握手接收 + 三栏工作台/独立界面模式/删除/新建课程/陈旧检测回归）
-npm test -w @aemeath/dsh-plugin-exercise     # 242（types+digest / PDF 抽文本 + 拆题 / LLM 锚点分块 / 多模态读图分块 / 文件存储 / 提交 HTML / 借用 lecture 的握手 + worldbook / 手动检查解析（含宽松 JSON）+ HTTP 路由）
+npm test -w @aemeath/dsh-plugin-exercise     # 254（types+digest / PDF 抽文本 + 拆题 / LLM 锚点分块 / 多模态读图分块 / 文件存储 / 提交 HTML / 借用 lecture 的握手 + worldbook / 手动检查解析（含宽松 JSON）+ HTTP 路由）
 npm test -w @aemeath/dsh-plugin-ui           # 12 （记忆工作区代理视图：列表/时间轴/图谱）
-# 合计：780 项断言（全绿，31 个测试文件，2026-10-20 实测）
-# （lecture 282 + memory 193 + exercise 242 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4）
+# 合计：792 项断言（全绿，31 个测试文件，2026-10-20 实测）
+# （lecture 282 + memory 193 + exercise 254 + common 15 + ui 12 + workflow 13 + worldbook 10 + curriculum 9 + retriever 4）
 ```
 
 ### 下一步

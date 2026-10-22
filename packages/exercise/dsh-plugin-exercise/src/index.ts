@@ -53,7 +53,7 @@ import {
   type DigestResult,
   type LectureProgress,
 } from './digest.js';
-import { buildCheckPrompt, parseCheckOutput, runCheck, type AskLlm } from './checker.js';
+import { buildCheckPrompt, parseCheckOutput, runCheck, runRebuttal, type AskLlm } from './checker.js';
 import { answerFingerprint } from './hash.js';
 import {
   buildExerciseHandoff,
@@ -91,6 +91,7 @@ import {
   type Lesson,
   type Mistake,
   type Problem,
+  type Rebuttal,
   type Sheet,
 } from './types.js';
 
@@ -303,6 +304,12 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   };
 
   /** 走全局 dsh LLM 运行时（与主 agent 同一套 provider/key/model）。 */
+  // 最近一次真正用到的通道（界面显示"谁批的"；也方便排查"推理是不是关了"）
+  let lastLlmRoute = '';
+  let lastLlmReasoning = '';
+  const llmProvider = (): string => lastLlmRoute || (llm.provider ? `${llm.provider}/${llm.model}` : 'unknown');
+  const llmReasoningState = (): string => lastLlmReasoning || 'high';
+
   const askViaRuntime = async (
     prompt: string,
     opts: { maxTokens: number; purpose: string; noReasoning?: boolean; attempt?: number },
@@ -314,6 +321,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const prepareCall = rt.prepareCall.bind(rt);
     const route = await resolveLlmRoute();
     if (!route) return null;
+    lastLlmRoute = `dsh:${route.provider}/${route.model}`;
+    lastLlmReasoning = opts.noReasoning ? 'off' : 'high';
     const deadline = AbortSignal.timeout(LLM_TIMEOUT_MS_LOCAL);
     const request = async (noReasoning: boolean): Promise<string | null> => {
       const call = await prepareCall(
@@ -403,6 +412,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
     try {
       const t0 = Date.now();
+      lastLlmRoute = `direct:${llm.model || 'deepseek-v4-flash'}`;
+      lastLlmReasoning = 'off';
       const resp = await fetch(`${llm.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -674,6 +685,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       answer_updated_at: 0,
       answer_edited_by: 'user' as const,
       checks: [],
+      rebuttals: [],
       mistakes: [],
       notes: '',
     }));
@@ -922,6 +934,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       answer_updated_at: 0,
       answer_edited_by: 'user',
       checks: [],
+      rebuttals: [],
       mistakes: [],
       notes: '',
     };
@@ -1063,9 +1076,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
 
     const course = store.readIndex(input.courseId);
+    // 历史错题只作为"过去"的参考：**排除本题自己** —— 用户改了答案之后，
+    // 若把本题的旧错题也塞进去，模型会继续按旧错误批（"改了还说我有原来的错误"）。
     const prior = store
       .readMistakes()
-      .filter((m) => !m.mastered && m.course_id === input.courseId)
+      .filter((m) => !m.mastered && m.course_id === input.courseId && !(m.sheet_id === input.sheetId && m.problem_id === p.id))
       .slice(0, 3)
       .map((m) => `${m.problem_label || m.problem_id}：${m.lesson || m.issues.join('；')}`);
 
@@ -1109,6 +1124,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       raw: (result.raw ?? '').slice(0, 4000),
       answer_sha: answerFingerprint(normalizeAnswer(p.answer)),
       stale: false,
+      provider: llmProvider(),
+      reasoning: llmReasoningState(),
+      withdrawn: [],
+      remaining: [],
+      rebutted_at: 0,
     };
     p.checks.push(check);
     store.writeSheet(input.courseId, sheet);
@@ -1138,6 +1158,106 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
     store.writeSheetMarkdown(input.courseId, sheet);
     return { ok: true, check, sheet, mistake };
+  };
+
+  // ============================================================
+  // 答辩（学生 vs 批改）：让模型重新独立推导，必须承认或给出证据
+  // ============================================================
+
+  const rebutProblem = async (input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+    text: string;
+  }): Promise<{ ok: boolean; error?: string; rebuttal?: Rebuttal; sheet?: Sheet; check?: Check }> => {
+    const sheet = store.readSheet(input.courseId, input.sheetId);
+    if (!sheet) return { ok: false, error: '题集不存在' };
+    const p = store.findProblem(sheet, input.problemId);
+    if (!p) return { ok: false, error: '题目不存在' };
+    const text = input.text.trim();
+    if (!text) return { ok: false, error: '写点你要答辩的内容（"这一步为什么对"）' };
+    const target = lastFreshCheck(p.checks) ?? p.checks.at(-1) ?? null;
+    if (!target) return { ok: false, error: '这题还没检查过 —— 先让爱弥斯检查一次，再来答辩' };
+
+    const course = store.readIndex(input.courseId);
+    const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
+    const pageNo = p.page > 0 && pageNumbers.includes(p.page) ? p.page : pageNumbers[0] ?? 0;
+    const pageImg = pageNo ? store.readPageImage(input.courseId, input.sheetId, pageNo) : null;
+
+    const result = await runRebuttal(
+      {
+        check: {
+          courseTitle: course?.title ?? input.courseId,
+          sheetNumber: sheet.number,
+          sheetTitle: sheet.title,
+          problemLabel: p.label || p.id,
+          problemTitle: p.title,
+          points: p.points,
+          problemText: p.text,
+          answer: p.answer,
+          notes: p.notes,
+          progressDigest: sheet.progress_digest,
+          pageImage: pageImg
+            ? { base64: pageImg.bytes.toString('base64'), mediaType: pageImg.mediaType, page: pageNo }
+            : undefined,
+        },
+        previous: { verdict: target.verdict, issues: target.issues },
+        userText: text,
+        history: p.rebuttals.slice(-4).map((r) => ({ user: r.user_text, ai: r.reply, outcome: r.outcome })),
+      },
+      askLlm,
+      askVision,
+    );
+
+    if (!result.ok || !result.rebuttal) return { ok: false, error: result.error ?? '答辩失败' };
+
+    const now = Date.now();
+    const rb: Rebuttal = {
+      id: `rb${now.toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
+      created_at: now,
+      user_text: text,
+      reply: result.rebuttal.reply,
+      outcome: result.rebuttal.outcome,
+      withdrawn: result.rebuttal.withdrawn,
+      correct_parts: result.rebuttal.correct_parts,
+      remaining: result.rebuttal.remaining,
+      check_id: target.id,
+      model: llmProvider(),
+    };
+    p.rebuttals.push(rb);
+
+    // 被撤回的 issue 记在那次检查上（UI 划掉；原始记录保留，可追溯）
+    const merged = {
+      withdrawn: [...new Set([...target.withdrawn, ...rb.withdrawn])],
+      remaining: rb.remaining,
+      rebutted_at: now,
+    };
+    for (const c of p.checks) {
+      if (c.id !== target.id) continue;
+      c.withdrawn = merged.withdrawn;
+      c.remaining = merged.remaining;
+      c.rebutted_at = merged.rebutted_at;
+    }
+    target.withdrawn = merged.withdrawn;
+    target.remaining = merged.remaining;
+    target.rebutted_at = merged.rebutted_at;
+
+    // 爱弥斯认错 → 该题错题自动标"已掌握"（否则错题本永远挂着一条被撤回的"错误"）
+    if (rb.outcome === 'conceded') {
+      const m = store.findMistakeFor(input.courseId, input.sheetId, p.id);
+      if (m) {
+        m.mastered = true;
+        m.updated_at = now;
+        m.lesson = m.lesson || '答辩后确认：原批改有误，答案本身是对的';
+        store.writeMistakes(store.readMistakes().map((x) => (x.id === m.id ? m : x)));
+        log(`答辩撤回批改 → 错题 ${m.id} 标为已掌握`);
+      }
+    }
+
+    store.writeSheet(input.courseId, sheet);
+    store.writeSheetMarkdown(input.courseId, sheet);
+    log(`答辩：outcome=${rb.outcome}（撤回 ${rb.withdrawn.length} 条，保留 ${rb.remaining.length} 条）`);
+    return { ok: true, rebuttal: rb, sheet, check: target };
   };
 
   // ============================================================
@@ -2054,6 +2174,40 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   ctx.tools.register(
     defineTool({
+      name: 'exercise_rebut',
+      description:
+        '答辩：学生认为批改错了，让爱弥斯**重新独立推导**再裁决。' +
+        '她会要么承认批错（并撤回对应 issues、把这题错题标为已掌握），' +
+        '要么给出具体证据坚持（反例/代入数值），不允许只重复原结论。' +
+        '每轮追加保存，历史不覆盖。',
+      parameters: {
+        course_id: { type: 'string', required: true, description: '课程标识' },
+        sheet_id: { type: 'string', required: true, description: '题集标识' },
+        problem_id: { type: 'string', required: true, description: '题目标识（p01…）' },
+        text: { type: 'string', required: true, description: '你的答辩内容（指控哪一步被误判、为什么）' },
+      },
+      output: { schema: { type: 'json' }, render: renderJson },
+      execute: async (args: { course_id: string; sheet_id: string; problem_id: string; text: string }) => {
+        const r = await rebutProblem({
+          courseId: args.course_id,
+          sheetId: args.sheet_id,
+          problemId: args.problem_id,
+          text: args.text,
+        });
+        if (!r.ok || !r.rebuttal) return fail(r.error ?? '答辩失败');
+        return ok({
+          outcome: r.rebuttal.outcome,
+          reply: r.rebuttal.reply,
+          withdrawn: JSON.stringify(r.rebuttal.withdrawn),
+          remaining: JSON.stringify(r.rebuttal.remaining.map((i) => i.text)),
+          correct_parts: JSON.stringify(r.rebuttal.correct_parts),
+        });
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
       name: 'exercise_export_text',
       description:
         '把习题库导出成**纯文本 markdown**（题干/答案/检查/经验/错题），方便 git 管理：' +
@@ -2294,7 +2448,12 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           math_warnings: Array.isArray(d.math_warnings) ? (d.math_warnings as string[]) : undefined,
         };
       },
-            onExportText: async (input) => {
+            onRebuttal: async (input) => {
+        const r = await rebutProblem(input);
+        if (!r.ok) return { ok: false, error: r.error };
+        return { ok: true, sheet: viewOf(input.courseId, input.sheetId) };
+      },
+      onExportText: async (input) => {
         const r = await exportText(input);
         return r.ok
           ? {

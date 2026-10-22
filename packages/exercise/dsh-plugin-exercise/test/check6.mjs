@@ -43,7 +43,7 @@ const baseInput = {
 t('prompt 含全部硬性规则（不许给完整答案 / 不许臆造）', () => {
   const p = buildCheckPrompt(baseInput);
   assert.match(p, /不要写出完整解答/);
-  assert.match(p, /不要臆造题目条件/);
+  assert.match(p, /题目没给的条件不要假设它存在/);
   assert.match(p, /verdict="unclear"/);
   assert.match(p, /严格 JSON/);
 });

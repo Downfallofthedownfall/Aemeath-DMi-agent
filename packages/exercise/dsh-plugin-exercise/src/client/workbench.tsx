@@ -650,6 +650,30 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                     mistakeCount={p.mistakes.length}
                     onSave={(patch) => saveProblem(p.id, patch)}
                     onCheck={() => void checkProblem(p.id)}
+                    onRebuttal={async (text) => {
+                      setBusyProblem(p.id);
+                      try {
+                        const r = await apiPost<{ sheet: SheetView }>('rebut', {
+                          course_id: courseId,
+                          sheet_id: sheet.id,
+                          problem_id: p.id,
+                          text,
+                        });
+                        setSheet(r.sheet);
+                        const last = r.sheet.problems.find((x) => x.id === p.id)?.rebuttals.at(-1);
+                        showToast(
+                          last?.outcome === 'conceded'
+                            ? '爱弥斯认错了 —— 已撤回那条批改'
+                            : last?.outcome === 'upheld'
+                              ? '她坚持原判，并给出了具体理由 —— 看下面的回复'
+                              : '答辩完成 —— 各有对错，看她怎么说',
+                        );
+                      } catch (e) {
+                        showToast(`答辩失败：${(e as Error).message}`);
+                      } finally {
+                        setBusyProblem('');
+                      }
+                    }}
                     onCollectMistake={() => void collectMistake(p.id)}
                     onDelete={() => void deleteProblem(p.id)}
                     onToast={showToast}

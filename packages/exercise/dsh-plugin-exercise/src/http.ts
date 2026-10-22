@@ -217,6 +217,14 @@ export interface ExerciseHttpDeps {
     hint?: string;
   }>;
 
+  /** POST rebut（答辩：学生质疑批改，模型重新推导后承认或给出证据） */
+  onRebuttal(input: { courseId: string; sheetId: string; problemId: string; text: string }): Promise<{
+    ok: boolean;
+    error?: string;
+    /** 相对 viewOf 的 sheet 视图（与其它写操作一致） */
+    sheet?: unknown;
+  }>;
+
   /** POST export_text（纯文本 / markdown，给 git 管理用） */
   onExportText(input: { courseId?: string }): Promise<{
     ok: boolean;
@@ -532,6 +540,22 @@ export async function handleExerciseHttp(
             return;
           }
           const r = await deps.onCheck({ courseId, sheetId, problemId: str(parsed.problem_id, 24) });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'rebut': {
+          const problemId = parsed.problem_id ? str(parsed.problem_id, 64) : '';
+          if (!courseId || !sheetId || !problemId) {
+            jsonError(res, 400, 'course_id / sheet_id / problem_id required');
+            return;
+          }
+          const text = str(parsed.text ?? '', 8000);
+          if (!text.trim()) {
+            jsonError(res, 400, 'text required（写点你要答辩的内容）');
+            return;
+          }
+          const r = await deps.onRebuttal({ courseId, sheetId, problemId, text });
           json(res, r.ok ? 200 : 400, r);
           return;
         }
