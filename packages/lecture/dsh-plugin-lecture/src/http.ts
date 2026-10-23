@@ -21,6 +21,7 @@ import type { LectureStore } from './store.js';
 import { allBlanksOk, chunkBlanksOk, parseUnitMarkdown } from './store.js';
 import { SYMBOL_DATA } from './symbol-data.js';
 import type { RawChunk, UnitMeta } from './types.js';
+import { tr } from './locale.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -158,9 +159,9 @@ export function buildUnitView(
   unitId: string,
 ): { ok: true; unit: UnitView; chunks: RawChunk[] } | { ok: false; error: string } {
   const idx = store.readIndex(courseId);
-  if (!idx) return { ok: false, error: `课程不存在: ${courseId}` };
+  if (!idx) return { ok: false, error: tr(`课程不存在: ${courseId}`, `Course not found: ${courseId}`) };
   const unit = idx.units.find((u) => u.id === unitId);
-  if (!unit) return { ok: false, error: `单元不存在: ${unitId}` };
+  if (!unit) return { ok: false, error: tr(`单元不存在: ${unitId}`, `Lecture not found: ${unitId}`) };
   const chunks = chunksOf(store, courseId, unit);
   const blanks = allBlanksOk(chunks);
   return {
@@ -375,7 +376,7 @@ export async function handleLectureHttp(
         const courseId = String(parsed.course_id ?? '').trim().slice(0, 64);
         const title = String(parsed.title ?? '').trim().slice(0, 200);
         if (!courseId || !title) {
-          jsonError(res, 400, 'course_id 和 title 都是必填的');
+          jsonError(res, 400, tr('course_id 和 title 都是必填的', 'course_id and title are required'));
           return;
         }
         const r = await deps.onStartSession({
@@ -387,7 +388,7 @@ export async function handleLectureHttp(
           date: parsed.date ? String(parsed.date).slice(0, 32) : undefined,
         });
         if (!r.ok) {
-          jsonError(res, 400, r.error ?? '开课失败');
+          jsonError(res, 400, r.error ?? tr('开课失败', 'Could not start the lecture'));
           return;
         }
         json(res, 200, { ok: true, course_id: r.course_id, unit_id: r.unit_id, date: r.date });
@@ -406,7 +407,7 @@ export async function handleLectureHttp(
         if (scope === 'course') {
           const done = deps.store.deleteCourse(course);
           if (!done) {
-            jsonError(res, 404, `课程不存在: ${course}`);
+            jsonError(res, 404, tr(`课程不存在: ${course}`, `Course not found: ${course}`));
             return;
           }
           deps.log(`删除课程：${course}`);
@@ -416,12 +417,12 @@ export async function handleLectureHttp(
         }
         const unit = String(parsed.unit_id ?? '').trim().slice(0, 64);
         if (!unit) {
-          jsonError(res, 400, 'unit_id required（或 scope=course 删整门课）');
+          jsonError(res, 400, tr('unit_id required（或 scope=course 删整门课）', 'unit_id required (or pass scope=course to delete the whole course)'));
           return;
         }
         const done = deps.store.deleteUnit(course, unit);
         if (!done) {
-          jsonError(res, 404, `单元不存在: ${course}/${unit}`);
+          jsonError(res, 404, tr(`单元不存在: ${course}/${unit}`, `Lecture not found: ${course}/${unit}`));
           return;
         }
         deps.log(`删除单元：${course}/${unit}`);
@@ -470,7 +471,7 @@ export async function handleLectureHttp(
       // 这里是**改已有块的留白**，语义不同（改错了不该多出一块）。
       if (action === 'blanks') {
         if (!deps.onUpdateBlanks) {
-          jsonError(res, 501, 'blanks 更新未接线');
+          jsonError(res, 501, tr('blanks 更新未接线', 'blanks update is not wired'));
           return;
         }
         const course = String(parsed.course_id ?? '').slice(0, 64);
@@ -484,7 +485,7 @@ export async function handleLectureHttp(
         if (typeof parsed.my_understanding === 'string') patch.my_understanding = parsed.my_understanding;
         if (typeof parsed.my_question === 'string') patch.my_question = parsed.my_question;
         if (!Object.keys(patch).length) {
-          jsonError(res, 400, '需要 my_understanding 或 my_question');
+          jsonError(res, 400, tr('需要 my_understanding 或 my_question', 'my_understanding or my_question is required'));
           return;
         }
         const r = await deps.onUpdateBlanks(course, unit, seq, patch);

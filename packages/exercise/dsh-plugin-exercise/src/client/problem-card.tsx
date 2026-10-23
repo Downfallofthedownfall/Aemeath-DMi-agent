@@ -16,15 +16,21 @@ import type { ProblemView } from './api.ts';
 import { AnswerEditor } from './answer-editor.tsx';
 import { CheckPanel } from './check-panel.tsx';
 import { MathText } from './math.tsx';
+import { useT } from './i18n.ts';
 
-const STATUS_LABEL: Record<string, string> = {
-  todo: '未作答',
-  draft: '草稿',
-  answered: '已作答',
-  checked: '检查通过',
-  needs_fix: '待修',
-  done: '完成',
+const STATUS_KEY: Record<string, string> = {
+  todo: 'exercise.problem.status.todo',
+  draft: 'exercise.problem.status.draft',
+  answered: 'exercise.problem.status.answered',
+  checked: 'exercise.problem.status.checked',
+  needs_fix: 'exercise.problem.status.needs_fix',
+  done: 'exercise.common.done',
 };
+
+function statusLabel(t: (key: string) => string, status: string): string {
+  const key = STATUS_KEY[status];
+  return key ? t(key) : status;
+}
 
 export interface ProblemCardProps {
   problem: ProblemView;
@@ -60,6 +66,7 @@ export function ProblemCard({
   busy,
   mistakeCount,
 }: ProblemCardProps): JSX.Element {
+  const t = useT();
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(problem.text);
   const [savingText, setSavingText] = useState(false);
@@ -72,9 +79,9 @@ export function ProblemCard({
     try {
       await onSave({ text });
       setEditing(false);
-      onToast('题干已更新');
+      onToast(t('exercise.problem.textSaved'));
     } catch (e) {
-      onToast(`保存失败：${(e as Error).message}`);
+      onToast(t('exercise.common.saveFailed', { error: (e as Error).message }));
     } finally {
       setSavingText(false);
     }
@@ -85,21 +92,21 @@ export function ProblemCard({
       <div className="lec-problem-head">
         <span className="lec-problem-no">{problem.label || problem.id}</span>
         {problem.points != null && <span className="lec-badge" data-kind="points">{problem.points} P</span>}
-        <span className="lec-badge" data-kind={status}>{STATUS_LABEL[status] ?? status}</span>
-        {problem.has_figure && <span className="lec-badge" data-kind="figure">含图</span>}
-        {problem.page > 0 && <span className="lec-badge" data-kind="todo">原卷第 {problem.page} 页</span>}
-        {problem.answer_edited_by === 'agent' && <span className="lec-badge">agent 代笔</span>}
+        <span className="lec-badge" data-kind={status}>{statusLabel(t, status)}</span>
+        {problem.has_figure && <span className="lec-badge" data-kind="figure">{t('exercise.problem.hasFigure')}</span>}
+        {problem.page > 0 && <span className="lec-badge" data-kind="todo">{t('exercise.problem.pageBadge', { page: problem.page })}</span>}
+        {problem.answer_edited_by === 'agent' && <span className="lec-badge">{t('exercise.problem.agentEdited')}</span>}
         {problem.title && <span className="lec-problem-title">{problem.title}</span>}
         <span className="lec-problem-actions">
           <button type="button" className="lec-btn lec-btn-ghost" onClick={() => setEditing((v) => !v)}>
-            {editing ? '取消' : '改题干'}
+            {editing ? t('exercise.common.cancel') : t('exercise.problem.edit')}
           </button>
           <button
             type="button"
             className="lec-del"
-            title="删除这道题"
+            title={t('exercise.problem.deleteTitle')}
             onClick={() => {
-              if (window.confirm(`删除 ${problem.label || problem.id}？（答案与检查记录一并删除）`)) onDelete();
+              if (window.confirm(t('exercise.problem.deleteConfirm', { label: problem.label || problem.id }))) onDelete();
             }}
           >
             ✕
@@ -112,10 +119,10 @@ export function ProblemCard({
           <textarea className="lec-textarea" value={text} onChange={(e) => setText(e.currentTarget.value)} spellCheck={false} />
           <div className="lec-toolrow">
             <button type="button" className="lec-btn" onClick={() => void saveText()} disabled={savingText}>
-              {savingText ? '保存中…' : '保存题干'}
+              {savingText ? t('exercise.common.saving') : t('exercise.problem.save')}
             </button>
             <span className="lec-hint" style={{ margin: 0 }}>
-              支持 markdown 与 $公式$
+              {t('exercise.problem.editHint')}
             </span>
           </div>
         </div>
@@ -124,26 +131,30 @@ export function ProblemCard({
           {problem.text.trim() ? (
             <MathText text={problem.text} compact />
           ) : (
-            <span className="lec-hint">（题干缺失 —— 点「改题干」补上，或看下面的原题截图）</span>
+            <span className="lec-hint">{t('exercise.problem.missingText')}</span>
           )}
         </div>
       )}
 
-      {problem.figure_note && <div className="lec-fignote">图注：{problem.figure_note}</div>}
+      {problem.figure_note && (
+        <div className="lec-fignote">{t('exercise.problem.figureNote', { note: problem.figure_note })}</div>
+      )}
 
       {pageImageUrl && (
         <div className="lec-pagefig" data-figure={problem.has_figure ? '1' : '0'}>
           <div className="lec-toolrow" style={{ marginTop: 4 }}>
             <button type="button" className="lec-btn lec-btn-ghost" onClick={() => setShowPage((v) => !v)}>
-              {showPage ? '收起原题截图' : `原题截图（第 ${problem.page || 1} 页）`}
+              {showPage
+                ? t('exercise.problem.hidePage')
+                : t('exercise.problem.showPage', { page: problem.page || 1 })}
             </button>
             <a className="lec-btn lec-btn-ghost" href={pageImageUrl} target="_blank" rel="noreferrer">
-              新窗口打开
+              {t('exercise.problem.openNewWindow')}
             </a>
           </div>
           {showPage && (
             <div className="lec-pageimg">
-              <img src={pageImageUrl} alt={`原卷第 ${problem.page || 1} 页`} loading="lazy" />
+              <img src={pageImageUrl} alt={t('exercise.problem.pageBadge', { page: problem.page || 1 })} loading="lazy" />
             </div>
           )}
         </div>
@@ -163,7 +174,7 @@ export function ProblemCard({
 
       {mistakeCount > 0 && (
         <div className="lec-hint" style={{ marginTop: 8 }}>
-          已加入错题本（{mistakeCount} 条记录）—— 右栏「错题本」里补写教训。
+          {t('exercise.problem.inMistakes', { n: mistakeCount })}
         </div>
       )}
 

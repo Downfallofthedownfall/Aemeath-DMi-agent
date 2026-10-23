@@ -24,6 +24,7 @@ import { SymbolPanel } from './symbol-palette.tsx';
 import { MathComposer, type MathComposerApi } from './math-composer.tsx';
 import { MathMarkup, useLatexAwareCopy } from './math-markup.tsx';
 import { LECTURE_CLASS } from './styles.ts';
+import { useT } from './i18n.ts';
 
 const API = '/aemeath/api/lecture';
 
@@ -85,6 +86,7 @@ function BlankField({
   value: string;
   onSave: (next: string) => Promise<void>;
 }): JSX.Element {
+  const t = useT();
   const [draft, setDraft] = useState(value);
   const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'err'>('idle');
   const ref = useRef<HTMLTextAreaElement | null>(null);
@@ -141,7 +143,7 @@ function BlankField({
         }}
       />
       <span className="lec-blank-state" data-tone={state}>
-        {state === 'saving' ? '保存中…' : state === 'saved' ? '已保存' : state === 'err' ? '保存失败' : ''}
+        {state === 'saving' ? t('common.saving') : state === 'saved' ? t('common.saved') : state === 'err' ? t('common.saveFailed') : ''}
       </span>
     </div>
   );
@@ -157,6 +159,7 @@ type RightTab = 'symbols' | 'review';
  * @param standalone 独立窗口（铺满整窗）还是嵌在主 agent 里（侧栏弹层）。
  */
 export function Workbench({ onClose, standalone = false }: { onClose: () => void; standalone?: boolean }): JSX.Element {
+  const t = useT();
   // 复制笔记时把公式还原成 `$…$` LaTeX 源码（真机反馈："复制出来的不是 latex 格式"）
   useLatexAwareCopy();
   const [courses, setCourses] = useState<CourseView[]>([]);
@@ -230,19 +233,19 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
    *   · 新建一门课程 → 用表单里的 course_id 建课程，再建第一个单元
    */
   const startLecture = async (): Promise<void> => {
-    const t = newTitle.trim();
-    if (!t) {
-      setErr('请填这次课的主题');
+    const topic = newTitle.trim();
+    if (!topic) {
+      setErr(t('lecture.wb.start.needTitle'));
       return;
     }
     const makingCourse = !hasCourses || newCourseMode;
     const cid = makingCourse ? newCourseId.trim() : courseId;
     if (!cid) {
-      setErr(makingCourse ? '请填课程标识（例如 physik-2）' : '先选一门课程');
+      setErr(makingCourse ? t('lecture.wb.start.needCourseId') : t('lecture.wb.start.pickCourse'));
       return;
     }
     if (makingCourse && !/^[A-Za-z0-9._-]+$/.test(cid)) {
-      setErr('课程标识只能用字母、数字、点、下划线、连字符（它会成为目录名）');
+      setErr(t('lecture.wb.start.badCourseId'));
       return;
     }
     setBusy(true);
@@ -250,14 +253,14 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
     const r = await postJson<{ ok: boolean; error?: string; course_id?: string; unit_id?: string }>(API, {
       action: 'start',
       course_id: cid,
-      title: t,
+      title: topic,
       // 只在**新建课程**时传课程元数据；记到已有课程时传了会覆盖已有标题
       course_title: makingCourse ? newCourseTitle.trim() || undefined : undefined,
       semester: makingCourse ? newSemester.trim() || undefined : undefined,
     });
     setBusy(false);
     if (!r?.ok) {
-      setErr(r?.error ?? '开课失败');
+      setErr(r?.error ?? t('lecture.wb.start.failed'));
       return;
     }
     setNewTitle('');
@@ -293,12 +296,12 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
       body: JSON.stringify({ action: 'blanks', course_id: courseId, unit_id: unitId, seq, ...patch }),
     });
     const d = (await r.json()) as { ok?: boolean; error?: string };
-    if (!r.ok || !d.ok) throw new Error(d.error ?? `保存失败 (${r.status})`);
+    if (!r.ok || !d.ok) throw new Error(d.error ?? t('lecture.wb.err.saveStatus', { status: r.status }));
     await loadUnit(courseId, unitId);
   };
 
   const deleteUnit = async (course: string, unit: string, unitTitle: string): Promise<void> => {
-    if (!window.confirm(`删除「${unitTitle}」？\n\n这一讲的速记、加工结果、复盘记录都会一并删除，无法撤销。`)) return;
+    if (!window.confirm(t('lecture.wb.confirm.deleteUnit', { title: unitTitle }))) return;
     setDeleting(unit);
     const r = await postJson<{ ok: boolean; error?: string }>(API, {
       action: 'delete',
@@ -308,7 +311,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
     });
     setDeleting('');
     if (!r?.ok) {
-      setErr(r?.error ?? '删除失败');
+      setErr(r?.error ?? t('common.deleteFailed'));
       return;
     }
     // 删掉的正是当前选中项 → 清空选择，让界面回到"还没有选中"的状态
@@ -322,8 +325,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
   const deleteCourse = async (course: string, title: string, unitCount: number): Promise<void> => {
     if (
       !window.confirm(
-        `删除整门课程「${title}」？\n\n` +
-          `包括 ${unitCount} 讲的全部笔记、加工结果与复盘记录，无法撤销。`,
+        t('lecture.wb.confirm.deleteCourse', { title, n: unitCount }),
       )
     ) {
       return;
@@ -336,7 +338,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
     });
     setDeleting('');
     if (!r?.ok) {
-      setErr(r?.error ?? '删除失败');
+      setErr(r?.error ?? t('common.deleteFailed'));
       return;
     }
     if (course === courseId) {
@@ -354,20 +356,20 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
         <button
           type="button"
           className="lec-icon-btn"
-          title={navOpen ? '收起课程列表' : '展开课程列表'}
+          title={navOpen ? t('lecture.wb.nav.collapse') : t('lecture.wb.nav.expand')}
           onClick={() => setNavOpen((v) => !v)}
         >
           {navOpen ? '‹' : '›'}
         </button>
-        <span className="lec-title">课堂</span>
+        <span className="lec-title">{t('lecture.wb.title')}</span>
         <span className="lec-sub">
-          {currentUnit ? `${currentCourse?.title ?? courseId} · ${currentUnit.title}` : '还没有课程'}
+          {currentUnit ? `${currentCourse?.title ?? courseId} · ${currentUnit.title}` : t('lecture.wb.noCourses')}
         </span>
         <span className="lec-grow" />
-        <button type="button" className="lec-btn-tiny" onClick={() => setStarting((v) => !v)} title="开始新的一节课">
-          {starting ? '取消' : '＋ 新的一节'}
+        <button type="button" className="lec-btn-tiny" onClick={() => setStarting((v) => !v)} title={t('lecture.wb.start.title')}>
+          {starting ? t('common.cancel') : t('lecture.wb.start.newUnit')}
         </button>
-        <button type="button" className="lec-icon-btn" title={standalone ? '关闭窗口' : '关闭'} onClick={onClose}>
+        <button type="button" className="lec-icon-btn" title={standalone ? t('lecture.wb.closeWindow') : t('common.close')} onClick={onClose}>
           ✕
         </button>
       </div>
@@ -376,12 +378,12 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
         {/* ── 左栏：课程 / 单元 ── */}
         {navOpen ? (
           <aside className="lec-wb-nav">
-            <div className="lec-wb-navhead">课程</div>
+            <div className="lec-wb-navhead">{t('lecture.wb.nav.courses')}</div>
             {!hasCourses ? (
               <div className="lec-hint" style={{ padding: '0 10px' }}>
-                还没有课程。
+                {t('lecture.wb.nav.empty1')}
                 <br />
-                点右上角「＋ 新的一节」开始。
+                {t('lecture.wb.nav.empty2')}
               </div>
             ) : null}
             {courses.map((c) => {
@@ -401,7 +403,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                       type="button"
                       className="lec-course-toggle"
                       aria-expanded={isOpen}
-                      title={isOpen ? '收起这门课' : '展开这门课'}
+                      title={isOpen ? t('lecture.wb.course.collapse') : t('lecture.wb.course.expand')}
                       onClick={() =>
                         setCollapsed((prev) => ({
                           ...prev,
@@ -426,7 +428,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                     <button
                       type="button"
                       className="lec-del lec-del-course"
-                      title={`删除整门课程「${c.title}」`}
+                      title={t('lecture.wb.course.deleteTitle', { title: c.title })}
                       disabled={deleting === c.course_id}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -438,7 +440,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                   </div>
                   {isOpen && c.units.length === 0 ? (
                     <div className="lec-hint" style={{ padding: '2px 10px 6px' }}>
-                      （还没有课堂记录）
+                      {t('lecture.wb.unit.empty')}
                     </div>
                   ) : null}
                   {isOpen
@@ -452,7 +454,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                               setCourseId(c.course_id);
                               setUnitId(u.id);
                             }}
-                            title={`${u.date} · ${u.chunk_count} 块`}
+                            title={t('lecture.wb.unit.meta', { date: u.date, n: u.chunk_count })}
                           >
                             <span className="lec-unit-title">{u.title}</span>
                             <span className="lec-unit-meta">
@@ -463,7 +465,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                           <button
                             type="button"
                             className="lec-del"
-                            title={`删除「${u.title}」`}
+                            title={t('lecture.wb.unit.deleteTitle', { title: u.title })}
                             disabled={deleting === `${c.course_id}/${u.id}`}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -487,7 +489,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
           <div className="lec-wb-scroll">
           {starting ? (
             <div className="lec-startbox">
-              <div className="lec-wb-h">开始新的一节课</div>
+              <div className="lec-wb-h">{t('lecture.wb.start.title')}</div>
 
               {/* 真机反馈："大的课程章节也加不了，只能加小节" ——
                   早先这里只在**一门课都没有**时才显示"新建课程"表单，
@@ -501,7 +503,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                     data-active={newCourseMode ? '0' : '1'}
                     onClick={() => setNewCourseMode(false)}
                   >
-                    记到已有课程
+                    {t('lecture.wb.start.existing')}
                   </button>
                   <button
                     type="button"
@@ -509,28 +511,28 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                     data-active={newCourseMode ? '1' : '0'}
                     onClick={() => setNewCourseMode(true)}
                   >
-                    新建一门课程
+                    {t('lecture.wb.start.newCourse')}
                   </button>
                 </div>
               ) : null}
 
               {!hasCourses || newCourseMode ? (
                 <>
-                  <div className="lec-label">课程标识（英文/数字，会做文件夹名）</div>
+                  <div className="lec-label">{t('lecture.wb.start.courseIdLabel')}</div>
                   <input
                     className="lec-input"
                     value={newCourseId}
                     onChange={(e) => setNewCourseId(e.target.value)}
                     placeholder="physik-2"
                   />
-                  <div className="lec-label">课程全名</div>
+                  <div className="lec-label">{t('lecture.wb.start.courseTitleLabel')}</div>
                   <input
                     className="lec-input"
                     value={newCourseTitle}
                     onChange={(e) => setNewCourseTitle(e.target.value)}
                     placeholder="Physik II"
                   />
-                  <div className="lec-label">学期</div>
+                  <div className="lec-label">{t('lecture.wb.start.semesterLabel')}</div>
                   <input
                     className="lec-input"
                     value={newSemester}
@@ -540,18 +542,18 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 </>
               ) : (
                 <>
-                  <div className="lec-label">记到哪门课</div>
+                  <div className="lec-label">{t('lecture.wb.start.whichCourse')}</div>
                   <select className="lec-select" value={courseId} onChange={(e) => setCourseId(e.target.value)}>
                     {courses.map((c) => (
                       <option key={c.course_id} value={c.course_id}>
-                        {c.title}（{c.units.length} 讲）
+                        {c.title} {t('lecture.wb.start.courseOption', { n: c.units.length })}
                       </option>
                     ))}
                   </select>
                 </>
               )}
 
-              <div className="lec-label">这次课讲什么</div>
+              <div className="lec-label">{t('lecture.wb.start.topicLabel')}</div>
               <input
                 className="lec-input"
                 value={newTitle}
@@ -559,12 +561,12 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !busy) void startLecture();
                 }}
-                placeholder="第3讲 角动量"
+                placeholder={t('lecture.wb.start.topicPlaceholder')}
                 autoFocus
               />
               <div className="lec-actions">
                 <button type="button" className="lec-btn" disabled={busy} onClick={() => void startLecture()}>
-                  {busy ? '开课中…' : '开始这节课'}
+                  {busy ? t('lecture.wb.start.busy') : t('lecture.wb.start.submit')}
                 </button>
               </div>
               {err ? <div className="lec-warn">{err}</div> : null}
@@ -573,14 +575,14 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
 
           {!starting && !currentUnit ? (
             <div className="lec-empty lec-empty-big">
-              <div className="lec-empty-h">课堂记录</div>
+              <div className="lec-empty-h">{t('lecture.wb.empty.title')}</div>
               <p>
-                在<b>左边的课程列表</b>选一讲，或点右上角「＋ 新的一节」开始。
+                {t('lecture.wb.empty.lead')}<b>{t('lecture.wb.empty.courseList')}</b>{t('lecture.wb.empty.pick')}
               </p>
               <p className="lec-hint">
-                笔记在<b>下面的输入框</b>里记：写下你听到的内容，Enter 记下。
+                {t('lecture.wb.empty.noteLead')}<b>{t('lecture.wb.empty.inputBox')}</b>{t('lecture.wb.empty.noteBody')}
                 <br />
-                这一栏用来回看、补漏、对着复习。
+                {t('lecture.wb.empty.noteHint')}
               </p>
             </div>
           ) : null}
@@ -591,14 +593,14 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 <span className="lec-notehead-t">{currentUnit.title}</span>
                 <span className="lec-notehead-d">{currentUnit.date}</span>
                 <span className="lec-grow" />
-                <span className="lec-hint">共 {chunks.length} 块</span>
+                <span className="lec-hint">{t('lecture.wb.note.count', { n: chunks.length })}</span>
               </div>
-              {loading ? <div className="lec-hint">载入中…</div> : null}
+              {loading ? <div className="lec-hint">{t('common.loading')}</div> : null}
               {!loading && chunks.length === 0 ? (
                 <div className="lec-empty">
-                  这一讲还没有笔记。
+                  {t('lecture.wb.note.empty')}
                   <br />
-                  在<b>下面的输入框</b>里直接写下你听到的内容即可（Enter 记下）。
+                  {t('lecture.wb.note.emptyLead')}<b>{t('lecture.wb.note.emptyBox')}</b>{t('lecture.wb.note.emptyBody')}
                 </div>
               ) : null}
               <div className="lec-notechunks">
@@ -612,14 +614,14 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                           保存时机：失焦 或 Ctrl/Cmd+Enter —— 不在每次按键时发请求，
                           免得打字过程中反复写盘，也免得半句话被存进记忆。 */}
                       <BlankField
-                        label="我的理解"
-                        emptyHint="（点这里写 —— 这段讲了什么？）"
+                        label={t('lecture.wb.blank.understanding')}
+                        emptyHint={t('lecture.wb.blank.understandingHint')}
                         value={c.my_understanding}
                         onSave={(v) => saveBlank(c.seq, { my_understanding: v })}
                       />
                       <BlankField
-                        label="我的疑问"
-                        emptyHint="（点这里写 —— 哪里还没搞懂？）"
+                        label={t('lecture.wb.blank.question')}
+                        emptyHint={t('lecture.wb.blank.questionHint')}
                         value={c.my_question}
                         onSave={(v) => saveBlank(c.seq, { my_question: v })}
                       />
@@ -659,7 +661,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                     }),
                   });
                   const data = (await r.json()) as { ok?: boolean; error?: string };
-                  if (!r.ok || !data.ok) throw new Error(data.error ?? `落盘失败 (${r.status})`);
+                  if (!r.ok || !data.ok) throw new Error(data.error ?? t('lecture.wb.err.captureFailed', { status: r.status }));
                   await loadUnit(courseId, unitId);
                 } finally {
                   setBusy(false);
@@ -673,7 +675,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
         <aside className="lec-wb-side">
           <div className="lec-sidetabs">
             <button type="button" className="lec-sidetab" data-active={right === 'symbols' ? '1' : '0'} onClick={() => setRight('symbols')}>
-              ∑ 符号
+              {t('lecture.wb.tab.symbols')}
             </button>
             <button
               type="button"
@@ -681,9 +683,9 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
               data-active={right === 'review' ? '1' : '0'}
               onClick={() => setRight('review')}
               disabled={!currentUnit}
-              title={currentUnit ? '课后复盘' : '先选一讲'}
+              title={currentUnit ? t('lecture.wb.tab.reviewTitle') : t('lecture.wb.tab.reviewDisabled')}
             >
-              复盘
+              {t('lecture.wb.tab.review')}
             </button>
           </div>
           <div className="lec-sidebody">
@@ -709,7 +711,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
                 }}
               />
             ) : null}
-            {right === 'review' && !currentUnit ? <div className="lec-hint">先选一讲。</div> : null}
+            {right === 'review' && !currentUnit ? <div className="lec-hint">{t('lecture.wb.review.pickUnit')}</div> : null}
           </div>
         </aside>
       </div>

@@ -26,6 +26,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { basename, extname, join, isAbsolute } from 'node:path';
 import { pageImageName, pageFromImageName } from './pdf-image.js';
+import { tr } from './locale.js';
 import {
   courseIndexSchema,
   sheetSchema,
@@ -185,7 +186,7 @@ export class ExerciseStore {
   /** 新增/更新索引里的一套题摘要（由 sheet.json 派生）。 */
   upsertSheetMeta(courseId: string, sheet: Sheet): CourseIndex {
     const index = this.readIndex(courseId);
-    if (!index) throw new Error(`课程不存在: ${courseId}`);
+    if (!index) throw new Error(tr(`课程不存在: ${courseId}`, `Course not found: ${courseId}`));
     const prog = sheetProgress(sheet);
     const meta: SheetMeta = {
       id: sheet.id,
@@ -278,9 +279,9 @@ export class ExerciseStore {
   /** 追加一条检查记录（**只由手动触发路径调用**，见 index.ts 的注释）。 */
   appendCheck(courseId: string, sheetId: string, problemId: string, check: Check): Sheet {
     const sheet = this.readSheet(courseId, sheetId);
-    if (!sheet) throw new Error(`题集不存在: ${courseId}/${sheetId}`);
+    if (!sheet) throw new Error(tr(`题集不存在: ${courseId}/${sheetId}`, `Sheet not found: ${courseId}/${sheetId}`));
     const p = this.findProblem(sheet, problemId);
-    if (!p) throw new Error(`题目不存在: ${problemId}`);
+    if (!p) throw new Error(tr(`题目不存在: ${problemId}`, `Problem not found: ${problemId}`));
     p.checks.push(check);
     this.writeSheet(courseId, sheet);
     return sheet;
@@ -289,7 +290,7 @@ export class ExerciseStore {
   /** 追加一条经验。 */
   appendLesson(courseId: string, sheetId: string, lesson: Lesson): Sheet {
     const sheet = this.readSheet(courseId, sheetId);
-    if (!sheet) throw new Error(`题集不存在: ${courseId}/${sheetId}`);
+    if (!sheet) throw new Error(tr(`题集不存在: ${courseId}/${sheetId}`, `Sheet not found: ${courseId}/${sheetId}`));
     sheet.lessons.push(lesson);
     this.writeSheet(courseId, sheet);
     return sheet;
@@ -442,27 +443,27 @@ export class ExerciseStore {
     parts.push(`---`, '');
     parts.push(`# ${course.title} · Übungsblatt ${sheet.number}${sheet.title ? ` — ${sheet.title}` : ''}`, '');
     if (sheet.progress_digest) {
-      parts.push('> **开这套题时的学习进度**', ...sheet.progress_digest.split('\n').map((l) => `> ${l}`), '');
+      parts.push('> **Lernstand beim Start dieses Blatts**', ...sheet.progress_digest.split('\n').map((l) => `> ${l}`), '');
     }
     for (const p of sheet.problems) {
-      parts.push(`## ${p.label || p.id}${p.points != null ? `（${p.points} P）` : ''}`, '');
+      parts.push(`## ${p.label || p.id}${p.points != null ? ` (${p.points} P)` : ''}`, '');
       if (p.title) parts.push(`**${p.title}**`, '');
-      parts.push(p.text || '_(无题干)_', '');
-      parts.push('### 解答', '');
-      parts.push(p.answer || '_(未作答)_', '');
+      parts.push(p.text || '_(keine Aufgabenstellung)_', '');
+      parts.push('### Lösung', '');
+      parts.push(p.answer || '_(noch nicht bearbeitet)_', '');
       const last = p.checks.filter((c) => !c.stale).at(-1);
       if (last) {
-        parts.push(`### 检查（${last.verdict}${last.stale ? '，已过期' : ''}）`, '');
+        parts.push(`### Prüfung (${last.verdict}${last.stale ? ', veraltet' : ''})`, '');
         // 手改过的 JSON 可能缺数组字段（用户只留了 verdict）→ 用 ?? [] 兜底，
         // 不要因为一个字段缺失让整个导出（以及 worldbook 同步）崩掉。
         for (const i of last.issues ?? []) parts.push(`- [${i.severity}] ${i.text}`);
-        for (const h of last.hints ?? []) parts.push(`- 提示：${h}`);
+        for (const h of last.hints ?? []) parts.push(`- Hinweis: ${h}`);
         parts.push('');
       }
-      if (p.notes) parts.push(`> 我的备注：${p.notes}`, '');
+      if (p.notes) parts.push(`> Meine Notiz: ${p.notes}`, '');
     }
     if (sheet.lessons.length) {
-      parts.push('## 经验', '');
+      parts.push('## Erkenntnisse', '');
       for (const l of sheet.lessons) parts.push(`- ${l.text}`);
       parts.push('');
     }
@@ -472,7 +473,7 @@ export class ExerciseStore {
   /** 写人可读导出。返回绝对路径。 */
   writeSheetMarkdown(courseId: string, sheet: Sheet): string {
     const course = this.readIndex(courseId);
-    if (!course) throw new Error(`课程不存在: ${courseId}`);
+    if (!course) throw new Error(tr(`课程不存在: ${courseId}`, `Course not found: ${courseId}`));
     const dir = this.sheetDir(courseId, sheet.id);
     this.ensureDir(dir);
     const file = join(dir, `${safeSheetId(sheet.id)}.md`);

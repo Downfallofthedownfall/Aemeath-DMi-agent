@@ -16,6 +16,7 @@ import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import type { Candidates, CourseIndex, ReviewState, UnitMeta } from './types.js';
+import { tr } from './locale.js';
 
 /** 握手包 schema（版本化：接收侧据 version 决定兼容策略）。 */
 export const handoffSchema = z.object({
@@ -117,19 +118,19 @@ export function buildHandoff(input: BuildHandoffInput): Handoff {
       weakPoints.push({
         unit: unit.id,
         topic: topic.slice(0, 120),
-        evidence: '复盘对照：漏掉或记错',
+        evidence: tr('复盘对照：漏掉或记错', 'Review comparison: missed or misremembered'),
         // 记错（wrong_or_vague）比单纯漏掉更值得关注，置信度略高
         confidence: comp?.wrong_or_vague?.includes(topic) ? 0.7 : 0.5,
       });
     }
     for (const q of cand?.unresolved_questions ?? []) {
-      weakPoints.push({ unit: unit.id, topic: q.slice(0, 120), evidence: '未解决问题', confidence: 0.6 });
+      weakPoints.push({ unit: unit.id, topic: q.slice(0, 120), evidence: tr('未解决问题', 'Unresolved question'), confidence: 0.6 });
     }
 
     // 第 5 步人工确认过的断言：同样只传已复盘的（D4 门控）
     for (const c of cand?.entity_claims ?? []) {
       if (!c.attribute || !c.value) continue;
-      claims.push({ unit: unit.id, entity: c.entity || '用户', attribute: c.attribute, value: c.value });
+      claims.push({ unit: unit.id, entity: c.entity || tr('用户', 'User'), attribute: c.attribute, value: c.value });
     }
   }
 
@@ -196,11 +197,20 @@ export function readHandoff(file: string): Handoff | null {
 export function describeHandoff(h: Handoff): string {
   const reviewed = h.progress.filter((p) => p.reviewed).length;
   return [
-    `课程：${h.course.title}（${h.course.id}${h.course.module ? ' / ' + h.course.module : ''}）`,
-    `进度：${h.progress.length} 讲，其中已复盘 ${reviewed} 讲`,
-    `短板：${h.weak_points.length} 条`,
-    `单元内容：${h.units.filter((u) => u.topics.length).length} 讲有主题`,
-    `生成时间：${h.generated_at}`,
+    tr(
+      `课程：${h.course.title}（${h.course.id}${h.course.module ? ' / ' + h.course.module : ''}）`,
+      `Course: ${h.course.title} (${h.course.id}${h.course.module ? ' / ' + h.course.module : ''})`,
+    ),
+    tr(
+      `进度：${h.progress.length} 讲，其中已复盘 ${reviewed} 讲`,
+      `Progress: ${h.progress.length} lectures, ${reviewed} reviewed`,
+    ),
+    tr(`短板：${h.weak_points.length} 条`, `Weak points: ${h.weak_points.length}`),
+    tr(
+      `单元内容：${h.units.filter((u) => u.topics.length).length} 讲有主题`,
+      `Lecture content: ${h.units.filter((u) => u.topics.length).length} lectures with topics`,
+    ),
+    tr(`生成时间：${h.generated_at}`, `Generated at: ${h.generated_at}`),
   ].join('\n');
 }
 

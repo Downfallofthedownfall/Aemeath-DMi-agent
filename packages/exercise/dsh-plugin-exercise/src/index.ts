@@ -76,6 +76,7 @@ import { buildSubmissionHtml, type SubmissionProblem } from './pdf-html.js';
 import { katexCssInlined, renderMathToHtml } from './pdf-math.js';
 import { findChromium, renderSubmissionPdf } from './pdf-render.js';
 import { handleExerciseHttp, type ExerciseHttpDeps } from './http.js';
+import { setLocaleContext, tr, uiLang } from './locale.js';
 import { ASSETS_PREFIX, serveExerciseAsset } from './assets.js';
 import {
   deriveTitle,
@@ -195,6 +196,7 @@ const renderJson = (_args: unknown, value: unknown): Array<{ type: 'text'; text:
 const LLM_TIMEOUT_MS = 60_000;
 
 export async function apply(ctx: Context, config: ExerciseConfig): Promise<void> {
+  setLocaleContext(ctx);
   const enabledRef = (config as { enabled?: { get?: () => boolean } }).enabled;
   const runtime = {
     get enabled(): boolean {
@@ -685,7 +687,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   ): Promise<{ parts: SplitProblem[]; by: 'vision' | 'llm' | 'rules' }> => {
     // ① 多模态读图（最准：公式/插图/多栏都不依赖 OCR）
     if (pages.length) {
-      const vision = await segmentWithVision(pages, askVision);
+      const vision = await segmentWithVision(pages, askVision, { lang: uiLang() });
       if (vision.ok) {
         const figs = vision.problems.filter((p) => p.has_figure === true).length;
         log(
@@ -695,7 +697,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         return { parts: vision.problems, by: 'vision' };
       }
       warn(`多模态分块失败：${vision.error ?? '未知原因'}`);
-      warnings.push(`多模态读图分块失败（${vision.error ?? '未知原因'}）—— 已退回文本分块`);
+      warnings.push(tr(`多模态读图分块失败（${vision.error ?? '未知原因'}）—— 已退回文本分块`, `Multimodal page reading failed (${vision.error ?? 'unknown reason'}) — fell back to text splitting`));
     }
 
     const trimmed = text.trim();
@@ -710,7 +712,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       return { parts: seg.problems, by: 'llm' };
     }
     warn(`LLM 分块失败：${seg.error ?? '未知原因'}`);
-    warnings.push(`LLM 分块不可用（${seg.error ?? '未知原因'}）—— 已用规则分块，可能需要在界面里手动调整`);
+    warnings.push(tr(`LLM 分块不可用（${seg.error ?? '未知原因'}）—— 已用规则分块，可能需要在界面里手动调整`, `LLM splitting unavailable (${seg.error ?? 'unknown reason'}) — used rule-based splitting; you may need to adjust it in the UI`));
 
     // ③ 规则兜底
     const rules = splitProblems(trimmed);
@@ -759,7 +761,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     text?: string;
   }): Promise<ImportResult> => {
     const courseId = input.courseId.trim();
-    if (!courseId) return { ok: false, error: 'course_id 不能为空' };
+    if (!courseId) return { ok: false, error: tr('course_id 不能为空', 'course_id must not be empty') };
     const index = store.ensureCourse(courseId, input.courseTitle || courseId, input.semester ?? '', input.moduleCode ?? '');
 
     // 编号：指定就用指定的，否则沿用"最大 +1"
@@ -781,9 +783,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       try {
         const b64 = input.pdfBase64.includes(',') ? input.pdfBase64.slice(input.pdfBase64.indexOf(',') + 1) : input.pdfBase64;
         pdfBytes = Buffer.from(b64, 'base64');
-        if (pdfBytes.byteLength > 24 * 1024 * 1024) return { ok: false, error: 'PDF 太大（上限 24MB）' };
+        if (pdfBytes.byteLength > 24 * 1024 * 1024) return { ok: false, error: tr('PDF 太大（上限 24MB）', 'PDF is too large (24MB limit)') };
       } catch (e) {
-        return { ok: false, error: `base64 解码失败：${(e as Error).message}` };
+        return { ok: false, error: tr(`base64 解码失败：${(e as Error).message}`, `base64 decoding failed: ${(e as Error).message}`) };
       }
     }
 
@@ -796,7 +798,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         rendered = await renderPdfPages(new Uint8Array(pdfBytes));
         log(`页面截图：${rendered.length} 页（${Math.round(rendered.reduce((n, p) => n + p.bytes.byteLength, 0) / 1024)} KB）`);
       } catch (e) {
-        warnings.push(`页面截图失败：${(e as Error).message}（将退回文本模式）`);
+        warnings.push(tr(`页面截图失败：${(e as Error).message}（将退回文本模式）`, `Page screenshot failed: ${(e as Error).message} (falling back to text mode)`));
         warn(`页面渲染失败：${(e as Error).message}`);
       }
       // ② 文本抽取（后备链路 + 检索/人可读）
@@ -804,9 +806,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         extracted = await extractPdfText(new Uint8Array(pdfBytes));
         warnings.push(...extracted.warnings);
         if (extracted.hasText) text = extracted.text;
-        else warnings.push('这份 PDF 抽不出文本（扫描件/纯图片/公式为主）—— 已改用页面截图读题');
+        else warnings.push(tr('这份 PDF 抽不出文本（扫描件/纯图片/公式为主）—— 已改用页面截图读题', 'No extractable text in this PDF (scan/image/formula-only) — switched to reading page screenshots'));
       } catch (e) {
-        warnings.push(`PDF 文本解析失败：${(e as Error).message}`);
+        warnings.push(tr(`PDF 文本解析失败：${(e as Error).message}`, `PDF text parsing failed: ${(e as Error).message}`));
       }
     }
 
@@ -818,7 +820,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const segmented = await splitProblemsFor(text, warnings, visionPages);
     const parts = segmented.parts;
     if (text.trim() && parts.length === 0) {
-      warnings.push('没切出题目（多模态/LLM 与规则都没识别出题号）——整篇作为一道题导入，可手动拆');
+      warnings.push(tr('没切出题目（多模态/LLM 与规则都没识别出题号）——整篇作为一道题导入，可手动拆', 'No problems detected (neither multimodal/LLM nor rules found a problem number) — imported the whole page as one problem; you can split it manually'));
     }
     let problems: Problem[] = problemsFromSplit(parts);
     if (!problems.length && text.trim()) {
@@ -932,9 +934,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
    */
   const updateProblem = async (input: UpdateProblemInput): Promise<{ ok: boolean; error?: string; sheet?: Sheet; stale?: number }> => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: `题集不存在: ${input.courseId}/${input.sheetId}` };
+    if (!sheet) return { ok: false, error: tr(`题集不存在: ${input.courseId}/${input.sheetId}`, `Sheet not found: ${input.courseId}/${input.sheetId}`) };
     const p = store.findProblem(sheet, input.problemId);
-    if (!p) return { ok: false, error: `题目不存在: ${input.problemId}` };
+    if (!p) return { ok: false, error: tr(`题目不存在: ${input.problemId}`, `Problem not found: ${input.problemId}`) };
 
     let staled = 0;
     const nextAnswer = typeof input.patch.answer === 'string' ? input.patch.answer : p.answer;
@@ -967,7 +969,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   const addProblem = async (input: { courseId: string; sheetId: string; label?: string; text?: string }) => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: '题集不存在' };
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const text = (input.text ?? '').trim();
     const p: Problem = {
       id: problemIdOf(sheet.problems.length),
@@ -999,9 +1001,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   const deleteProblem = async (input: { courseId: string; sheetId: string; problemId: string }) => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: '题集不存在' };
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const i = sheet.problems.findIndex((p) => p.id === input.problemId);
-    if (i === -1) return { ok: false, error: '题目不存在' };
+    if (i === -1) return { ok: false, error: tr('题目不存在', 'Problem not found') };
     sheet.problems.splice(i, 1);
     store.writeSheet(input.courseId, sheet);
     return { ok: true, sheet };
@@ -1015,7 +1017,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
    */
   const resplit = async (input: { courseId: string; sheetId: string; useLlm?: boolean }) => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: '题集不存在' };
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const text = store.readSourceText(input.courseId, input.sheetId) ?? '';
     let pageNumbers = store.listPageImages(input.courseId, input.sheetId);
 
@@ -1041,7 +1043,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
 
     if (!text.trim() && pageNumbers.length === 0) {
-      return { ok: false, error: '没有原文存档（source.md）也没有页面截图，无法重新分块' };
+      return { ok: false, error: tr('没有原文存档（source.md）也没有页面截图，无法重新分块', 'No source.md and no page images — cannot re-split') };
     }
 
     let parts: SplitProblem[];
@@ -1053,7 +1055,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         const img = store.readPageImage(input.courseId, input.sheetId, n)!;
         return { page: n, mediaType: img.mediaType, base64: img.bytes.toString('base64') };
       });
-      const v = await segmentWithVision(visionPages, askVision);
+      const v = await segmentWithVision(visionPages, askVision, { lang: uiLang() });
       if (v.ok) {
         parts = v.problems;
         by = 'vision';
@@ -1085,7 +1087,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     } else {
       parts = splitProblems(text);
     }
-    if (!parts.length) return { ok: false, error: '没识别出题目（多模态/LLM 与规则都没有结果）' };
+    if (!parts.length) return { ok: false, error: tr('没识别出题目（多模态/LLM 与规则都没有结果）', 'No problems recognised (neither multimodal/LLM nor rules produced a result)') };
 
     const fresh = problemsFromSplit(parts);
     // 按 label 对齐旧答案（题号是最稳的锚点；重新分块也不该丢答案）
@@ -1117,11 +1119,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     problemId: string;
   }): Promise<{ ok: boolean; error?: string; check?: Check; sheet?: Sheet; mistake?: Mistake }> => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: '题集不存在' };
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const p = store.findProblem(sheet, input.problemId);
-    if (!p) return { ok: false, error: '题目不存在' };
+    if (!p) return { ok: false, error: tr('题目不存在', 'Problem not found') };
     if (!p.answer.trim() && !p.notes.trim()) {
-      return { ok: false, error: '还没有答案 —— 先自己写点什么（哪怕写错）再检查，检查不是替你做题' };
+      return { ok: false, error: tr('还没有答案 —— 先自己写点什么（哪怕写错）再检查，检查不是替你做题', 'No answer yet — write something yourself first (even if wrong), then check. The check is not there to solve it for you') };
     }
 
     const course = store.readIndex(input.courseId);
@@ -1161,6 +1163,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         notes: p.notes,
         progressDigest: sheet.progress_digest,
         priorMistakes: prior,
+        lang: uiLang(),
         reasoning: checkReasoning,
         answerImages,
         pageImage: pageImg
@@ -1233,23 +1236,23 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     caption?: string;
   }): Promise<{ ok: boolean; error?: string; image?: ProblemImage; sheet?: Sheet }> => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: '题集不存在' };
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const p = store.findProblem(sheet, input.problemId);
-    if (!p) return { ok: false, error: '题目不存在' };
-    if (p.images.length >= 8) return { ok: false, error: '这题最多 8 张图（够画示意图了）' };
+    if (!p) return { ok: false, error: tr('题目不存在', 'Problem not found') };
+    if (p.images.length >= 8) return { ok: false, error: tr('这题最多 8 张图（够画示意图了）', 'At most 8 images per problem (enough for a sketch)') };
 
     const raw = (input.base64 ?? '').replace(/^data:[^;]+;base64,/, '').trim();
-    if (!raw) return { ok: false, error: '没有图片数据' };
+    if (!raw) return { ok: false, error: tr('没有图片数据', 'No image data') };
     let bytes: Buffer;
     try {
       bytes = Buffer.from(raw, 'base64');
     } catch {
-      return { ok: false, error: '图片 base64 解析失败' };
+      return { ok: false, error: tr('图片 base64 解析失败', 'Could not parse the image base64') };
     }
-    if (!bytes.length) return { ok: false, error: '图片为空' };
-    if (bytes.length > 10 * 1024 * 1024) return { ok: false, error: '单张图片超过 10MB —— 截图/压缩一下再传' };
+    if (!bytes.length) return { ok: false, error: tr('图片为空', 'Image is empty') };
+    if (bytes.length > 10 * 1024 * 1024) return { ok: false, error: tr('单张图片超过 10MB —— 截图/压缩一下再传', 'A single image exceeds 10MB — screenshot/compress it and try again') };
     const kind = sniffImageType(bytes);
-    if (!kind) return { ok: false, error: '只支持 PNG / JPEG / WebP / GIF' };
+    if (!kind) return { ok: false, error: tr('只支持 PNG / JPEG / WebP / GIF', 'Only PNG / JPEG / WebP / GIF are supported') };
 
     const now = Date.now();
     const name = `img-${now.toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}.${kind.ext}`;
@@ -1276,11 +1279,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     imageId: string;
   }): Promise<{ ok: boolean; error?: string; sheet?: Sheet }> => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: '题集不存在' };
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const p = store.findProblem(sheet, input.problemId);
-    if (!p) return { ok: false, error: '题目不存在' };
+    if (!p) return { ok: false, error: tr('题目不存在', 'Problem not found') };
     const idx = p.images.findIndex((i) => i.id === input.imageId);
-    if (idx < 0) return { ok: false, error: '图片不存在' };
+    if (idx < 0) return { ok: false, error: tr('图片不存在', 'Image not found') };
     const [gone] = p.images.splice(idx, 1);
     if (gone) store.deleteImage(input.courseId, input.sheetId, gone.name);
     store.writeSheet(input.courseId, sheet);
@@ -1298,13 +1301,13 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     text: string;
   }): Promise<{ ok: boolean; error?: string; rebuttal?: Rebuttal; sheet?: Sheet; check?: Check }> => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: '题集不存在' };
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const p = store.findProblem(sheet, input.problemId);
-    if (!p) return { ok: false, error: '题目不存在' };
+    if (!p) return { ok: false, error: tr('题目不存在', 'Problem not found') };
     const text = input.text.trim();
-    if (!text) return { ok: false, error: '写点你要答辩的内容（"这一步为什么对"）' };
+    if (!text) return { ok: false, error: tr('写点你要答辩的内容（"这一步为什么对"）', 'Write what you are rebutting ("why this step is correct")') };
     const target = lastFreshCheck(p.checks) ?? p.checks.at(-1) ?? null;
-    if (!target) return { ok: false, error: '这题还没检查过 —— 先让爱弥斯检查一次，再来答辩' };
+    if (!target) return { ok: false, error: tr('这题还没检查过 —— 先让爱弥斯检查一次，再来答辩', 'This problem has not been checked yet — ask Aemeath to check it first, then rebut') };
 
     const course = store.readIndex(input.courseId);
     const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
@@ -1331,6 +1334,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           answer: p.answer,
           notes: p.notes,
           progressDigest: sheet.progress_digest,
+          lang: uiLang(),
           answerImages,
           pageImage: pageImg
             ? { base64: pageImg.bytes.toString('base64'), mediaType: pageImg.mediaType, page: pageNo }
@@ -1345,7 +1349,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       askVision,
     );
 
-    if (!result.ok || !result.rebuttal) return { ok: false, error: result.error ?? '答辩失败' };
+    if (!result.ok || !result.rebuttal) return { ok: false, error: result.error ?? tr('答辩失败', 'Rebuttal failed') };
 
     const now = Date.now();
     const rb: Rebuttal = {
@@ -1481,10 +1485,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     tags?: string[];
   }) => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: '题集不存在' };
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     if (input.op === 'add') {
       const text = (input.text ?? '').trim();
-      if (!text) return { ok: false, error: '经验内容为空' };
+      if (!text) return { ok: false, error: tr('经验内容为空', 'Lesson content is empty') };
       const lesson: Lesson = {
         id: `l${Date.now().toString(36)}`,
         text: text.slice(0, 2000),
@@ -1496,7 +1500,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       sheet.lessons.push(lesson);
     } else {
       const i = sheet.lessons.findIndex((l) => l.id === input.lessonId);
-      if (i === -1) return { ok: false, error: '经验条目不存在' };
+      if (i === -1) return { ok: false, error: tr('经验条目不存在', 'Lesson not found') };
       if (input.op === 'delete') {
         sheet.lessons.splice(i, 1);
       } else {
@@ -1601,7 +1605,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   const printHtmlOf = (courseId: string, sheetId: string, opts: { draft: boolean }): { ok: true; html: string } | { ok: false; error: string } => {
     const course = store.readIndex(courseId);
     const sheet = store.readSheet(courseId, sheetId);
-    if (!course || !sheet) return { ok: false, error: '课程或题集不存在' };
+    if (!course || !sheet) return { ok: false, error: tr('课程或题集不存在', 'Course or sheet not found') };
     const html = buildSubmissionHtml({
       courseTitle: course.title,
       courseId: course.course_id,
@@ -1627,8 +1631,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   }) => {
     const course = store.readIndex(input.courseId);
     const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!course || !sheet) return { ok: false, error: '课程或题集不存在' } as const;
-    if (!sheet.problems.length) return { ok: false, error: '这套题还没有题目' } as const;
+    if (!course || !sheet) return { ok: false, error: tr('课程或题集不存在', 'Course or sheet not found') } as const;
+    if (!sheet.problems.length) return { ok: false, error: tr('这套题还没有题目', 'This sheet has no problems yet') } as const;
 
     const built = printHtmlOf(input.courseId, input.sheetId, { draft: input.draft ?? false });
     if (!built.ok) return { ok: false, error: built.error } as const;
@@ -1644,7 +1648,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     try {
       writeFileSync(htmlFile, built.html, 'utf-8');
     } catch (e) {
-      return { ok: false, error: `写打印页失败：${(e as Error).message}` } as const;
+      return { ok: false, error: tr(`写打印页失败：${(e as Error).message}`, `Failed to write the print page: ${(e as Error).message}`) } as const;
     }
 
     const outPdf = store.submissionFile(input.courseId, input.sheetId, sheet);
@@ -1657,10 +1661,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (!chrome) {
       return {
         ok: false,
-        error:
-          '没找到 Chrome / Edge / Chromium —— 无法自动生成 PDF。\n' +
-          '可以：① 装一个 Chrome/Edge；② 或者在设置里填 chromePath；\n' +
-          '③ 或者用下面的打印页在浏览器里「打印 → 另存为 PDF」（本机浏览器一定有）。',
+        error: tr(
+          '没找到 Chrome / Edge / Chromium —— 无法自动生成 PDF。\n可以：① 装一个 Chrome/Edge；② 或者在设置里填 chromePath；\n③ 或者用下面的打印页在浏览器里「打印 → 另存为 PDF」（本机浏览器一定有）。',
+          'No Chrome / Edge / Chromium found — cannot generate the PDF automatically.\nOptions: 1) install Chrome/Edge; 2) set chromePath in the settings;\n3) use the print page below and choose “Print → Save as PDF” in your browser (every machine has a browser).',
+        ),
         print_url: `/aemeath/api/exercise/print?course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}&draft=0&autoprint=1`,
       } as const;
     }
@@ -1678,7 +1682,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (!res.ok) {
       return {
         ok: false,
-        error: `PDF 生成失败：${res.error ?? '未知错误'}`,
+        error: tr(`PDF 生成失败：${res.error ?? '未知错误'}`, `PDF generation failed: ${res.error ?? 'unknown error'}`),
         print_url: `/aemeath/api/exercise/print?course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}&autoprint=1`,
         command: res.command ?? '',
       } as const;
@@ -1695,9 +1699,12 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     // 至少要让用户知道是哪个命令、该写成什么。
     const mathWarnings: string[] = [];
     for (const p of sheet.problems) {
-      const issues = collectMathIssuesInText(`${p.text}\n${p.answer}`);
+      const issues = collectMathIssuesInText(`${p.text}\n${p.answer}`, uiLang());
       for (const i of issues) {
-        const line = `${p.label || p.id}：KaTeX 不认识 ${i.command}（${i.hint}）`;
+        const line = tr(
+          `${p.label || p.id}：KaTeX 不认识 ${i.command}（${i.hint}）`,
+          `${p.label || p.id}: KaTeX does not recognise ${i.command} (${i.hint})`,
+        );
         if (!mathWarnings.includes(line)) mathWarnings.push(line);
       }
     }
@@ -1739,7 +1746,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       if (!index) continue;
       courses.push({ index, sheets: store.listSheets(id) });
     }
-    if (!courses.length) return { ok: false, error: '还没有课程（先导入或新建一套题）' } as const;
+    if (!courses.length) return { ok: false, error: tr('还没有课程（先导入或新建一套题）', 'No courses yet (import or create a sheet first)') } as const;
 
     const mistakes = store.readMistakes().filter((m) => !input.courseId || m.course_id === input.courseId);
     const files = renderTextExport({ courses, mistakes });
@@ -1751,7 +1758,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       );
       return { ok: true, ...r, files: [...files.keys()].sort() } as const;
     } catch (e) {
-      return { ok: false, error: `写导出目录失败：${(e as Error).message}` } as const;
+      return { ok: false, error: tr(`写导出目录失败：${(e as Error).message}`, `Failed to write the export directory: ${(e as Error).message}`) } as const;
     }
   };
 
@@ -1761,7 +1768,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   const exportHandoff = async (input: { courseId?: string }) => {
     const ids = input.courseId ? [input.courseId] : store.listCourses();
-    if (!ids.length) return { ok: false, error: '还没有课程' } as const;
+    if (!ids.length) return { ok: false, error: tr('还没有课程', 'No courses yet') } as const;
     const files: string[] = [];
     const summaries: string[] = [];
     const dir = handoffDir;
@@ -1774,7 +1781,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       files.push(writeExerciseHandoff(h, dir));
       summaries.push(describeExerciseHandoff(h));
     }
-    if (!files.length) return { ok: false, error: '没有可导出的课程' } as const;
+    if (!files.length) return { ok: false, error: tr('没有可导出的课程', 'No courses to export') } as const;
     log(`握手包已导出 ${files.length} 个 → ${dir}`);
     return { ok: true, files, summaries, dir } as const;
   };
@@ -1857,20 +1864,22 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const files = input.file ? [input.file] : findExerciseHandoffFiles(handoffDir);
     if (!files.length) {
       return fail(
-        `没有找到习题握手文件。\n已扫描目录：${handoffDir}\n` +
-          '把 mac 导出的 *-exercise-handoff.json 放进该目录，或用 file 参数指定绝对路径。',
+        tr(
+          `没有找到习题握手文件。\n已扫描目录：${handoffDir}\n把 mac 导出的 *-exercise-handoff.json 放进该目录，或用 file 参数指定绝对路径。`,
+          `No exercise handoff file found.\nScanned directory: ${handoffDir}\nPut the *-exercise-handoff.json exported from the Mac into that directory, or pass an absolute path via file.`,
+        ),
       );
     }
     const gk = await buildGatekeeper();
     if (!gk) {
       const previews = files.map((f) => {
         const h = loadExerciseHandoff(f);
-        return h ? describeExerciseHandoff(h) : `（不可解析：${f}）`;
+        return h ? describeExerciseHandoff(h) : tr(`（不可解析：${f}）`, `(unparseable: ${f})`);
       });
       return ok({
         dry_run: true,
         degraded: true,
-        note: 'memory 服务不可用（可能是独立 profile）——只读预览，未写入。',
+        note: tr('memory 服务不可用（可能是独立 profile）——只读预览，未写入。', 'Memory service unavailable (likely the standalone profile) — read-only preview, nothing was written.'),
         previews,
       });
     }
@@ -1903,8 +1912,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       outcomes,
       note:
         (input.dryRun ?? true)
-          ? '这是试运行结果 —— 确认无误后把 dry_run 设为 false 真正写入。'
-          : '已写入主记忆与世界书。',
+          ? tr('这是试运行结果 —— 确认无误后把 dry_run 设为 false 真正写入。', 'This is a dry run — set dry_run to false to actually write.')
+          : tr('已写入主记忆与世界书。', 'Written to main memory and worldbook.'),
     });
   };
 
@@ -1948,7 +1957,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   const buildSheetView = (courseId: string, sheetId: string) => {
     const sheet = store.readSheet(courseId, sheetId);
-    if (!sheet) return { ok: false as const, error: `题集不存在: ${courseId}/${sheetId}` };
+    if (!sheet) return { ok: false as const, error: tr(`题集不存在: ${courseId}/${sheetId}`, `Sheet not found: ${courseId}/${sheetId}`) };
     const course = store.readIndex(courseId);
     const prog = sheetProgress(sheet);
     return {
@@ -1987,10 +1996,26 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       // 静态 import 会让整个插件在那种情况下加载失败。
       const mod = (await import('@aemeath/dsh-plugin-lecture/symbols')) as {
         SYMBOL_GROUPS?: unknown;
+        SYMBOL_LABEL_EN?: unknown;
+        SYMBOL_HINT_EN?: unknown;
         INSTITUTIONAL_NOTATION?: unknown;
         COMBINING?: unknown;
       };
-      return { groups: mod.SYMBOL_GROUPS ?? [], notation: mod.INSTITUTIONAL_NOTATION ?? null, combining: mod.COMBINING ?? null };
+      const labelEn = (mod.SYMBOL_LABEL_EN ?? {}) as Record<string, string>;
+      const hintEn = (mod.SYMBOL_HINT_EN ?? {}) as Record<string, string>;
+      type RawSymbol = { label?: string; hint?: string; [k: string]: unknown };
+      type RawGroup = { label?: string; symbols?: RawSymbol[]; [k: string]: unknown };
+      const rawGroups = (Array.isArray(mod.SYMBOL_GROUPS) ? mod.SYMBOL_GROUPS : []) as RawGroup[];
+      const groups = rawGroups.map((g) => ({
+        ...g,
+        labelEn: g.label ? labelEn[g.label] : undefined,
+        symbols: (g.symbols ?? []).map((s) => ({
+          ...s,
+          labelEn: s.label ? labelEn[s.label] : undefined,
+          hintEn: s.hint ? hintEn[s.hint] : undefined,
+        })),
+      }));
+      return { groups, notation: mod.INSTITUTIONAL_NOTATION ?? null, combining: mod.COMBINING ?? null };
     } catch (e) {
       warn(`符号表不可用（lecture 未安装）：${(e as Error).message}`);
       return { groups: [], notation: null, combining: null };
@@ -2039,7 +2064,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           due: args.due,
           number: args.number,
         });
-        if (!r.ok || !r.sheet) return fail(r.error ?? '新建失败');
+        if (!r.ok || !r.sheet) return fail(r.error ?? tr('新建失败', 'Creation failed'));
         return ok({
           course_id: args.course_id,
           sheet_id: r.sheet.id,
@@ -2470,7 +2495,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       output: { schema: { type: 'json' }, render: renderJson },
       execute: async (args: { course_id: string; sheet_id: string; use_llm?: boolean }) => {
         const r = await resplit({ courseId: args.course_id, sheetId: args.sheet_id, useLlm: args.use_llm });
-        if (!r.ok) return fail(r.error ?? '重新分块失败');
+        if (!r.ok) return fail(r.error ?? tr('重新分块失败', 'Re-split failed'));
         const sheet = store.readSheet(args.course_id, args.sheet_id);
         return ok({
           sheet_id: args.sheet_id,
@@ -2546,7 +2571,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       buildPrintHtml: (c, s, opts) => printHtmlOf(c, s, opts),
       onImport: async (input) => {
         const r = await importSheet(input);
-        if (!r.ok || !r.sheet) return { ok: false, error: r.error ?? '导入失败' };
+        if (!r.ok || !r.sheet) return { ok: false, error: r.error ?? tr('导入失败', 'Import failed') };
         return {
           ok: true,
           course_id: input.courseId,
@@ -2587,7 +2612,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       },
       onCollectMistake: async (input) => {
         const m = collectMistakeInternal(input);
-        return m ? { ok: true, mistake: m } : { ok: false, error: '加入失败（题集或题目不存在）' };
+        return m ? { ok: true, mistake: m } : { ok: false, error: tr('加入失败（题集或题目不存在）', 'Could not add (sheet or problem not found)') };
       },
       onPatchMistake: async (input) => {
         const allowed: Partial<Mistake> = {};
@@ -2595,11 +2620,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         if (typeof input.patch.mastered === 'boolean') allowed.mastered = input.patch.mastered;
         if (Array.isArray(input.patch.tags)) allowed.tags = input.patch.tags as string[];
         const m = store.patchMistake(input.id, allowed);
-        return m ? { ok: true, mistake: m } : { ok: false, error: '错题不存在' };
+        return m ? { ok: true, mistake: m } : { ok: false, error: tr('错题不存在', 'Mistake not found') };
       },
       onDeleteMistake: async (input) => {
         const done = store.deleteMistake(input.id);
-        return done ? { ok: true } : { ok: false, error: '错题不存在' };
+        return done ? { ok: true } : { ok: false, error: tr('错题不存在', 'Mistake not found') };
       },
       onLesson: async (input) => {
         const r = await lessons(input);
@@ -2688,10 +2713,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       onDelete: async (input) => {
         if (input.scope === 'course') {
           const done = store.deleteCourse(input.courseId);
-          return done ? { ok: true } : { ok: false, error: '课程不存在' };
+          return done ? { ok: true } : { ok: false, error: tr('课程不存在', 'Course not found') };
         }
         const done = store.deleteSheet(input.courseId, input.sheetId ?? '');
-        return done ? { ok: true } : { ok: false, error: '题集不存在' };
+        return done ? { ok: true } : { ok: false, error: tr('题集不存在', 'Sheet not found') };
       },
       log,
       warn,

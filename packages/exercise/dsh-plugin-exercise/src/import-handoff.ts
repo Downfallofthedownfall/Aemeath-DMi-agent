@@ -26,6 +26,7 @@ import {
   type WorldbookWriteResult,
 } from './worldbook.js';
 import { readExerciseHandoff, type ExerciseHandoff } from './handoff.js';
+import { tr } from './locale.js';
 
 // ============================================================
 // 窄接口（由主 agent 侧注入；与 lecture 的 HandoffGatekeeper 结构一致）
@@ -157,15 +158,18 @@ export async function importExerciseHandoff(
   for (const wp of handoff.weak_points) {
     if (!submitted.has(wp.unit)) {
       out.dropped++;
-      out.details.push({ kind: 'weak_point', content: wp.topic, reason: '该套未提交，跳过' });
+      out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr('该套未提交，跳过', 'Sheet not submitted — skipped') });
       continue;
     }
     // decide 的语义是"一轮对话"：待判陈述放 query 位、reply 传空串（同 lecture 的注释）
-    const statement = `练习短板：${wp.topic}。这是需要加强的地方。`;
+    const statement = tr(
+      `练习短板：${wp.topic}。这是需要加强的地方。`,
+      `Practice weak point: ${wp.topic}. This is something to work on.`,
+    );
     const decision = gk.decide(statement, '');
     if (decision.kind === 'skip' || decision.kind === 'blocked') {
       out.dropped++;
-      out.details.push({ kind: 'weak_point', content: wp.topic, reason: `守门员判定 ${decision.kind}` });
+      out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr(`守门员判定 ${decision.kind}`, `Gatekeeper decision: ${decision.kind}`) });
       continue;
     }
     let confidence = 0.7;
@@ -174,7 +178,7 @@ export async function importExerciseHandoff(
       const wg = gk.writeGate(statement, decision.content);
       if (wg.action === 'drop') {
         out.dropped++;
-        out.details.push({ kind: 'weak_point', content: wp.topic, reason: `写门拦截：${wg.reason}` });
+        out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr(`写门拦截：${wg.reason}`, `Write gate blocked: ${wg.reason}`) });
         continue;
       }
       if (wg.action === 'demote') {
@@ -184,7 +188,7 @@ export async function importExerciseHandoff(
     }
     if (dryRun) {
       out.memoriesWritten++;
-      out.details.push({ kind: 'weak_point', content: decision.content, reason: `[试运行] 将写入（${decision.category}）` });
+      out.details.push({ kind: 'weak_point', content: decision.content, reason: tr(`[试运行] 将写入（${decision.category}）`, `[dry run] would write (${decision.category})`) });
       continue;
     }
     try {
@@ -199,10 +203,10 @@ export async function importExerciseHandoff(
         sourceExercise: { course: handoff.course.id, sheet: wp.unit },
       });
       out.memoriesWritten++;
-      out.details.push({ kind: 'weak_point', content: decision.content, reason: `已写入（${decision.category}）` });
+      out.details.push({ kind: 'weak_point', content: decision.content, reason: tr(`已写入（${decision.category}）`, `Written (${decision.category})`) });
     } catch (e) {
       out.dropped++;
-      out.details.push({ kind: 'weak_point', content: wp.topic, reason: `写入失败：${(e as Error).message}` });
+      out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr(`写入失败：${(e as Error).message}`, `Write failed: ${(e as Error).message}`) });
     }
   }
 
@@ -211,7 +215,7 @@ export async function importExerciseHandoff(
   for (const c of handoff.claims ?? []) {
     if (!submitted.has(c.unit)) {
       out.dropped++;
-      out.details.push({ kind: 'claim', content: `${c.attribute}=${c.value}`, reason: '该套未提交，跳过' });
+      out.details.push({ kind: 'claim', content: `${c.attribute}=${c.value}`, reason: tr('该套未提交，跳过', 'Sheet not submitted — skipped') });
       continue;
     }
     const list = byUnit.get(c.unit) ?? [];
@@ -219,11 +223,14 @@ export async function importExerciseHandoff(
     byUnit.set(c.unit, list);
   }
   for (const [unitId, list] of byUnit) {
-    const content = `习题进度：${list.map((c) => `${c.attribute} = ${c.value}`).join('；')}`;
+    const content = tr(
+      `习题进度：${list.map((c) => `${c.attribute} = ${c.value}`).join('；')}`,
+      `Exercise progress: ${list.map((c) => `${c.attribute} = ${c.value}`).join('; ')}`,
+    );
     const decision = gk.decide(content, '');
     if (decision.kind === 'skip' || decision.kind === 'blocked') {
       out.dropped++;
-      out.details.push({ kind: 'claim', content, reason: `守门员判定 ${decision.kind}` });
+      out.details.push({ kind: 'claim', content, reason: tr(`守门员判定 ${decision.kind}`, `Gatekeeper decision: ${decision.kind}`) });
       continue;
     }
     let confidence = 0.75;
@@ -232,7 +239,7 @@ export async function importExerciseHandoff(
       const wg = gk.writeGate(content, decision.content);
       if (wg.action === 'drop') {
         out.dropped++;
-        out.details.push({ kind: 'claim', content, reason: `写门拦截：${wg.reason}` });
+        out.details.push({ kind: 'claim', content, reason: tr(`写门拦截：${wg.reason}`, `Write gate blocked: ${wg.reason}`) });
         continue;
       }
       if (wg.action === 'demote') {
@@ -242,7 +249,7 @@ export async function importExerciseHandoff(
     }
     const now = Date.now();
     const entityClaims = list.map((c) => ({
-      entity: c.entity || '用户',
+      entity: c.entity || tr('用户', 'User'),
       attribute: c.attribute,
       value: c.value,
       valid_from: now,
@@ -251,7 +258,7 @@ export async function importExerciseHandoff(
     if (dryRun) {
       out.memoriesWritten++;
       out.claimsWritten += entityClaims.length;
-      out.details.push({ kind: 'claim', content: decision.content, reason: `[试运行] 将写入（含 ${entityClaims.length} 条断言）` });
+      out.details.push({ kind: 'claim', content: decision.content, reason: tr(`[试运行] 将写入（含 ${entityClaims.length} 条断言）`, `[dry run] would write (${entityClaims.length} claims)`) });
       continue;
     }
     try {
@@ -268,26 +275,26 @@ export async function importExerciseHandoff(
       });
       out.memoriesWritten++;
       out.claimsWritten += entityClaims.length;
-      out.details.push({ kind: 'claim', content: decision.content, reason: `已写入（含 ${entityClaims.length} 条断言）` });
+      out.details.push({ kind: 'claim', content: decision.content, reason: tr(`已写入（含 ${entityClaims.length} 条断言）`, `Written (${entityClaims.length} claims)`) });
     } catch (e) {
       out.dropped++;
-      out.details.push({ kind: 'claim', content, reason: `写入失败：${(e as Error).message}` });
+      out.details.push({ kind: 'claim', content, reason: tr(`写入失败：${(e as Error).message}`, `Write failed: ${(e as Error).message}`) });
     }
   }
 
   // ── 3) 经验/错题教训 → worldbook（本模块与 lecture 接收侧的主要差异） ──
   const entries = handoffWorldbookEntries(handoff);
   if (!entries.length) {
-    out.details.push({ kind: 'worldbook', content: '', reason: '没有可写的经验/教训条目' });
+    out.details.push({ kind: 'worldbook', content: '', reason: tr('没有可写的经验/教训条目', 'No lessons/mistakes to write') });
   } else if (!opts.worldbookDir) {
     out.details.push({
       kind: 'worldbook',
-      content: `${entries.length} 条`,
-      reason: '未配置 worldbook 馆目录 —— 跳过（在 mac 上属正常；到 Windows 侧再导一次即可）',
+      content: tr(`${entries.length} 条`, `${entries.length} entries`),
+      reason: tr('未配置 worldbook 馆目录 —— 跳过（在 mac 上属正常；到 Windows 侧再导一次即可）', 'No worldbook library directory configured — skipped (normal on macOS; import again on the Windows side)'),
     });
   } else if (dryRun) {
     for (const e of entries) {
-      out.details.push({ kind: 'worldbook', content: e.title, reason: `[试运行] 将写入世界书（${e.id}）` });
+      out.details.push({ kind: 'worldbook', content: e.title, reason: tr(`[试运行] 将写入世界书（${e.id}）`, `[dry run] would write to worldbook (${e.id})`) });
     }
     out.worldbookWritten += entries.length;
   } else {
@@ -296,12 +303,15 @@ export async function importExerciseHandoff(
     out.worldbookSkipped += r.skipped;
     if (r.failed) {
       out.dropped += r.failed;
-      for (const err of r.errors) out.details.push({ kind: 'worldbook', content: '', reason: `写入失败：${err}` });
+      for (const err of r.errors) out.details.push({ kind: 'worldbook', content: '', reason: tr(`写入失败：${err}`, `Write failed: ${err}`) });
     }
     out.details.push({
       kind: 'worldbook',
-      content: `${entries.length} 条`,
-      reason: `写入 ${r.written} 条（已存在跳过 ${r.skipped} 条，失败 ${r.failed} 条）`,
+      content: tr(`${entries.length} 条`, `${entries.length} entries`),
+      reason: tr(
+        `写入 ${r.written} 条（已存在跳过 ${r.skipped} 条，失败 ${r.failed} 条）`,
+        `Wrote ${r.written} (skipped existing ${r.skipped}, failed ${r.failed})`,
+      ),
     });
     // 顺带进知识层（让记忆面板/知识审核能看到），失败不影响主流程
     if (r.written && gk.knowledgeAdd) {
@@ -340,8 +350,11 @@ export function loadExerciseHandoff(file: string): ExerciseHandoff | null {
 /** 导入结果可读摘要。 */
 export function describeExerciseOutcome(o: ExerciseImportOutcome): string {
   return [
-    `课程：${o.course}`,
-    `记忆 ${o.memoriesWritten} 条（含 ${o.claimsWritten} 条断言）· 世界书 ${o.worldbookWritten} 条（跳过 ${o.worldbookSkipped}）· 丢弃 ${o.dropped} 条`,
+    tr(`课程：${o.course}`, `Course: ${o.course}`),
+    tr(
+      `记忆 ${o.memoriesWritten} 条（含 ${o.claimsWritten} 条断言）· 世界书 ${o.worldbookWritten} 条（跳过 ${o.worldbookSkipped}）· 丢弃 ${o.dropped} 条`,
+      `Memory: ${o.memoriesWritten} written (${o.claimsWritten} claims) · Worldbook: ${o.worldbookWritten} (skipped ${o.worldbookSkipped}) · Dropped: ${o.dropped}`,
+    ),
     ...o.details.map((d) => `  · [${d.kind}] ${d.content || '—'} — ${d.reason}`),
   ].join('\n');
 }

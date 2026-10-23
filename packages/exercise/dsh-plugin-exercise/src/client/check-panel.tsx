@@ -12,20 +12,43 @@
 import { useState } from 'react';
 import type { CheckView, ProblemView, RebuttalView } from './api.ts';
 import { MathText } from './math.tsx';
+import { useT } from './i18n.ts';
 
-const VERDICT_LABEL: Record<string, string> = {
-  correct: '正确',
-  partial: '部分正确',
-  wrong: '有错',
-  unclear: '无法判定',
-  error: '检查失败',
+type Translate = (key: string, params?: Record<string, unknown>) => string;
+
+/** verdict → i18n key（模块级只存 key，渲染时再 t()，切换语言才会重渲染）。 */
+export const VERDICT_KEY: Record<string, string> = {
+  correct: 'exercise.check.verdict.correct',
+  partial: 'exercise.check.verdict.partial',
+  wrong: 'exercise.check.verdict.wrong',
+  unclear: 'exercise.check.verdict.unclear',
+  error: 'exercise.check.verdict.error',
 };
 
-const OUTCOME_LABEL: Record<RebuttalView['outcome'], string> = {
-  conceded: '认错并撤回',
-  upheld: '维持原判',
-  partial: '各有对错',
+/** 已知 verdict 查字典，未知值原样显示（后端将来加值也不会变成空标签）。 */
+export function verdictLabel(t: Translate, verdict: string): string {
+  const key = VERDICT_KEY[verdict];
+  return key ? t(key) : verdict;
+}
+
+const OUTCOME_KEY: Record<RebuttalView['outcome'], string> = {
+  conceded: 'exercise.check.outcome.conceded',
+  upheld: 'exercise.check.outcome.upheld',
+  partial: 'exercise.check.outcome.partial',
 };
+
+const SEVERITY_KEY: Record<string, string> = {
+  error: 'exercise.check.sev.error',
+  warn: 'exercise.check.sev.warn',
+  info: 'exercise.check.sev.info',
+};
+
+/** 推理模式：off / 降级 需要翻译，max 等值本身是语言无关的。 */
+function reasoningValue(t: Translate, reasoning: string): string {
+  if (reasoning === 'off') return t('exercise.check.reasoning.off');
+  if (reasoning.startsWith('off')) return t('exercise.check.reasoning.offDegraded');
+  return reasoning;
+}
 
 function timeOf(ts: number): string {
   if (!ts) return '';
@@ -36,28 +59,19 @@ function timeOf(ts: number): string {
 
 /** 一次检查的主体（issues / hints / next steps）。 */
 function CheckBody({ check, stale }: { check: CheckView; stale?: boolean }): JSX.Element {
+  const t = useT();
   const withdrawn = new Set(check.withdrawn ?? []);
   const remaining = check.remaining ?? [];
   return (
     <div data-stale={stale ? '1' : undefined}>
       <div className="lec-verdict-head">
-        <span className="lec-badge">{VERDICT_LABEL[check.verdict] ?? check.verdict}</span>
+        <span className="lec-badge">{verdictLabel(t, check.verdict)}</span>
         <span className="lec-mistake-path">
           {timeOf(check.created_at)}
           {check.model ? ` · ${check.model}` : ''}
           {check.provider ? ` · ${check.provider}` : ''}
-          {check.reasoning
-            ? ` · 推理${
-                check.reasoning === 'off'
-                  ? '关'
-                  : check.reasoning.startsWith('off')
-                    ? '关（降级）'
-                    : check.reasoning === 'max'
-                      ? ' max'
-                      : ` ${check.reasoning}`
-              }`
-            : ''}
-          {stale ? ' · 针对旧答案' : ''}
+          {check.reasoning ? t('exercise.check.reasoning', { value: reasoningValue(t, check.reasoning) }) : ''}
+          {stale ? t('exercise.check.staleMark') : ''}
         </span>
       </div>
 
@@ -69,9 +83,11 @@ function CheckBody({ check, stale }: { check: CheckView; stale?: boolean }): JSX
             className="lec-issue"
             data-sev={i.severity}
             style={gone ? { opacity: 0.45, textDecoration: 'line-through' } : undefined}
-            title={gone ? '这条已被你的答辩撤回' : undefined}
+            title={gone ? t('exercise.check.withdrawnTitle') : undefined}
           >
-            <span className="sev">{gone ? '已撤回' : i.severity === 'error' ? '错误' : i.severity === 'warn' ? '存疑' : '说明'}</span>
+            <span className="sev">
+              {gone ? t('exercise.check.sev.withdrawn') : t(SEVERITY_KEY[i.severity] ?? 'exercise.check.sev.info')}
+            </span>
             <span>
               <MathText text={i.text} compact />
             </span>
@@ -81,7 +97,7 @@ function CheckBody({ check, stale }: { check: CheckView; stale?: boolean }): JSX
 
       {remaining.length > 0 && withdrawn.size > 0 && (
         <div className="lec-hint" style={{ marginTop: 6 }}>
-          <b>答辩后仍然成立：</b>
+          <b>{t('exercise.check.remaining')}</b>
           <ul className="lec-mistake-issues">
             {remaining.map((i, idx) => (
               <li key={idx}>
@@ -104,7 +120,7 @@ function CheckBody({ check, stale }: { check: CheckView; stale?: boolean }): JSX
 
       {check.next_steps.length > 0 && (
         <div className="lec-hint" style={{ marginTop: 6 }}>
-          <b>下一步可以：</b>
+          <b>{t('exercise.check.nextSteps')}</b>
           <ul className="lec-mistake-issues">
             {check.next_steps.map((s, idx) => (
               <li key={idx}>
@@ -118,7 +134,7 @@ function CheckBody({ check, stale }: { check: CheckView; stale?: boolean }): JSX
       {check.verdict === 'error' && check.raw && (
         <details>
           <summary className="lec-hint" style={{ cursor: 'pointer' }}>
-            模型原始输出（排障用）
+            {t('exercise.check.rawOutput')}
           </summary>
           <pre className="lec-md-code">{check.raw.slice(0, 1200)}</pre>
         </details>
@@ -137,6 +153,7 @@ function RebuttalBox({
   onSubmit: (text: string) => Promise<void>;
   busy: boolean;
 }): JSX.Element {
+  const t = useT();
   const [text, setText] = useState('');
   const [open, setOpen] = useState(false);
   const thread = problem.rebuttals ?? [];
@@ -150,14 +167,17 @@ function RebuttalBox({
           {thread.map((r) => (
             <div key={r.id} className="lec-rebut-turn">
               <div className="lec-rebut-mine">
-                <span className="lec-rebut-who">我</span> {r.user_text}
+                <span className="lec-rebut-who">{t('exercise.check.who.me')}</span> {r.user_text}
               </div>
               <div className="lec-rebut-ai" data-outcome={r.outcome}>
-                <span className="lec-rebut-who">爱弥斯 · {OUTCOME_LABEL[r.outcome]}</span>{' '}
+                <span className="lec-rebut-who">
+                  {t('exercise.check.who.aemeath')} · {t(OUTCOME_KEY[r.outcome])}
+                </span>{' '}
                 <MathText text={r.reply} compact />
                 {r.correct_parts.length > 0 && (
                   <div className="lec-hint" style={{ marginTop: 4 }}>
-                    承认你对的部分：{r.correct_parts.join('；')}
+                    {t('exercise.check.concededParts')}
+                    {r.correct_parts.join(t('exercise.common.listSep'))}
                   </div>
                 )}
                 {r.remaining.length > 0 && (
@@ -180,10 +200,12 @@ function RebuttalBox({
           type="button"
           className="lec-btn lec-btn-ghost"
           disabled={!canWrite || busy}
-          title={canWrite ? '认为批改错了？让她重新推导一遍' : '先检查一次，才能答辩'}
+          title={
+            canWrite ? t('exercise.check.rebuttal.title') : t('exercise.check.rebuttal.disabledTitle')
+          }
           onClick={() => setOpen(true)}
         >
-          {last?.outcome === 'upheld' ? '继续答辩' : '答辩 · 我认为这里没错'}
+          {last?.outcome === 'upheld' ? t('exercise.check.rebuttal.continue') : t('exercise.check.rebuttal.start')}
         </button>
       ) : (
         <div>
@@ -191,7 +213,7 @@ function RebuttalBox({
             className="lec-textarea lec-rebut-input"
             rows={3}
             value={text}
-            placeholder="指出你觉得被误判的那一步，比如：这里 $N$ 由球面约束给出，不是 $mg\cos\alpha$；我第 2 行已经写了 $v=\dot x$…"
+            placeholder={t('exercise.check.rebuttal.placeholder')}
             onChange={(e) => setText(e.target.value)}
           />
           <div className="lec-toolrow">
@@ -203,13 +225,13 @@ function RebuttalBox({
                 void onSubmit(text).then(() => setText(''));
               }}
             >
-              {busy ? '她在重新推导…' : '提交答辩'}
+              {busy ? t('exercise.check.rebuttal.busy') : t('exercise.check.rebuttal.submit')}
             </button>
             <button type="button" className="lec-btn lec-btn-ghost" onClick={() => setOpen(false)} disabled={busy}>
-              取消
+              {t('exercise.common.cancel')}
             </button>
             <span className="lec-hint" style={{ marginLeft: 'auto' }}>
-              她会重新独立推导；你说得对就撤回，说不对会给具体证据
+              {t('exercise.check.rebuttal.hint')}
             </span>
           </div>
         </div>
@@ -226,6 +248,7 @@ export interface CheckPanelProps {
 }
 
 export function CheckPanel({ problem, onRecheck, onRebuttal, busy }: CheckPanelProps): JSX.Element | null {
+  const t = useT();
   const [showHistory, setShowHistory] = useState(false);
   const fresh = problem.last_check;
   const last = problem.checks.at(-1) ?? null;
@@ -242,10 +265,12 @@ export function CheckPanel({ problem, onRecheck, onRebuttal, busy }: CheckPanelP
     <div className="lec-verdict" data-verdict={isStale ? 'stale' : shown?.verdict}>
       {isStale && (
         <div className="lec-stale">
-          答案改过了 —— 下面是{' '}
-          <b>改之前</b>
-          {' '}那次检查（{last ? VERDICT_LABEL[last.verdict] ?? last.verdict : '—'}
-          {last ? `，${timeOf(last.created_at)}` : ''}）。它针对的是旧答案，仅供参考；改完可以重新检查一次。
+          {t('exercise.check.staleBanner.lead')}
+          <b>{t('exercise.check.staleBanner.strong')}</b>
+          {t('exercise.check.staleBanner.after', {
+            verdict: last ? verdictLabel(t, last.verdict) : '—',
+            date: last ? t('exercise.check.staleBanner.date', { date: timeOf(last.created_at) }) : '',
+          })}
         </div>
       )}
 
@@ -253,17 +278,17 @@ export function CheckPanel({ problem, onRecheck, onRebuttal, busy }: CheckPanelP
 
       {fresh && staleCount > 0 && (
         <div className="lec-hint" style={{ marginTop: 6 }}>
-          另有 {staleCount} 条针对旧答案的检查（展开历史可看）。
+          {t('exercise.check.moreStale', { n: staleCount })}
         </div>
       )}
 
       <div className="lec-toolrow">
         <button type="button" className="lec-btn lec-btn-ghost" onClick={onRecheck} disabled={busy}>
-          {busy ? '检查中…' : isStale ? '按新答案再检查' : '再检查一次'}
+          {busy ? t('exercise.check.busy') : isStale ? t('exercise.check.recheckStale') : t('exercise.check.recheck')}
         </button>
         {problem.checks.length > 1 && (
           <button type="button" className="lec-btn lec-btn-ghost" onClick={() => setShowHistory((v) => !v)}>
-            {showHistory ? '收起历史' : `历史（${problem.checks.length}）`}
+            {showHistory ? t('exercise.check.hideHistory') : t('exercise.check.history', { n: problem.checks.length })}
           </button>
         )}
       </div>
@@ -276,8 +301,8 @@ export function CheckPanel({ problem, onRecheck, onRebuttal, busy }: CheckPanelP
             .map((c) => (
               <details key={c.id}>
                 <summary className="lec-hint" style={{ cursor: 'pointer' }}>
-                  {timeOf(c.created_at)} · {VERDICT_LABEL[c.verdict] ?? c.verdict}
-                  {c.stale ? '（旧答案）' : ''}
+                  {timeOf(c.created_at)} · {verdictLabel(t, c.verdict)}
+                  {c.stale ? t('exercise.check.oldAnswer') : ''}
                 </summary>
                 <CheckBody check={c} />
               </details>

@@ -33,6 +33,7 @@ import {
   type ReviewState,
   type RawChunk,
 } from './types.js';
+import { tr } from './locale.js';
 
 function log(msg: string): void {
   console.log(`[aemeath-lecture] ${msg}`);
@@ -173,7 +174,7 @@ export class LectureStore {
   /** 新增/更新一个单元元数据（按 id 去重）。 */
   upsertUnit(courseId: string, unit: UnitMeta): CourseIndex {
     const index = this.readIndex(courseId);
-    if (!index) throw new Error(`课程不存在: ${courseId}`);
+    if (!index) throw new Error(tr(`课程不存在: ${courseId}`, `Course not found: ${courseId}`));
     const i = index.units.findIndex((u) => u.id === unit.id);
     if (i === -1) index.units.push(unit);
     else index.units[i] = { ...index.units[i], ...unit };
@@ -184,9 +185,9 @@ export class LectureStore {
   /** 标记单元已复盘 / 已生成摘要（D4 门控字段）。 */
   markUnit(courseId: string, unitId: string, patch: { reviewed?: boolean; has_summary?: boolean }): CourseIndex {
     const index = this.readIndex(courseId);
-    if (!index) throw new Error(`课程不存在: ${courseId}`);
+    if (!index) throw new Error(tr(`课程不存在: ${courseId}`, `Course not found: ${courseId}`));
     const unit = index.units.find((u) => u.id === unitId);
-    if (!unit) throw new Error(`单元不存在: ${unitId}`);
+    if (!unit) throw new Error(tr(`单元不存在: ${unitId}`, `Lecture not found: ${unitId}`));
     if (patch.reviewed !== undefined) unit.reviewed = patch.reviewed;
     if (patch.has_summary !== undefined) unit.has_summary = patch.has_summary;
     this.writeIndex(index);

@@ -8,14 +8,8 @@
 import { useMemo, useState } from 'react';
 import type { MistakeView } from './api.ts';
 import { MathText } from './math.tsx';
-
-const VERDICT_LABEL: Record<string, string> = {
-  correct: '正确',
-  partial: '部分正确',
-  wrong: '有错',
-  unclear: '无法判定',
-  error: '检查失败',
-};
+import { useT } from './i18n.ts';
+import { verdictLabel } from './check-panel.tsx';
 
 function dateOf(ts: number): string {
   if (!ts) return '';
@@ -43,6 +37,7 @@ export function MistakesPanel({
   onToast,
   busy,
 }: MistakesPanelProps): JSX.Element {
+  const t = useT();
   const [onlyOpen, setOnlyOpen] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
@@ -58,44 +53,44 @@ export function MistakesPanel({
     const text = drafts[m.id] ?? m.lesson;
     if (text === m.lesson) return;
     await onPatch(m.id, { lesson: text });
-    onToast('教训已保存');
+    onToast(t('exercise.mistakes.lessonSaved'));
   };
 
   return (
     <div>
       <div className="lec-toolrow" style={{ marginTop: 0, marginBottom: 8 }}>
         <button type="button" className="lec-tab" data-active={onlyOpen ? '1' : '0'} onClick={() => setOnlyOpen(true)}>
-          未掌握 {openCount}
+          {t('exercise.mistakes.tab.open', { n: openCount })}
         </button>
         <button type="button" className="lec-tab" data-active={onlyOpen ? '0' : '1'} onClick={() => setOnlyOpen(false)}>
-          全部 {mistakes.length}
+          {t('exercise.mistakes.tab.all', { n: mistakes.length })}
         </button>
         <span className="lec-grow" />
         <button
           type="button"
           className="lec-btn lec-btn-ghost"
           disabled={busy || !unsynced}
-          title="把未同步的教训写进 worldbook（物理馆，热重载生效）"
+          title={t('exercise.mistakes.syncTitle')}
           onClick={onSyncWorldbook}
         >
-          同步{unsynced ? `（${unsynced}）` : ''}
+          {unsynced ? t('exercise.mistakes.syncCount', { n: unsynced }) : t('exercise.mistakes.sync')}
         </button>
       </div>
 
       {!list.length && (
-        <div className="lec-empty">{onlyOpen ? '没有未掌握的错题 —— 检查判错时会自动收进来' : '错题本还是空的'}</div>
+        <div className="lec-empty">{onlyOpen ? t('exercise.mistakes.emptyOpen') : t('exercise.mistakes.empty')}</div>
       )}
 
       {list.map((m) => (
         <div key={m.id} className="lec-mistake" data-mastered={m.mastered ? '1' : '0'}>
           <div className="lec-problem-head">
             <span className="lec-badge" data-kind={m.mastered ? 'checked' : 'needs_fix'}>
-              {VERDICT_LABEL[m.verdict] ?? m.verdict}
+              {verdictLabel(t, m.verdict)}
             </span>
             <span className="lec-mistake-path">
               {m.sheet_title || m.sheet_id} · {m.problem_label || m.problem_id}
             </span>
-            {m.in_worldbook && <span className="lec-badge">已进知识库</span>}
+            {m.in_worldbook && <span className="lec-badge">{t('exercise.mistakes.inWorldbook')}</span>}
             <span className="lec-grow" />
             <span className="lec-mistake-path">{dateOf(m.created_at)}</span>
           </div>
@@ -112,7 +107,7 @@ export function MistakesPanel({
 
           <textarea
             className="lec-mistake-lesson"
-            placeholder="这题教会我什么？（一句话就够，会写进知识库）"
+            placeholder={t('exercise.mistakes.lessonPlaceholder')}
             value={drafts[m.id] ?? m.lesson}
             onChange={(e) => setDrafts((prev) => ({ ...prev, [m.id]: e.currentTarget.value }))}
             onBlur={() => void saveLesson(m)}
@@ -120,9 +115,9 @@ export function MistakesPanel({
 
           {m.tags.length > 0 && (
             <div className="lec-toolrow">
-              {m.tags.slice(0, 5).map((t) => (
-                <span key={t} className="lec-badge">
-                  {t}
+              {m.tags.slice(0, 5).map((tag) => (
+                <span key={tag} className="lec-badge">
+                  {tag}
                 </span>
               ))}
             </div>
@@ -130,22 +125,26 @@ export function MistakesPanel({
 
           <div className="lec-toolrow">
             <button type="button" className="lec-btn lec-btn-ghost" onClick={() => onJump(m.course_id, m.sheet_id, m.problem_id)}>
-              回到原题
+              {t('exercise.mistakes.jump')}
             </button>
             <button
               type="button"
               className="lec-btn lec-btn-ghost"
-              onClick={() => void onPatch(m.id, { mastered: !m.mastered }).then(() => onToast(m.mastered ? '已取消"掌握"' : '标记为已掌握'))}
+              onClick={() =>
+                void onPatch(m.id, { mastered: !m.mastered }).then(() =>
+                  onToast(m.mastered ? t('exercise.mistakes.unmasteredToast') : t('exercise.mistakes.masteredToast')),
+                )
+              }
             >
-              {m.mastered ? '标记未掌握' : '我掌握了'}
+              {m.mastered ? t('exercise.mistakes.unmaster') : t('exercise.mistakes.master')}
             </button>
             <span className="lec-grow" />
             <button
               type="button"
               className="lec-del"
-              title="从错题本删除（不影响题目与答案）"
+              title={t('exercise.mistakes.deleteTitle')}
               onClick={() => {
-                if (window.confirm('从错题本删除这条？（不影响题目与答案）')) void onDelete(m.id);
+                if (window.confirm(t('exercise.mistakes.deleteConfirm'))) void onDelete(m.id);
               }}
             >
               ✕

@@ -28,6 +28,7 @@ export {
   COMBINING,
   SYMBOL_GROUP_COUNT,
 } from './symbol-data.js';
+export { SYMBOL_LABEL_EN, SYMBOL_HINT_EN } from './symbol-en.js';
 import { SYMBOL_DATA } from './symbol-data.js';
 
 /** 插入时的光标行为：决定插入后光标停在哪。 */

@@ -22,6 +22,7 @@ import { join, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { handoffSchema as lectureHandoffSchema, writeHandoff } from '@aemeath/dsh-plugin-lecture/handoff';
 import { shouldCollectMistake, sheetProgress, type CourseIndex, type Mistake, type Sheet } from './types.js';
+import { tr } from './locale.js';
 
 /** 习题握手包 = lecture 的通用字段 + 习题专有字段。 */
 export const exerciseHandoffSchema = lectureHandoffSchema.extend({
@@ -101,9 +102,12 @@ export function buildExerciseHandoff(input: BuildExerciseHandoffInput): Exercise
     if (submitted) {
       claims.push({
         unit: sheet.id,
-        entity: '用户',
+        entity: tr('用户', 'User'),
         attribute: 'ubung_progress',
-        value: `Übungsblatt ${sheet.number} 已提交（${prog.answered}/${prog.total} 题作答，${prog.checked} 题检查通过）`,
+        value: tr(
+          `Übungsblatt ${sheet.number} 已提交（${prog.answered}/${prog.total} 题作答，${prog.checked} 题检查通过）`,
+          `Übungsblatt ${sheet.number} submitted (${prog.answered}/${prog.total} answered, ${prog.checked} passed the check)`,
+        ),
       });
     }
 
@@ -119,7 +123,7 @@ export function buildExerciseHandoff(input: BuildExerciseHandoffInput): Exercise
     weakPoints.push({
       unit: m.sheet_id,
       topic: `${m.problem_label || m.problem_id}：${text}`.slice(0, 200),
-      evidence: m.verdict === 'partial' ? '检查：部分正确' : '检查：错误',
+      evidence: m.verdict === 'partial' ? tr('检查：部分正确', 'Check: partially correct') : tr('检查：错误', 'Check: wrong'),
       // 未掌握的错题更需要被主 agent 提醒
       confidence: m.mastered ? 0.4 : 0.75,
     });
@@ -194,11 +198,14 @@ export function describeExerciseHandoff(h: ExerciseHandoff): string {
   const submitted = h.progress.filter((p) => p.reviewed).length;
   const unmastered = h.mistakes.filter((m) => !m.mastered).length;
   return [
-    `课程：${h.course.title}（${h.course.id}${h.course.module ? ` / ${h.course.module}` : ''}）`,
-    `套数：${h.progress.length}，其中已提交 ${submitted}`,
-    `错题：${h.mistakes.length} 条（未掌握 ${unmastered}）`,
-    `经验：${h.lessons.length} 条`,
-    `生成时间：${h.generated_at}`,
+    tr(
+      `课程：${h.course.title}（${h.course.id}${h.course.module ? ` / ${h.course.module}` : ''}）`,
+      `Course: ${h.course.title} (${h.course.id}${h.course.module ? ` / ${h.course.module}` : ''})`,
+    ),
+    tr(`套数：${h.progress.length}，其中已提交 ${submitted}`, `Sheets: ${h.progress.length}, ${submitted} submitted`),
+    tr(`错题：${h.mistakes.length} 条（未掌握 ${unmastered}）`, `Mistakes: ${h.mistakes.length} (${unmastered} not mastered)`),
+    tr(`经验：${h.lessons.length} 条`, `Lessons: ${h.lessons.length}`),
+    tr(`生成时间：${h.generated_at}`, `Generated at: ${h.generated_at}`),
   ].join('\n');
 }
 

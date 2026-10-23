@@ -33,26 +33,29 @@ import { ImportDialog } from './import-dialog.tsx';
 import { insertIntoActiveEditor } from './answer-editor.tsx';
 import { MathText } from './math.tsx';
 import { EX_CLASS } from './styles.ts';
+import { t as translate, useT } from './i18n.ts';
+import { verdictLabel } from './check-panel.tsx';
 
 type Tab = 'symbols' | 'mistakes' | 'lessons' | 'progress';
+type Translate = (key: string, params?: Record<string, unknown>) => string;
 
 export interface WorkbenchProps {
   onClose: () => void;
   standalone?: boolean;
 }
 
-function dueText(m: SheetMetaView): string {
+function dueText(t: Translate, m: SheetMetaView): string {
   if (m.due_in_days == null) return '';
-  if (m.due_in_days < 0) return `过期 ${-m.due_in_days} 天`;
-  if (m.due_in_days === 0) return '今天截止';
-  return `还有 ${m.due_in_days} 天`;
+  if (m.due_in_days < 0) return t('exercise.wb.due.overdue', { n: -m.due_in_days });
+  if (m.due_in_days === 0) return t('exercise.wb.due.today');
+  return t('exercise.wb.due.inDays', { n: m.due_in_days });
 }
 
 /** File → base64（不带 data: 前缀；后端自己嗅探格式）。 */
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.onerror = () => reject(new Error(translate('exercise.common.readFileFailed')));
     reader.onload = () => {
       const s = String(reader.result ?? '');
       resolve(s.includes(',') ? s.slice(s.indexOf(',') + 1) : s);
@@ -61,6 +64,7 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.Element {
+  const t = useT();
   const [courses, setCourses] = useState<CourseView[]>([]);
   const [courseId, setCourseId] = useState('');
   const [sheet, setSheet] = useState<SheetView | null>(null);
@@ -161,7 +165,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
         patch,
       });
       setSheet(r.sheet);
-      if (r.stale) showToast(`答案已更新 —— ${r.stale} 条旧检查已标记过期`);
+      if (r.stale) showToast(t('exercise.wb.toast.answerUpdated', { n: r.stale }));
     },
     [courseId, sheet, showToast],
   );
@@ -177,9 +181,9 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       });
       setSheet(r.sheet);
       await loadMistakes();
-      showToast(`检查完成：${r.check.verdict}`);
+      showToast(t('exercise.wb.toast.checked', { verdict: verdictLabel(t, r.check.verdict) }));
     } catch (e) {
-      showToast(`检查失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.checkFailed', { error: (e as Error).message }));
     } finally {
       setBusyProblem('');
     }
@@ -190,9 +194,9 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     try {
       await apiPost('collect_mistake', { course_id: courseId, sheet_id: sheet.id, problem_id: problemId });
       await refreshAfterWrite();
-      showToast('已加入错题本 —— 右栏「错题本」里补写教训');
+      showToast(t('exercise.wb.toast.collected'));
     } catch (e) {
-      showToast(`加入失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.collectFailed', { error: (e as Error).message }));
     }
   };
 
@@ -202,7 +206,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       const r = await apiPost<{ sheet: SheetView }>('add_problem', { course_id: courseId, sheet_id: sheet.id });
       setSheet(r.sheet);
     } catch (e) {
-      showToast(`添加失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.addFailed', { error: (e as Error).message }));
     }
   };
 
@@ -216,33 +220,31 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       });
       setSheet(r.sheet);
     } catch (e) {
-      showToast(`删除失败：${(e as Error).message}`);
+      showToast(t('exercise.common.deleteFailed', { error: (e as Error).message }));
     }
   };
 
   const newSheet = async (): Promise<void> => {
     if (!courseId) {
-      showToast('先在左栏导入一份 PDF（会同时建课程）');
+      showToast(t('exercise.wb.toast.importFirst'));
       return;
     }
-    const title = window.prompt('这套题的主题（可留空）', '') ?? '';
-    const due = window.prompt('截止日 YYYY-MM-DD（可留空）', '') ?? '';
+    const title = window.prompt(t('exercise.wb.prompt.sheetTitle'), '') ?? '';
+    const due = window.prompt(t('exercise.wb.prompt.sheetDue'), '') ?? '';
     try {
       const r = await apiPost<{ sheet: SheetView }>('create', { course_id: courseId, title, due });
       await loadCourses();
       await loadSheet(courseId, r.sheet.id);
-      showToast(`已新建 Übungsblatt ${r.sheet.number}（附上了当前学习进度）`);
+      showToast(t('exercise.wb.toast.sheetCreated', { number: r.sheet.number }));
     } catch (e) {
-      showToast(`新建失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.createFailed', { error: (e as Error).message }));
     }
   };
 
   /** 重新分块：默认**用 LLM**（regex 对 LaTeX 排版基本没救）。 */
   const resplit = async (useLlm: boolean): Promise<void> => {
     if (!courseId || !sheet) return;
-    const tip = useLlm
-      ? '用 LLM 重新分块？会用原文（source.md）重新识别题目边界，按题号保留已有答案。'
-      : '用规则重新分块？按 Aufgabe/数字题号切分，按题号保留已有答案。';
+    const tip = useLlm ? t('exercise.wb.confirm.resplitLlm') : t('exercise.wb.confirm.resplitRules');
     if (!window.confirm(tip)) return;
     setBusy(true);
     try {
@@ -252,9 +254,14 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
         use_llm: useLlm,
       });
       setSheet(r.sheet);
-      showToast(`已重新分块：${r.sheet.problems.length} 题${r.used_llm ? '（LLM）' : '（规则）'}`);
+      showToast(
+        t('exercise.wb.toast.resplit', {
+          n: r.sheet.problems.length,
+          mode: r.used_llm ? t('exercise.wb.toast.resplitLlm') : t('exercise.wb.toast.resplitRules'),
+        }),
+      );
     } catch (e) {
-      showToast(`重新分块失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.resplitFailed', { error: (e as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -273,11 +280,16 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       }>('export_text', {});
       await refreshAfterWrite();
       showToast(
-        `已导出文本到 ${r.dir}\n写 ${r.written.length} 个 · 未变 ${r.unchanged.length}` +
-          `${r.removed.length ? ` · 删 ${r.removed.length}` : ''}（共 ${r.files.length} 个文件）`,
+        t('exercise.wb.toast.exported', {
+          dir: r.dir,
+          written: r.written.length,
+          unchanged: r.unchanged.length,
+          removed: r.removed.length ? t('exercise.wb.toast.exportedRemoved', { n: r.removed.length }) : '',
+          files: r.files.length,
+        }),
       );
     } catch (e) {
-      showToast(`导出失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.exportFailed', { error: (e as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -297,9 +309,16 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       );
       await refreshAfterWrite();
       showToast(
-        `提交包已生成：${r.pages} 页（${Math.round(r.bytes / 1024)} KB，${r.renderer ?? '浏览器'}）—— 正在下载` +
+        t('exercise.wb.toast.submission', {
+          pages: r.pages,
+          kb: Math.round(r.bytes / 1024),
+          renderer: r.renderer ?? t('exercise.wb.renderer.browser'),
+        }) +
           (r.math_warnings?.length
-            ? `\n⚠ 有 ${r.math_warnings.length} 处公式命令 KaTeX 不认（PDF 里会印成源码）：\n${r.math_warnings.join('\n')}`
+            ? t('exercise.wb.toast.submissionMathWarn', {
+                n: r.math_warnings.length,
+                list: r.math_warnings.join('\n'),
+              })
             : ''),
       );
       window.open(r.url, '_blank');
@@ -320,9 +339,15 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       });
       await loadMistakes();
       if (sheet) await loadSheet(courseId, sheet.id);
-      showToast(`worldbook：写入 ${r.written} 条，已存在 ${r.skipped} 条，失败 ${r.failed} 条（热重载 ≤3s 生效）`);
+      showToast(
+        t('exercise.wb.toast.worldbook', {
+          written: r.written,
+          skipped: r.skipped,
+          failed: r.failed,
+        }),
+      );
     } catch (e) {
-      showToast(`同步失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.syncFailed', { error: (e as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -332,9 +357,14 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     setBusy(true);
     try {
       const r = await apiPost<{ files: string[]; dir: string }>('export_handoff', { course_id: courseId || undefined });
-      showToast(`握手包已导出到 ${r.dir}\n${r.files.map((f) => f.split(/[\\/]/).pop()).join('、')}`);
+      showToast(
+        t('exercise.wb.toast.handoffExported', {
+          dir: r.dir,
+          files: r.files.map((f) => f.split(/[\\/]/).pop()).join(t('exercise.common.enumSep')),
+        }),
+      );
     } catch (e) {
-      showToast(`导出失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.exportFailed', { error: (e as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -352,15 +382,20 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
         outcomes?: string[];
       }>('import_handoff', { dry_run: true });
       if (pre.degraded) {
-        showToast(`只读预览（本 profile 没有 memory 服务）：\n${(pre.previews ?? []).join('\n')}`);
+        showToast(t('exercise.wb.toast.importPreview', { list: (pre.previews ?? []).join('\n') }));
         return;
       }
       const summary = (pre.outcomes ?? []).slice(0, 4).join('\n');
       const ok = window.confirm(
-        `试运行结果：记忆 ${pre.memories ?? 0} 条 · 世界书 ${pre.worldbook ?? 0} 条 · 跳过 ${pre.dropped ?? 0} 条\n\n${summary}\n\n确认写入？`,
+        t('exercise.wb.confirm.importHandoff', {
+          memories: pre.memories ?? 0,
+          worldbook: pre.worldbook ?? 0,
+          dropped: pre.dropped ?? 0,
+          summary,
+        }),
       );
       if (!ok) {
-        showToast('已取消（没有写入任何东西）');
+        showToast(t('exercise.wb.toast.importCancelled'));
         return;
       }
       const r = await apiPost<{ memories?: number; worldbook?: number; dropped?: number }>('import_handoff', {
@@ -368,9 +403,15 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       });
       await loadMistakes();
       if (sheet) await loadSheet(courseId, sheet.id);
-      showToast(`已导入：记忆 ${r.memories ?? 0} 条 · 世界书 ${r.worldbook ?? 0} 条 · 跳过 ${r.dropped ?? 0} 条`);
+      showToast(
+        t('exercise.wb.toast.imported', {
+          memories: r.memories ?? 0,
+          worldbook: r.worldbook ?? 0,
+          dropped: r.dropped ?? 0,
+        }),
+      );
     } catch (e) {
-      showToast(`导入失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.importFailed', { error: (e as Error).message }));
     } finally {
       setBusy(false);
     }
@@ -389,9 +430,9 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       });
       setSheet(r.sheet);
       setLessonDraft('');
-      showToast('经验已记录（可在「错题本」页同步进 worldbook）');
+      showToast(t('exercise.wb.toast.lessonAdded'));
     } catch (e) {
-      showToast(`记录失败：${(e as Error).message}`);
+      showToast(t('exercise.wb.toast.lessonFailed', { error: (e as Error).message }));
     }
   };
 
@@ -406,7 +447,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       });
       setSheet(r.sheet);
     } catch (e) {
-      showToast(`删除失败：${(e as Error).message}`);
+      showToast(t('exercise.common.deleteFailed', { error: (e as Error).message }));
     }
   };
 
@@ -444,8 +485,8 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     return (
       <div className={EX_CLASS} data-standalone={standalone ? '1' : '0'}>
         <div className="lec-empty lec-empty-big" style={{ margin: 'auto' }}>
-          <div className="lec-empty-h">习题</div>
-          <p>加载中…</p>
+          <div className="lec-empty-h">{t('exercise.wb.title')}</div>
+          <p>{t('exercise.common.loading')}</p>
         </div>
       </div>
     );
@@ -460,32 +501,32 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
         <button
           type="button"
           className="lec-icon-btn"
-          title={navOpen ? '收起套题列表' : '展开套题列表'}
+          title={navOpen ? t('exercise.wb.nav.collapse') : t('exercise.wb.nav.expand')}
           onClick={() => setNavOpen((v) => !v)}
         >
           {navOpen ? '‹' : '›'}
         </button>
-        <span className="lec-title">习题</span>
+        <span className="lec-title">{t('exercise.wb.title')}</span>
         <span className="lec-sub">
-          {sheet ? `${current?.title ?? courseId} · Übungsblatt ${sheet.number}` : '还没有题集'}
+          {sheet ? `${current?.title ?? courseId} · Übungsblatt ${sheet.number}` : t('exercise.wb.noSheet')}
         </span>
         <span className="lec-grow" />
         <button type="button" className="lec-btn-tiny" onClick={() => setImportOpen(true)}>
-          导入 PDF
+          {t('exercise.wb.importPdf')}
         </button>
         <button type="button" className="lec-btn-tiny" onClick={() => void newSheet()} disabled={!courseId}>
-          ＋ 新的一节
+          {t('exercise.wb.newSheet')}
         </button>
         <button type="button" className="lec-btn-tiny" onClick={() => void exportHandoff()} disabled={busy}>
-          导出握手
+          {t('exercise.wb.exportHandoff')}
         </button>
         <button type="button" className="lec-btn-tiny" onClick={() => void importHandoff()} disabled={busy}>
-          导入握手
+          {t('exercise.wb.importHandoff')}
         </button>
         <button type="button" className="lec-btn" onClick={() => void buildSubmission()} disabled={busy || !sheet}>
-          {busy ? '处理中…' : '生成提交 PDF'}
+          {busy ? t('exercise.wb.processing') : t('exercise.wb.buildSubmission')}
         </button>
-        <button type="button" className="lec-icon-btn" title="关闭" onClick={onClose}>
+        <button type="button" className="lec-icon-btn" title={t('exercise.common.close')} onClick={onClose}>
           ✕
         </button>
       </div>
@@ -498,9 +539,9 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
 
             {!courses.length && (
               <div className="lec-hint" style={{ padding: '0 10px' }}>
-                还没有课程。
+                {t('exercise.wb.noCourses')}
                 <br />
-                点上方「导入 PDF」开始。
+                {t('exercise.wb.noCoursesHint')}
               </div>
             )}
 
@@ -514,7 +555,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                       type="button"
                       className="lec-course-toggle"
                       aria-expanded={isOpen}
-                      title={isOpen ? '收起这门课' : '展开这门课'}
+                      title={isOpen ? t('exercise.wb.course.collapse') : t('exercise.wb.course.expand')}
                       onClick={() => setCollapsed((prev) => ({ ...prev, [c.course_id]: isOpen }))}
                     >
                       {isOpen ? '▾' : '▸'}
@@ -527,7 +568,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                   </div>
                   {isOpen && c.sheets.length === 0 ? (
                     <div className="lec-hint" style={{ padding: '2px 10px 6px' }}>
-                      （还没有套题）
+                      {t('exercise.wb.noSheets')}
                     </div>
                   ) : null}
                   {isOpen
@@ -538,16 +579,20 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                             className="lec-unit"
                             data-active={sheet?.id === m.id ? '1' : '0'}
                             onClick={() => void selectSheet(c.course_id, m.id)}
-                            title={`${m.answered}/${m.total} 题 · ${m.next_hint}`}
+                            title={t('exercise.wb.unitTitle', {
+                              answered: m.answered,
+                              total: m.total,
+                              hint: m.next_hint,
+                            })}
                           >
                             <span className="lec-unit-title">
                               Blatt {m.number}
                               {m.title ? ` · ${m.title}` : ''}
                             </span>
                             <span className="lec-unit-meta">
-                              {m.answered}/{m.total} 题
-                              {m.needs_fix ? ` · 待修 ${m.needs_fix}` : ''}
-                              {dueText(m) ? ` · ${dueText(m)}` : ''}
+                              {t('exercise.wb.unitMeta', { answered: m.answered, total: m.total })}
+                              {m.needs_fix ? t('exercise.wb.needsFix', { n: m.needs_fix }) : ''}
+                              {dueText(t, m) ? ` · ${dueText(t, m)}` : ''}
                             </span>
                             <span className="lec-progress">
                               <i style={{ width: `${Math.max(2, m.percent)}%` }} />
@@ -561,24 +606,24 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
             })}
 
             <div className="lec-wb-navhead" style={{ marginTop: 10 }}>
-              工具
+              {t('exercise.wb.tools')}
             </div>
             <div style={{ padding: '0 8px 8px' }}>
               <button type="button" className="lec-btn" style={{ width: '100%', marginBottom: 6 }} onClick={() => sheet && openPdf('source_pdf')} disabled={!sheet?.source_pdf}>
-                打开原卷 PDF
+                {t('exercise.wb.openSourcePdf')}
               </button>
               <button type="button" className="lec-btn" style={{ width: '100%', marginBottom: 6 }} onClick={() => void resplit(true)} disabled={!sheet || busy}>
-                LLM 重新分块
+                {t('exercise.wb.resplitLlm')}
               </button>
               <button type="button" className="lec-btn lec-btn-ghost" style={{ width: '100%', marginBottom: 6 }} onClick={() => void resplit(false)} disabled={!sheet || busy}>
-                规则重新分块
+                {t('exercise.wb.resplitRules')}
               </button>
               <button type="button" className="lec-btn lec-btn-ghost" style={{ width: '100%', marginBottom: 6 }} onClick={() => void addProblem()} disabled={!sheet}>
-                ＋ 添加题目
+                {t('exercise.wb.addProblem')}
               </button>
               {sheet?.submitted_at ? (
                 <button type="button" className="lec-btn lec-btn-ghost" style={{ width: '100%', marginBottom: 6 }} onClick={() => openPdf('submission', true)}>
-                  下载上次提交包
+                  {t('exercise.wb.downloadSubmission')}
                 </button>
               ) : null}
               <button
@@ -587,9 +632,9 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                 style={{ width: '100%' }}
                 onClick={() => void exportText()}
                 disabled={busy}
-                title="把全部习题导出成 markdown（确定性输出，方便 git diff）"
+                title={t('exercise.wb.exportTextTitle')}
               >
-                导出文本
+                {t('exercise.wb.exportText')}
               </button>
             </div>
             {error ? <div className="lec-warn" style={{ padding: '0 10px' }}>{error}</div> : null}
@@ -601,9 +646,13 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
           <div className="lec-wb-scroll" ref={scrollRef}>
             {!sheet && (
               <div className="lec-empty lec-empty-big">
-                <div className="lec-empty-h">习题</div>
-                <p>在<b>左边</b>选一套题，或点上方「导入 PDF」。</p>
-                <p className="lec-hint">PDF 会由 LLM 拆成一道道题（识别不了就退回规则分块，再不行手补）。</p>
+                <div className="lec-empty-h">{t('exercise.wb.title')}</div>
+                <p>
+                  {t('exercise.wb.empty.lead')}
+                  <b>{t('exercise.wb.empty.strong')}</b>
+                  {t('exercise.wb.empty.tail')}
+                </p>
+                <p className="lec-hint">{t('exercise.wb.empty.hint')}</p>
               </div>
             )}
 
@@ -615,38 +664,38 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                     {sheet.title ? ` — ${sheet.title}` : ''}
                   </h1>
                   <span className="lec-hint">
-                    {progress?.answered ?? 0}/{progress?.total ?? 0} 题有答案 · 检查通过 {progress?.checked ?? 0}
-                    {progress?.needsFix ? ` · 待修 ${progress.needsFix}` : ''}
-                    {sheet.due ? ` · 截止 ${sheet.due}` : ''}
-                    {sheet.submitted_at ? ` · 已生成提交包（${sheet.submission_pages} 页）` : ''}
+                    {t('exercise.wb.summary', {
+                      answered: progress?.answered ?? 0,
+                      total: progress?.total ?? 0,
+                      checked: progress?.checked ?? 0,
+                    })}
+                    {progress?.needsFix ? t('exercise.wb.needsFix', { n: progress.needsFix }) : ''}
+                    {sheet.due ? t('exercise.wb.summaryDue', { date: sheet.due }) : ''}
+                    {sheet.submitted_at ? t('exercise.wb.submitted', { pages: sheet.submission_pages }) : ''}
                   </span>
                 </div>
 
                 {sheet.progress_digest && (
                   <div className="lec-digest">
-                    <b>开这套题时的学习进度</b>
+                    <b>{t('exercise.wb.progressDigest')}</b>
                     {sheet.progress_digest}
                   </div>
                 )}
                 {sheet.needs_manual_text && (
-                  <div className="lec-nextstep">
-                    PDF 抽不出可读文字（扫描版/公式为主）—— 请点每道题的「改题干」补上，或用「＋ 添加题目」。
-                  </div>
+                  <div className="lec-nextstep">{t('exercise.wb.needsManualText')}</div>
                 )}
                 {sheet.next_hint && <div className="lec-nextstep">{sheet.next_hint}</div>}
                 {printUrl && (
                   <div className="lec-nextstep">
-                    没找到本机 Chrome/Edge，自动生成失败。
+                    {t('exercise.wb.noChrome')}
                     <button type="button" className="lec-btn lec-btn-ghost" style={{ marginLeft: 6 }} onClick={openPrint}>
-                      打开打印页
+                      {t('exercise.wb.openPrint')}
                     </button>
                   </div>
                 )}
 
                 {sheet.problems.length === 0 && (
-                  <div className="lec-empty">
-                    这套题还没有题目 —— 用「＋ 添加题目」手填，或导入 PDF 让 LLM 拆题。
-                  </div>
+                  <div className="lec-empty">{t('exercise.wb.noProblems')}</div>
                 )}
 
                 {sheet.problems.map((p) => (
@@ -677,9 +726,9 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                           caption: file.name.replace(/\.[a-z0-9]+$/i, ''),
                         });
                         setSheet(r.sheet);
-                        showToast(`已附上图片：${file.name}（检查时会一起发给爱弥斯）`);
+                        showToast(t('exercise.wb.toast.imageAttached', { name: file.name }));
                       } catch (e) {
-                        showToast(`上传失败：${(e as Error).message}`);
+                        showToast(t('exercise.wb.toast.uploadFailed', { error: (e as Error).message }));
                       } finally {
                         setBusyProblem('');
                       }
@@ -694,7 +743,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                         });
                         setSheet(r.sheet);
                       } catch (e) {
-                        showToast(`删除失败：${(e as Error).message}`);
+                        showToast(t('exercise.common.deleteFailed', { error: (e as Error).message }));
                       }
                     }}
                     onRebuttal={async (text) => {
@@ -710,13 +759,13 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                         const last = r.sheet.problems.find((x) => x.id === p.id)?.rebuttals.at(-1);
                         showToast(
                           last?.outcome === 'conceded'
-                            ? '爱弥斯认错了 —— 已撤回那条批改'
+                            ? t('exercise.wb.toast.rebuttalConceded')
                             : last?.outcome === 'upheld'
-                              ? '她坚持原判，并给出了具体理由 —— 看下面的回复'
-                              : '答辩完成 —— 各有对错，看她怎么说',
+                              ? t('exercise.wb.toast.rebuttalUpheld')
+                              : t('exercise.wb.toast.rebuttalPartial'),
                         );
                       } catch (e) {
-                        showToast(`答辩失败：${(e as Error).message}`);
+                        showToast(t('exercise.wb.toast.rebuttalFailed', { error: (e as Error).message }));
                       } finally {
                         setBusyProblem('');
                       }
@@ -736,16 +785,16 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
         <aside className="lec-wb-side">
           <div className="lec-sidetabs">
             <button type="button" className="lec-sidetab" data-active={tab === 'symbols' ? '1' : '0'} onClick={() => setTab('symbols')}>
-              ∑ 符号
+              {t('exercise.wb.tab.symbols')}
             </button>
             <button type="button" className="lec-sidetab" data-active={tab === 'mistakes' ? '1' : '0'} onClick={() => setTab('mistakes')}>
-              错题本
+              {t('exercise.wb.tab.mistakes')}
             </button>
             <button type="button" className="lec-sidetab" data-active={tab === 'lessons' ? '1' : '0'} onClick={() => setTab('lessons')}>
-              经验
+              {t('exercise.wb.tab.lessons')}
             </button>
             <button type="button" className="lec-sidetab" data-active={tab === 'progress' ? '1' : '0'} onClick={() => setTab('progress')}>
-              进度
+              {t('exercise.wb.tab.progress')}
             </button>
           </div>
           <div className="lec-sidebody">
@@ -774,29 +823,31 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
             {tab === 'lessons' && (
               <div>
                 <div className="lec-hint">
-                  这套题教会我什么（一句话一条）。写完点「同步 worldbook」，主 agent 以后能提起。
+                  {t('exercise.wb.lessons.hint')}
                 </div>
                 <textarea
                   className="lec-mistake-lesson"
-                  placeholder="例如：角动量题先判守恒条件，再选轴 —— 轴选错一律白算。"
+                  placeholder={t('exercise.wb.lessons.placeholder')}
                   value={lessonDraft}
                   onChange={(e) => setLessonDraft(e.currentTarget.value)}
                 />
                 <div className="lec-toolrow">
                   <button type="button" className="lec-btn" onClick={() => void addLesson()} disabled={!lessonDraft.trim()}>
-                    记下这条经验
+                    {t('exercise.wb.lessons.add')}
                   </button>
                   <span className="lec-grow" />
                   <button type="button" className="lec-btn lec-btn-ghost" onClick={() => void syncWorldbook()} disabled={busy}>
-                    同步 worldbook
+                    {t('exercise.wb.lessons.sync')}
                   </button>
                 </div>
 
-                {(sheet?.lessons.length ?? 0) === 0 && <div className="lec-empty">这套题还没有经验条目</div>}
+                {(sheet?.lessons.length ?? 0) === 0 && <div className="lec-empty">{t('exercise.wb.lessons.empty')}</div>}
                 {sheet?.lessons.map((l) => (
                   <div key={l.id} className="lec-mistake">
                     <div className="lec-problem-head">
-                      <span className="lec-badge">{l.in_worldbook ? '已进知识库' : '待同步'}</span>
+                      <span className="lec-badge">
+                        {l.in_worldbook ? t('exercise.mistakes.inWorldbook') : t('exercise.wb.lessons.pendingSync')}
+                      </span>
                       <span className="lec-mistake-path">{new Date(l.created_at).toLocaleDateString()}</span>
                       <span className="lec-grow" />
                       <button type="button" className="lec-del" onClick={() => void deleteLesson(l.id)}>
@@ -811,28 +862,34 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
 
             {tab === 'progress' && (
               <div>
-                {!digest && <div className="lec-empty">选一门课才有进度</div>}
+                {!digest && <div className="lec-empty">{t('exercise.wb.progress.pickCourse')}</div>}
                 {digest && (
                   <>
-                    <div className="lec-hint">这就是每开一套新题时自动附上的摘要（也会进检查的 prompt）。</div>
+                    <div className="lec-hint">{t('exercise.wb.progress.hint')}</div>
                     <div className="lec-digest" style={{ marginTop: 0 }}>
-                      {digest.digest || '（还没有历史记录）'}
+                      {digest.digest || t('exercise.wb.progress.empty')}
                     </div>
                     <div className="lec-hint" style={{ marginTop: 10 }}>
                       <div>
-                        题集：{digest.stats.sheetsSubmitted}/{digest.stats.sheetsTotal} 已提交
+                        {t('exercise.wb.progress.sheets', {
+                          submitted: digest.stats.sheetsSubmitted,
+                          total: digest.stats.sheetsTotal,
+                        })}
                       </div>
                       <div>
-                        题目：{digest.stats.problemsAnswered}/{digest.stats.problemsTotal} 有答案
+                        {t('exercise.wb.progress.problems', {
+                          answered: digest.stats.problemsAnswered,
+                          total: digest.stats.problemsTotal,
+                        })}
                       </div>
-                      <div>检查通过：{digest.stats.checksPassed}</div>
-                      <div>未掌握错题：{digest.stats.unmasteredMistakes}</div>
+                      <div>{t('exercise.wb.progress.checks', { n: digest.stats.checksPassed })}</div>
+                      <div>{t('exercise.wb.progress.mistakes', { n: digest.stats.unmasteredMistakes })}</div>
                     </div>
                     {digest.stats.topWeakTags.length > 0 && (
                       <div className="lec-toolrow">
-                        {digest.stats.topWeakTags.map((t) => (
-                          <span key={t} className="lec-badge">
-                            {t}
+                        {digest.stats.topWeakTags.map((tag) => (
+                          <span key={tag} className="lec-badge">
+                            {tag}
                           </span>
                         ))}
                       </div>

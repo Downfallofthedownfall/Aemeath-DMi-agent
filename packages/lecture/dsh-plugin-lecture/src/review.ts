@@ -30,12 +30,16 @@ import {
 import { parseShorthand, textsOfKind } from './types.js';
 import type { AskLlm } from './transcriber.js';
 import { parseTranscribeOutput } from './transcriber.js';
+import { tr } from './locale.js';
 
 /** 复盘状态机。纯逻辑 + 可注入 LLM，便于单测。 */
 export class ReviewMachine {
   private state: ReviewState;
+  /** 输出语言（UI 语言）：决定 LLM 生成的对照/追问/候选条目用中文还是英文。 */
+  private readonly lang: 'zh' | 'en';
 
-  constructor(unitId: string, existing?: ReviewState | null) {
+  constructor(unitId: string, existing?: ReviewState | null, lang: 'zh' | 'en' = 'zh') {
+    this.lang = lang;
     this.state =
       existing ??
       {
@@ -59,7 +63,10 @@ export class ReviewMachine {
   /** 步骤顺序校验（防跳步——尤其防跳到第 4 步提前拿摘要）。 */
   private requireStep(...allowed: ReviewStep[]): void {
     if (!allowed.includes(this.state.step)) {
-      throw new Error(`复盘步骤不匹配：当前 ${this.state.step}，需要 ${allowed.join('/')}`);
+      throw new Error(tr(
+        `复盘步骤不匹配：当前 ${this.state.step}，需要 ${allowed.join('/')}`,
+        `Review step mismatch: currently ${this.state.step}, expected ${allowed.join('/')}`,
+      ));
     }
   }
 
@@ -101,6 +108,7 @@ export class ReviewMachine {
       '- 只做对比，不要讲解、不要补充知识、不要评价学生',
       '- 每条简短（≤40 字），用学生能看懂的说法',
       '- missed 与 wrong_or_vague 是后续补漏的重点，请准确',
+      this.lang === 'en' ? '- Write every JSON string in English.' : '',
       '',
       '=== 学生的回忆 ===',
       recall || '(空)',
@@ -165,7 +173,7 @@ export class ReviewMachine {
         ? `已有问答记录：\n${this.state.repair_turns.map((t) => `问：${t.question}\n答：${t.answer}`).join('\n')}`
         : '(这是第一个问题)',
       '',
-      '请输出你的下一个问题（只要问题本身，不要任何解释或答案）：',
+      this.lang === 'en' ? 'Write your next question in English (only the question itself, no explanation or answer):' : '请输出你的下一个问题（只要问题本身，不要任何解释或答案）：',
     ].join('\n');
   }
 
@@ -199,7 +207,10 @@ export class ReviewMachine {
   /** 构造候选条目提示词（此时才允许生成结构化摘要）。 */
   buildCandidatesPrompt(chunks: readonly RawChunk[], processing: ProcessingRecord | null): string {
     if (!this.canGenerateSummary()) {
-      throw new Error(`复盘尚未完成第 3 步（当前 ${this.state.step}），不允许生成结构化摘要（D4）`);
+      throw new Error(tr(
+        `复盘尚未完成第 3 步（当前 ${this.state.step}），不允许生成结构化摘要（D4）`,
+        `Review has not reached step 3 (currently ${this.state.step}); structured summary is not allowed yet (D4)`,
+      ));
     }
     const c = this.state.comparison;
     const recordLines = chunks
@@ -221,6 +232,7 @@ export class ReviewMachine {
       '- unresolved_questions：学生仍没搞懂的（从下方补漏记录与学生疑问中提取）',
       '- insights：关于学习方式的观察（可选）',
       '- 不要编造；不确定的宁可省略',
+      this.lang === 'en' ? '- Write every JSON string value in English.' : '',
       '',
       '=== 学生凭记忆说出的 ===',
       this.state.recall_text || '(空)',
@@ -240,8 +252,11 @@ export class ReviewMachine {
   }
 
   /** 解析候选条目输出。 */
-  static parseCandidates(raw: string | null, unitId: string): Candidates | null {
+  static parseCandidates(raw: string | null, unitId: string, lang: 'zh' | 'en' = 'zh'): Candidates | null {
     if (!raw) return null;
+    const defaults = lang === 'en'
+      ? { topic: 'Physics/Math', entity: 'User' }
+      : { topic: '物理/数学', entity: '用户' };
     let text = raw.trim();
     const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(text);
     if (fence) text = fence[1]!.trim();
@@ -258,13 +273,13 @@ export class ReviewMachine {
         worldbook_entries: Array.isArray(parsed.worldbook_entries)
           ? (parsed.worldbook_entries as Array<Record<string, unknown>>)
               .filter((e) => e && typeof e === 'object')
-              .map((e) => ({ title: String(e.title ?? ''), content: String(e.content ?? ''), topic: String(e.topic ?? '物理/数学') }))
+              .map((e) => ({ title: String(e.title ?? ''), content: String(e.content ?? ''), topic: String(e.topic ?? defaults.topic) }))
               .filter((e) => e.content)
           : [],
         entity_claims: Array.isArray(parsed.entity_claims)
           ? (parsed.entity_claims as Array<Record<string, unknown>>)
               .filter((e) => e && typeof e === 'object')
-              .map((e) => ({ entity: String(e.entity ?? '用户'), attribute: String(e.attribute ?? ''), value: String(e.value ?? '') }))
+              .map((e) => ({ entity: String(e.entity ?? defaults.entity), attribute: String(e.attribute ?? ''), value: String(e.value ?? '') }))
               .filter((e) => e.attribute && e.value)
           : [],
         unresolved_questions: arr(parsed.unresolved_questions),
@@ -324,6 +339,12 @@ export function looksLikeDirectAnswer(text: string): boolean {
     /应该是\s*[A-Za-z$\\(]/,
     /结论[:：]/,
     /根据.{0,10}定律.{0,20}(可得|得到)/,
+    // 英文输出同样要拦（UI 语言为 en 时模型会用英文直答）
+    /\bthe answer is\s+[A-Za-z0-9$\\]/i,
+    /\bcorrect (result|answer) is\b/i,
+    /\bderivation (is|follows)\b/i,
+    /\bhere('s| is) (the|a) (solution|derivation)\b/i,
+    /\bin conclusion,?\s/i,
   ];
   return signals.some((re) => re.test(text));
 }

@@ -23,9 +23,10 @@ import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Workbench } from './workbench.tsx';
 import { injectExerciseStyles } from './styles.ts';
+import { installI18n, useT } from './i18n.ts';
 
 export const name = 'aemeath-exercise-client';
-export const inject = ['slots'];
+export const inject = ['slots', 'locale'];
 
 /** 打开习题界面的窗口事件名（侧栏按钮派发）。 */
 export const EXERCISE_OPEN_EVENT = 'aemeath:open-exercise-mode';
@@ -91,6 +92,9 @@ function StandaloneMount(): void {
 }
 
 export function apply(ctx: ClientContext): void {
+  // i18n 先装：入口/工作台都依赖 t()。
+  installI18n(ctx);
+
   // 样式必须在插件加载时就注入：等到组件渲染才注入的话，
   // 首帧会以 position:static 挤在页面底部（lecture 踩过这个坑）。
   injectExerciseStyles();
@@ -122,6 +126,7 @@ export function apply(ctx: ClientContext): void {
 
 /** 侧边栏常驻入口（主 agent 内启动）。 */
 function Launcher(): JSX.Element {
+  const t = useT();
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -145,8 +150,8 @@ function Launcher(): JSX.Element {
   return (
     <button
       type="button"
-      title={open ? '习题（窗口已打开）' : '习题 Übungen'}
-      aria-label="习题"
+      title={open ? t('exercise.launcher.titleOpen') : t('exercise.launcher.title')}
+      aria-label={t('exercise.launcher.aria')}
       onClick={onClick}
       style={{
         display: 'inline-flex',

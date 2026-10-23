@@ -16,6 +16,8 @@
 // ============================================================
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { SYMBOL_GROUPS, type MathSymbol } from '../symbols.ts';
+import { useLocale, useT } from './i18n.ts';
+import { SYMBOL_HINT_EN, SYMBOL_LABEL_EN } from '../symbol-en.ts';
 
 /** 最近用过的分组（localStorage；让面板下次打开时落在常用的那组）。 */
 const RECENT_KEY = 'aemeath-lecture-symbol-group';
@@ -76,6 +78,8 @@ async function copyText(text: string): Promise<boolean> {
  *                 不传则退化为"只复制"（独立窗口以外没有输入框的场景）。
  */
 export function SymbolPanel({ onInsert }: { onInsert?: (latex: string, plainFallback?: string) => void } = {}): JSX.Element {
+  const t = useT();
+  const locale = useLocale();
   const [query, setQuery] = useState('');
   const [copied, setCopied] = useState('');
   /** 刚插入的符号（用于按钮上闪一下提示）。 */
@@ -101,17 +105,28 @@ export function SymbolPanel({ onInsert }: { onInsert?: (latex: string, plainFall
   );
 
   const searching = query.trim().length > 0;
+  /** 显示用标签（英文界面优先用 overlay，缺失回退中文原标签）。 */
+  const labelOf = (s: MathSymbol): string => (locale === 'en' ? SYMBOL_LABEL_EN[s.label] ?? s.label : s.label);
+  const hintOf = (s: MathSymbol): string =>
+    locale === 'en' ? SYMBOL_HINT_EN[s.hint ?? ''] ?? s.hint ?? '' : s.hint ?? '';
+  const groupLabelOf = (label: string): string => (locale === 'en' ? SYMBOL_LABEL_EN[label] ?? label : label);
+
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return SYMBOL_GROUPS;
     return SYMBOL_GROUPS.map((g) => ({
       ...g,
-      symbols: g.symbols.filter(
-        (s) =>
+      symbols: g.symbols.filter((s) => {
+        const enLabel = (SYMBOL_LABEL_EN[s.label] ?? '').toLowerCase();
+        const enHint = (SYMBOL_HINT_EN[s.hint ?? ''] ?? '').toLowerCase();
+        return (
           s.label.toLowerCase().includes(q) ||
           s.insert.toLowerCase().includes(q) ||
-          (s.hint ?? '').toLowerCase().includes(q),
-      ),
+          (s.hint ?? '').toLowerCase().includes(q) ||
+          enLabel.includes(q) ||
+          enHint.includes(q)
+        );
+      }),
     })).filter((g) => g.symbols.length > 0);
   }, [query]);
 
@@ -166,12 +181,12 @@ export function SymbolPanel({ onInsert }: { onInsert?: (latex: string, plainFall
         <input
           className="lec-input"
           style={{ padding: '5px 9px', fontSize: 12 }}
-          placeholder="搜索符号（积分 / sum / 矢量 …）"
+          placeholder={t('lecture.symbol.search')}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         {query ? (
-          <button type="button" className="lec-icon-btn" title="清空" onClick={() => setQuery('')}>
+          <button type="button" className="lec-icon-btn" title={t('common.clear')} onClick={() => setQuery('')}>
             ✕
           </button>
         ) : null}
@@ -180,22 +195,22 @@ export function SymbolPanel({ onInsert }: { onInsert?: (latex: string, plainFall
       {/* 用法提示 + 复制反馈 */}
       <div className="lec-hint" style={{ margin: '6px 10px 0' }}>
         {copied ? (
-          <span style={{ color: 'var(--aem-accent)', fontWeight: 600 }}>已复制 {copied} —— 到对话输入框粘贴</span>
+          <span style={{ color: 'var(--aem-accent)', fontWeight: 600 }}>{t('lecture.symbol.copied', { label: locale === 'en' ? SYMBOL_LABEL_EN[copied] ?? copied : copied })}</span>
         ) : (
-          <>点一下即<b>插入到下面输入框</b>的光标处，同时复制到剪贴板</>
+          <>{t('lecture.symbol.insertLead')}<b>{t('lecture.symbol.insertStrong')}</b>{t('lecture.symbol.insertTail')}</>
         )}
       </div>
 
       <div className="lec-sympanel-body">
-        {groups.length === 0 ? <div className="lec-hint">没有匹配的符号。</div> : null}
+        {groups.length === 0 ? <div className="lec-hint">{t('lecture.symbol.noMatch')}</div> : null}
         {groups.map((g) => {
           const open = searching || openGroups.has(g.id);
           return (
             <div key={g.id} className="lec-symgroup">
-              <div className="lec-symgroup-name" onClick={() => toggleGroup(g.id)} title="点击展开 / 收起">
+              <div className="lec-symgroup-name" onClick={() => toggleGroup(g.id)} title={t('lecture.symbol.toggle')}>
                 <span>{open ? '▾' : '▸'}</span>
-                {g.label}
-                <span style={{ opacity: 0.6 }}>（{g.symbols.length}）</span>
+                {groupLabelOf(g.label)}
+                <span style={{ opacity: 0.6 }}>{t('lecture.symbol.count', { n: g.symbols.length })}</span>
               </div>
               {open ? (
                 <div className="lec-symgrid">
@@ -209,12 +224,12 @@ export function SymbolPanel({ onInsert }: { onInsert?: (latex: string, plainFall
                       data-inserted={inserted === s.label ? '1' : '0'}
                       title={
                         s.hint
-                          ? `${s.label} — ${s.hint}\n点击：插入到输入框 + 复制「${s.insert}」`
-                          : `点击：插入到输入框 + 复制「${s.insert}」`
+                          ? t('lecture.symbol.tip', { label: labelOf(s), hint: hintOf(s), insert: s.insert })
+                          : t('lecture.symbol.tipNoHint', { insert: s.insert })
                       }
                       onClick={() => void onClick(s, g.id)}
                     >
-                      {s.label}
+                      {labelOf(s)}
                     </button>
                   ))}
                 </div>

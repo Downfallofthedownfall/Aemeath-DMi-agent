@@ -23,6 +23,7 @@
 // ============================================================
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MathMarkup } from './math-markup.tsx';
+import { useT } from './i18n.ts';
 
 export interface MathComposerApi {
   /**
@@ -91,8 +92,10 @@ export function MathComposer({
   onSubmit: (markdown: string) => Promise<void>;
   apiRef?: { current: MathComposerApi | null };
 }): JSX.Element {
+  const t = useT();
   const [text, setText] = useState('');
   const [hint, setHint] = useState('');
+  const [hintTone, setHintTone] = useState<'ok' | 'err'>('ok');
   const [showPreview, setShowPreview] = useState(true);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -154,13 +157,15 @@ export function MathComposer({
       await onSubmit(v);
       setText('');
       requestAnimationFrame(resize);
-      setHint('已记下');
+      setHint(t('lecture.composer.saved'));
+      setHintTone('ok');
       window.setTimeout(() => setHint(''), 1200);
     } catch (e) {
       // 失败不清空 —— 内容必须留住
-      setHint(`没记上：${(e as Error).message}`);
+      setHint(t('lecture.composer.failed', { error: (e as Error).message }));
+      setHintTone('err');
     }
-  }, [disabled, text, onSubmit, resize]);
+  }, [disabled, text, onSubmit, resize, t]);
 
   // 暴露给符号键盘
   useEffect(() => {
@@ -184,16 +189,16 @@ export function MathComposer({
     <div className="lec-composer">
       <div className="lec-composer-tabs">
         <span className="lec-composer-modelabel lec-composer-mode-static">
-          文字 + 公式（公式写成 <code>$...$</code>）
+          {t('lecture.composer.mode')} <code>$...$</code>{t('lecture.composer.modeTail')}
         </span>
         <button
           type="button"
           className="lec-composer-tab"
           data-active={showPreview ? '1' : '0'}
           onClick={() => setShowPreview((v) => !v)}
-          title={showPreview ? '收起预览' : '展开预览'}
+          title={showPreview ? t('lecture.composer.preview.collapse') : t('lecture.composer.preview.expand')}
         >
-          {showPreview ? '预览 ✓' : '预览'}
+          {showPreview ? t('lecture.composer.preview.on') : t('lecture.composer.preview.off')}
         </button>
       </div>
 
@@ -202,7 +207,7 @@ export function MathComposer({
           ref={taRef}
           className="lec-composer-input"
           rows={2}
-          placeholder={'写笔记：普通文字直接写；公式用 $ 包起来，例如 梯度 $\\nabla f$\nEnter 记下，Shift+Enter 换行'}
+          placeholder={t('lecture.composer.placeholder')}
           value={text}
           disabled={disabled}
           onChange={(e) => setText(e.target.value)}
@@ -219,13 +224,13 @@ export function MathComposer({
       {/* 预览：写的时候就能看到公式对不对 */}
       {showPreview && text.trim() ? (
         <div className="lec-composer-preview">
-          <div className="lec-composer-previewhead">预览</div>
+          <div className="lec-composer-previewhead">{t('lecture.composer.preview.heading')}</div>
           <MathMarkup text={text} />
         </div>
       ) : null}
 
       <div className="lec-composer-row">
-        <span className="lec-composer-hint" data-tone={hint.startsWith('没记上') ? 'err' : 'ok'}>
+        <span className="lec-composer-hint" data-tone={hintTone}>
           {hint}
         </span>
         <button
@@ -234,7 +239,7 @@ export function MathComposer({
           onClick={() => void submit()}
           disabled={disabled || !text.trim()}
         >
-          {disabled ? '记录中…' : '记下'}
+          {disabled ? t('lecture.composer.busy') : t('lecture.composer.submit')}
         </button>
       </div>
     </div>

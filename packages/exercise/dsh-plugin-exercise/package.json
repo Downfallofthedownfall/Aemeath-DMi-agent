@@ -50,7 +50,7 @@
     "build": "tsc -p tsconfig.json && node build-client.mjs",
     "build:client": "node build-client.mjs",
     "typecheck:client": "tsc -p tsconfig.client.json",
-    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs && node test/check7.mjs && node test/check8.mjs && node test/check9.mjs && node test/check10.mjs && node test/check11.mjs && node test/check12.mjs && node test/check13.mjs"
+    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs && node test/check7.mjs && node test/check8.mjs && node test/check9.mjs && node test/check10.mjs && node test/check11.mjs && node test/check12.mjs && node test/check13.mjs && node test/check-i18n.mjs"
   },
   "dsh": {
     "client": {
@@ -59,7 +59,8 @@
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-sidebar",
-        "@deepseek-ai/dsh-client-ui-renderer"
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale"
       ],
       "platform": "web"
     }
@@ -81,6 +82,7 @@
     "@deepseek-ai/dsh-client-ui-renderer": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-locale": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-credentials": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
@@ -102,6 +104,7 @@
     "@deepseek-ai/dsh-client-ui-renderer": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-locale": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-credentials": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",

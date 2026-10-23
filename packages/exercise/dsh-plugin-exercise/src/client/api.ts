@@ -6,6 +6,7 @@
 //   一整套 zod（~60KB）。前端只需要"视图"形状，所以在这里单独声明。
 //   （两边字段靠 host 的 zod parse 保证一致；测试里有一致性断言。）
 // ============================================================
+import { t } from './i18n.ts';
 
 export const API_BASE = '/aemeath/api/exercise';
 
@@ -188,9 +189,13 @@ export interface MistakeView {
 
 export interface SymbolView {
   label: string;
+  /** English display label（host 按当前 UI 语言附带；缺失回退 label）。 */
+  labelEn?: string;
   insert: string;
   caret?: string;
   hint?: string;
+  /** English hint（host 按当前 UI 语言附带；缺失回退 hint）。 */
+  hintEn?: string;
   /** structured = 带插槽的复合结构（∫ 上下限 / ∑ / 分式…），按钮样式更宽 */
   kind?: string;
   template?: string;
@@ -201,6 +206,8 @@ export interface SymbolView {
 export interface SymbolGroupView {
   id: string;
   label: string;
+  /** English group label（缺失回退 label）。 */
+  labelEn?: string;
   symbols: SymbolView[];
 }
 
@@ -233,7 +240,7 @@ async function parse<T>(resp: Response): Promise<T> {
   try {
     data = JSON.parse(text);
   } catch {
-    throw new Error(`服务返回了非 JSON（HTTP ${resp.status}）：${text.slice(0, 120)}`);
+    throw new Error(t('exercise.api.nonJson', { status: resp.status, body: text.slice(0, 120) }));
   }
   const obj = data as { ok?: boolean; error?: string };
   if (!resp.ok || obj.ok === false) {
@@ -261,7 +268,7 @@ export async function apiPost<T>(action: string, body: Record<string, unknown> =
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.onerror = () => reject(new Error(t('exercise.common.readFileFailed')));
     reader.onload = () => {
       const s = String(reader.result ?? '');
       const i = s.indexOf(',');

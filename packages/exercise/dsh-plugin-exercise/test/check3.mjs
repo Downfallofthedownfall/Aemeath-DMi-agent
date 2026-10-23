@@ -171,8 +171,8 @@ t('renderSheetMarkdown 含题目/答案/检查/经验', () => {
   const md = store.renderSheetMarkdown(course, s);
   assert.match(md, /Übungsblatt 3/);
   assert.match(md, /Aufgabe 1/);
-  assert.match(md, /### 解答/);
-  assert.match(md, /检查（correct）/);
+  assert.match(md, /### Lösung/);
+  assert.match(md, /Prüfung \(correct\)/);
   assert.match(md, /先判守恒条件/);
   // 导出只写**最近一次未过期**的检查；用内存对象构造一条错的，确认 issues 也会进导出
   const withWrong = {

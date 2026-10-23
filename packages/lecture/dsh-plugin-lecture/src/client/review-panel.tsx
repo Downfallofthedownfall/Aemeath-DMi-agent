@@ -13,6 +13,7 @@
 //    第 4 步之前也不请求 summary/candidates。
 // ============================================================
 import { useCallback, useEffect, useState } from 'react';
+import { useT } from './i18n.ts';
 
 const API = '/aemeath/api/lecture';
 
@@ -38,13 +39,13 @@ interface ReviewState {
 
 type Step = 'recall' | 'compare' | 'repair' | 'candidates' | 'commit' | 'done';
 
-const STEP_LABEL: Record<string, string> = {
-  recall: '第 1 步 · 你先说',
-  compare: '第 2 步 · 对照',
-  repair: '第 3 步 · 定点补漏',
-  candidates: '第 4 步 · 候选条目',
-  commit: '第 5 步 · 确认写入',
-  done: '已完成',
+const STEP_KEY: Record<string, string> = {
+  recall: 'lecture.review.step.recall',
+  compare: 'lecture.review.step.compare',
+  repair: 'lecture.review.step.repair',
+  candidates: 'lecture.review.step.candidates',
+  commit: 'lecture.review.step.commit',
+  done: 'lecture.review.step.done',
 };
 
 async function getJson<T>(url: string): Promise<T | null> {
@@ -76,6 +77,7 @@ export function ReviewPanel(props: {
   unitTitle: string;
   onFinished: () => Promise<void>;
 }): JSX.Element {
+  const t = useT();
   const { courseId, unitId, unitTitle, onFinished } = props;
   const [step, setStep] = useState<Step>('recall');
   const [state, setState] = useState<ReviewState | null>(null);
@@ -111,7 +113,7 @@ export function ReviewPanel(props: {
 
   const submitRecall = async (): Promise<void> => {
     if (!text.trim()) {
-      setErr('请先写下你记得的内容（这一步不看任何资料）。');
+      setErr(t('lecture.review.err.recallEmpty'));
       return;
     }
     setBusy(true);
@@ -125,7 +127,7 @@ export function ReviewPanel(props: {
     });
     setBusy(false);
     if (!r?.ok) {
-      setErr(r?.error ?? '提交失败');
+      setErr(r?.error ?? t('common.submitFailed'));
       return;
     }
     setStep('compare');
@@ -150,7 +152,7 @@ export function ReviewPanel(props: {
     });
     setBusy(false);
     if (!r?.ok) {
-      setErr(r?.error ?? '生成候选失败');
+      setErr(r?.error ?? t('lecture.review.err.candidatesFailed'));
       return;
     }
     setStep('commit');
@@ -164,7 +166,7 @@ export function ReviewPanel(props: {
         (c as Candidates).entity_claims.forEach((_, i) => (init[`c${i}`] = true));
         setChecked(init);
       } catch {
-        setErr('候选条目解析失败');
+        setErr(t('lecture.review.err.parseCandidates'));
       }
     }
   };
@@ -193,7 +195,7 @@ export function ReviewPanel(props: {
     });
     setBusy(false);
     if (!r?.ok) {
-      setErr(r?.error ?? '写入失败');
+      setErr(r?.error ?? t('common.writeFailed'));
       return;
     }
     setHandoff({ files: r.handoff_files ?? [], dir: r.handoff_dir ?? '' });
@@ -204,9 +206,9 @@ export function ReviewPanel(props: {
   return (
     <div className="lec-review">
       <span className="lec-step" data-step={step}>
-        {STEP_LABEL[step] ?? step}
+        {t(STEP_KEY[step] ?? step)}
       </span>
-      <p className="lec-label">{unitTitle} · 课后复盘</p>
+      <p className="lec-label">{unitTitle} · {t('lecture.review.subtitle')}</p>
 
       {err ? <div className="lec-warn">{err}</div> : null}
 
@@ -214,10 +216,10 @@ export function ReviewPanel(props: {
       {step === 'recall' ? (
         <div>
           <div className="lec-notice">
-            <b>凭记忆说</b>：这节课你记得什么？想到多少说多少，不用完整。
+            <b>{t('lecture.review.recall.strong')}</b>{t('lecture.review.recall.body')}
             <br />
             <span className="lec-hint">
-              不要查看上面的速记——这一步的意义就在于先调用你自己的记忆。
+              {t('lecture.review.recall.hint')}
             </span>
           </div>
           <textarea
@@ -225,11 +227,11 @@ export function ReviewPanel(props: {
             style={{ minHeight: 160 }}
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="我记得这节课讲了…"
+            placeholder={t('lecture.review.recall.placeholder')}
           />
           <div className="lec-actions">
             <button type="button" className="lec-btn" disabled={busy} onClick={() => void submitRecall()}>
-              {busy ? '对照中…' : '说完了，对照一下'}
+              {busy ? t('lecture.review.recall.busy') : t('lecture.review.recall.submit')}
             </button>
           </div>
         </div>
@@ -239,10 +241,10 @@ export function ReviewPanel(props: {
       {step === 'compare' ? (
         <div>
           <ComparisonGrid comparison={state?.comparison ?? null} />
-          <div className="lec-notice">接下来做定点补漏：只针对「漏了 / 记错」的点，我先不告诉你答案。</div>
+          <div className="lec-notice">{t('lecture.review.compare.notice')}</div>
           <div className="lec-actions">
             <button type="button" className="lec-btn" disabled={busy} onClick={() => void nextFromRepair()}>
-              开始补漏
+              {t('lecture.review.compare.start')}
             </button>
           </div>
         </div>
@@ -252,11 +254,11 @@ export function ReviewPanel(props: {
       {step === 'repair' ? (
         <div>
           <div className="lec-notice">
-            我会针对你漏掉/记错的点提问，<b>先自己回答</b>。答不上来也没关系，说"不知道"我再给最小提示。
+            {t('lecture.review.repair.lead')}<b>{t('lecture.review.repair.strong')}</b>{t('lecture.review.repair.tail')}
           </div>
           {question ? (
             <div className="lec-card">
-              <b>问题</b>
+              <b>{t('lecture.review.repair.question')}</b>
               <p className="lec-pre" style={{ marginTop: 6 }}>
                 {question}
               </p>
@@ -267,7 +269,7 @@ export function ReviewPanel(props: {
             style={{ minHeight: 100 }}
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="你的回答…"
+            placeholder={t('lecture.review.repair.placeholder')}
           />
           <div className="lec-actions">
             <button
@@ -289,10 +291,10 @@ export function ReviewPanel(props: {
                 else if (r?.warning) setErr(r.warning);
               }}
             >
-              {busy ? '思考中…' : '回答'}
+              {busy ? t('lecture.review.repair.busy') : t('lecture.review.repair.answer')}
             </button>
             <button type="button" className="lec-btn" data-variant="ghost" disabled={busy} onClick={() => void nextFromRepair()}>
-              补漏够了，生成候选条目
+              {t('lecture.review.repair.finish')}
             </button>
           </div>
         </div>
@@ -302,31 +304,31 @@ export function ReviewPanel(props: {
       {step === 'commit' || step === 'candidates' ? (
         <div>
           <div className="lec-notice">
-            复盘完成，已生成候选条目。<b>逐条确认</b>——取消勾选的不会写入。
+            {t('lecture.review.commit.noticeLead')}<b>{t('lecture.review.commit.strong')}</b>{t('lecture.review.commit.noticeTail')}
           </div>
           {candidates ? (
             <>
               <CandidatesBlock
-                title="知识条目（→ Worldbook）"
+                title={t('lecture.review.commit.worldbook')}
                 items={candidates.worldbook_entries.map((e, i) => ({ key: `w${i}`, text: `${e.title}：${e.content}` }))}
                 checked={checked}
                 onToggle={(k, v) => setChecked((c) => ({ ...c, [k]: v }))}
               />
               <CandidatesBlock
-                title="学习状态断言"
+                title={t('lecture.review.commit.claims')}
                 items={candidates.entity_claims.map((e, i) => ({ key: `c${i}`, text: `${e.attribute} = ${e.value}` }))}
                 checked={checked}
                 onToggle={(k, v) => setChecked((c) => ({ ...c, [k]: v }))}
               />
-              <CandidatesBlock title="仍未解决" items={candidates.unresolved_questions.map((q, i) => ({ key: `q${i}`, text: q }))} checked={{}} onToggle={() => undefined} readOnly />
-              <CandidatesBlock title="学习洞察" items={candidates.insights.map((q, i) => ({ key: `i${i}`, text: q }))} checked={{}} onToggle={() => undefined} readOnly />
+              <CandidatesBlock title={t('lecture.review.commit.unresolved')} items={candidates.unresolved_questions.map((q, i) => ({ key: `q${i}`, text: q }))} checked={{}} onToggle={() => undefined} readOnly />
+              <CandidatesBlock title={t('lecture.review.commit.insights')} items={candidates.insights.map((q, i) => ({ key: `i${i}`, text: q }))} checked={{}} onToggle={() => undefined} readOnly />
             </>
           ) : (
-            <div className="lec-hint">候选条目为空（可能 LLM 不可用）。</div>
+            <div className="lec-hint">{t('lecture.review.commit.empty')}</div>
           )}
           <div className="lec-actions">
             <button type="button" className="lec-btn" disabled={busy} onClick={() => void doCommit()}>
-              {busy ? '写入中…' : '确认写入'}
+              {busy ? t('lecture.review.commit.busy') : t('lecture.review.commit.submit')}
             </button>
           </div>
         </div>
@@ -334,7 +336,7 @@ export function ReviewPanel(props: {
 
       {step === 'done' ? (
         <div className="lec-ok">
-          <div>复盘完成 ✓ 这一讲的知识条目与短板已记录。</div>
+          <div>{t('lecture.review.done.summary')}</div>
 
           {/* ⚠️ 必须说清"记到哪了"。早先这里只写"已记录"，
               用户以为已经同步进主记忆（"前端说写入主agent了，但是肯定没有"）。
@@ -343,7 +345,7 @@ export function ReviewPanel(props: {
             {handoff.files.length ? (
               <>
                 <div>
-                  <b>已导出握手包</b>（供主 agent 导入）：
+                  <b>{t('lecture.review.done.handoffStrong')}</b>{t('lecture.review.done.handoffFor')}
                 </div>
                 {handoff.files.map((f) => (
                   <div key={f} style={{ marginLeft: 10, wordBreak: 'break-all' }}>
@@ -351,11 +353,10 @@ export function ReviewPanel(props: {
                   </div>
                 ))}
                 <div style={{ marginTop: 6 }}>
-                  <b>下一步</b>：把上面的文件复制到主 agent 那台机器，然后对它说
-                  「导入讲义进度」即可（会自动过守门员再写入主记忆）。
+                  <b>{t('lecture.review.done.nextStrong')}</b>{t('lecture.review.done.nextBody')}
                 </div>
                 <div style={{ marginTop: 4, opacity: 0.8 }}>
-                  注意：这一步**不会自动发生** —— 课堂机与主 agent 常常不在同一台设备上。
+                  {t('lecture.review.done.noteLead')}<b>{t('lecture.review.done.noteStrong')}</b>{t('lecture.review.done.noteTail')}
                 </div>
                 <button
                   type="button"
@@ -365,13 +366,12 @@ export function ReviewPanel(props: {
                     void navigator.clipboard?.writeText(handoff.files.join('\n'));
                   }}
                 >
-                  复制文件路径
+                  {t('lecture.review.done.copyPaths')}
                 </button>
               </>
             ) : (
               <div>
-                未生成握手包（导出可能失败，见日志）。知识条目已存本机，
-                可在主 agent 侧用 <code>lecture_export_handoff</code> 重试。
+                {t('lecture.review.done.noHandoffLead')}<code>lecture_export_handoff</code>{t('lecture.review.done.noHandoffTail')}
               </div>
             )}
           </div>
@@ -382,17 +382,18 @@ export function ReviewPanel(props: {
 }
 
 function ComparisonGrid({ comparison }: { comparison: Comparison | null }): JSX.Element {
+  const t = useT();
   const cols: Array<{ kind: string; title: string; items: string[] }> = [
-    { kind: 'remembered', title: '我记住了', items: comparison?.remembered ?? [] },
-    { kind: 'missed', title: '我漏了', items: comparison?.missed ?? [] },
-    { kind: 'wrong', title: '我记错了 / 模糊', items: comparison?.wrong_or_vague ?? [] },
+    { kind: 'remembered', title: t('lecture.review.compare.remembered'), items: comparison?.remembered ?? [] },
+    { kind: 'missed', title: t('lecture.review.compare.missed'), items: comparison?.missed ?? [] },
+    { kind: 'wrong', title: t('lecture.review.compare.wrong'), items: comparison?.wrong_or_vague ?? [] },
   ];
   return (
     <div className="lec-col3">
       {cols.map((c) => (
         <div key={c.kind} className="lec-col" data-kind={c.kind}>
           <h4>
-            {c.title}（{c.items.length}）
+            {c.title}{t('lecture.review.compare.count', { n: c.items.length })}
           </h4>
           {c.items.length ? (
             <ul>
@@ -401,7 +402,7 @@ function ComparisonGrid({ comparison }: { comparison: Comparison | null }): JSX.
               ))}
             </ul>
           ) : (
-            <span className="lec-hint">（无）</span>
+            <span className="lec-hint">{t('common.none')}</span>
           )}
         </div>
       ))}

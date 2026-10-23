@@ -141,15 +141,15 @@ t('renderSheetText：元信息 + 题干 + 解答（保留 LaTeX）+ 检查 + 经
   const md = renderSheetText(course, sheet1, [mistake]);
   assert.ok(md.startsWith(EXPORT_HEADER));
   assert.match(md, /# Physik I · Übungsblatt 1 — Mechanik/);
-  assert.match(md, /\| 进度 \| 1\/2 题有答案/);
-  assert.match(md, /### Aufgabe 1（4 P）/);
+  assert.match(md, /\| Fortschritt \| 1\/2 Aufgaben mit Lösung/);
+  assert.match(md, /### Aufgabe 1 \(4 P\)/);
   assert.match(md, /\$g\\sin\\alpha\$/, '答案里的 LaTeX 要原样保留');
-  assert.match(md, /\*\*检查记录\*\*（1 次）/);
-  assert.match(md, /- 提示：如果把 \$I\$ 当常数/);
-  assert.match(md, /\*\*错题\*\*/);
-  assert.match(md, /## 这套题教会我什么/);
+  assert.match(md, /\*\*Prüfungen\*\* \(1\)/);
+  assert.match(md, /- Hinweis: 如果把 \$I\$ 当常数/);
+  assert.match(md, /\*\*Fehler\*\*/);
+  assert.match(md, /## Was ich aus diesem Blatt gelernt habe/);
   assert.match(md, /先判守恒条件再选轴/);
-  assert.match(md, /_（未作答）_/);
+  assert.match(md, /_\(noch nicht bearbeitet\)_/);
 });
 
 t('renderCourseText：套题按编号排序、链接到 md', () => {
@@ -162,14 +162,14 @@ t('renderCourseText：套题按编号排序、链接到 md', () => {
 
 t('renderMistakesText：未掌握优先，带结论/教训', () => {
   const md = renderMistakesText([mistake]);
-  assert.match(md, /未掌握 1 条/);
-  assert.match(md, /结论：部分正确/);
-  assert.match(md, /教训：受力图先画全/);
+  assert.match(md, /1 nicht beherrscht/);
+  assert.match(md, /Ergebnis: Teilweise richtig/);
+  assert.match(md, /Lektion: 受力图先画全/);
 });
 
 t('renderIndexText：总览统计（课程/套数/错题）', () => {
   const md = renderIndexText([{ index: course, sheets: [sheet1, sheet2] }], [mistake]);
-  assert.match(md, /共 1 门课 \/ 2 套题 \/ 1 条错题/);
+  assert.match(md, /1 Kurs \/ 2 Blätter \/ 1 Fehlereintrag/);
   assert.match(md, /\[Physik I\]\(\.\/physik-1\/README\.md\)/);
 });
 

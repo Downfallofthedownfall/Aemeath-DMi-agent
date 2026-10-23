@@ -20,6 +20,7 @@
 //   输出（那是它自己生成的受控标记）。
 // ============================================================
 import { useEffect, useMemo, useState } from 'react';
+import { t } from './i18n.ts';
 
 /** 懒加载 MathLive 的静态渲染器（只加载一次）。 */
 let rendererPromise: Promise<{ convertLatexToMarkup: (l: string) => string } | null> | null = null;
@@ -142,7 +143,7 @@ function InlineMath({ latex }: { latex: string }): JSX.Element {
   if (failed) {
     // 渲染器不可用：退回显示源码（至少能看清写了什么）
     return (
-      <code className="lec-math-src" title="公式渲染器不可用">
+      <code className="lec-math-src" title={t('lecture.math.rendererUnavailable')}>
         {latex}
       </code>
     );

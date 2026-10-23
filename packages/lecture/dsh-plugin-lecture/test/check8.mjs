@@ -736,7 +736,9 @@ t('独立模式铺满整窗（输入框由中栏自己提供）', () => {
 
 t('UI 文案指向中栏下面的输入框（与实际位置一致）', () => {
   const wb = readFileSync(join(root, 'src/client/workbench.tsx'), 'utf-8');
-  assert.match(wb, /下面的输入框/, '文案应指向中栏下面的输入框');
+  const locales = readFileSync(join(root, 'src/client/locales.ts'), 'utf-8');
+  assert.match(locales, /下面的输入框/, '文案应指向中栏下面的输入框');
+  assert.match(wb, /lecture\.wb\.empty\.inputBox/, '工作台应使用该 i18n key');
   assert.ok(!/主界面的对话/.test(wb), '不该再说"主界面"（mac 上没有主界面）');
   assert.ok(!/对话输入框/.test(wb), '不该再提"对话输入框"（那是已否掉的分屏方案）');
 });
@@ -792,9 +794,11 @@ t('笔记区自己滚动、输入框钉在底部', () => {
 
 t('提交失败不能吞（要有明确提示）', () => {
   const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  const locales = readFileSync(join(root, 'src/client/locales.ts'), 'utf-8');
   // 失败时**不清空**（清空只在成功分支里），所以内容天然还留着；
   // 同时给明确提示，不静默。
-  assert.match(mc, /没记上/, '应有明确失败提示');
+  assert.match(locales, /没记上/, '应有明确失败提示');
+  assert.match(mc, /lecture\.composer\.failed/, '失败提示应走 i18n key');
   assert.match(mc, /catch \(e\)/, '应捕获提交失败');
   // 清空只能发生在成功之后（在 catch 里清空就会丢掉用户内容）
   const catchSeg = mc.match(/catch \(e\)[\s\S]{0,220}/);
@@ -835,9 +839,11 @@ t('commit 返回握手文件路径（前端才能显示）', () => {
 });
 
 t('前端显示文件路径并说明"不会自动发生"', () => {
+  const locales = readFileSync(join(root, 'src/client/locales.ts'), 'utf-8');
   assert.match(rpSrc, /handoff_files/, '前端应读 handoff_files');
-  assert.match(rpSrc, /下一步/, '应说明下一步做什么');
-  assert.match(rpSrc, /不会自动发生/, '必须点明"这一步不会自动发生"——否则用户以为已同步');
+  assert.match(locales, /下一步/, '应说明下一步做什么');
+  assert.match(locales, /不会自动发生/, '必须点明"这一步不会自动发生"——否则用户以为已同步');
+  assert.match(rpSrc, /lecture\.review\.done\.nextStrong/, '下一步文案应走 i18n key');
   assert.ok(
     !/已记录。回到主 agent 后可用 lecture_export_handoff/.test(rpSrc),
     '不该再是旧的模糊说法（它让人以为已经同步了）',

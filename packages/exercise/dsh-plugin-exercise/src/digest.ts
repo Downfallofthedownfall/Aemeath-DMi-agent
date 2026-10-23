@@ -14,6 +14,7 @@
 // ============================================================
 
 import { sheetProgress, problemStatus, type Sheet, type Mistake } from './types.js';
+import { tr } from './locale.js';
 
 export interface LectureProgress {
   /** 已复盘的讲数 */
@@ -109,27 +110,48 @@ export function buildProgressDigest(input: DigestInput): DigestResult {
   }
 
   if (sheets.length === 0) {
-    lines.push('这是第一套 Übung —— 还没有历史记录，从读题、列已知量开始。');
+    lines.push(tr(
+      '这是第一套 Übung —— 还没有历史记录，从读题、列已知量开始。',
+      'This is the first Übung — no history yet. Start by reading the problem and listing the knowns.',
+    ));
   } else {
     // 1) 上次做到哪
     if (pending) {
       const prog = sheetProgress(pending);
       const d = daysUntil(pending.due, now);
-      const dueBit = d == null ? '' : d < 0 ? `（已过期 ${-d} 天）` : d === 0 ? '（今天截止）' : `（还有 ${d} 天）`;
+      const dueBit =
+        d == null
+          ? ''
+          : d < 0
+            ? tr(`（已过期 ${-d} 天）`, ` (overdue by ${-d} days)`)
+            : d === 0
+              ? tr('（今天截止）', ' (due today)')
+              : tr(`（还有 ${d} 天）`, ` (${d} days left)`);
       lines.push(
-        `上次没做完：Übungsblatt ${pending.number}${pending.title ? `（${pending.title}）` : ''} ` +
-          `已答 ${prog.answered}/${prog.total} 题${dueBit}`,
+        tr(
+          `上次没做完：Übungsblatt ${pending.number}${pending.title ? `（${pending.title}）` : ''} ` +
+            `已答 ${prog.answered}/${prog.total} 题${dueBit}`,
+          `Last unfinished: Übungsblatt ${pending.number}${pending.title ? ` (${pending.title})` : ''} ` +
+            `${prog.answered}/${prog.total} answered${dueBit}`,
+        ),
       );
     } else if (lastActive) {
-      lines.push(
+      lines.push(tr(
         `上次做到：Übungsblatt ${lastActive.sheet.number} 已答 ${lastActive.answered}/${lastActive.total} 题（已提交）`,
-      );
+        `Last worked on: Übungsblatt ${lastActive.sheet.number}, ${lastActive.answered}/${lastActive.total} answered (submitted)`,
+      ));
     } else {
       const last = sheets[sheets.length - 1]!;
-      lines.push(`上次完成：Übungsblatt ${last.number}${last.submitted_at ? '（已提交）' : ''}`);
+      lines.push(tr(
+        `上次完成：Übungsblatt ${last.number}${last.submitted_at ? '（已提交）' : ''}`,
+        `Last completed: Übungsblatt ${last.number}${last.submitted_at ? ' (submitted)' : ''}`,
+      ));
     }
     // 2) 累计
-    lines.push(`累计：${sheets.length} 套题、${problemsAnswered}/${problemsTotal} 题有答案，其中 ${checksPassed} 题检查通过`);
+    lines.push(tr(
+      `累计：${sheets.length} 套题、${problemsAnswered}/${problemsTotal} 题有答案，其中 ${checksPassed} 题检查通过`,
+      `Total: ${sheets.length} sheets, ${problemsAnswered}/${problemsTotal} answered, ${checksPassed} passed the check`,
+    ));
   }
 
   // 3) 错题本
@@ -137,22 +159,34 @@ export function buildProgressDigest(input: DigestInput): DigestResult {
   const tags = topTags(mistakes);
   if (unmastered.length) {
     lines.push(
-      `错题本：${unmastered.length} 条未掌握` + (tags.length ? `，薄弱主题：${tags.join(' / ')}` : ''),
+      tr(
+        `错题本：${unmastered.length} 条未掌握` + (tags.length ? `，薄弱主题：${tags.join(' / ')}` : ''),
+        `Mistakes: ${unmastered.length} not mastered` + (tags.length ? `, weak topics: ${tags.join(' / ')}` : ''),
+      ),
     );
     // 最近一条错题的"教训"最有价值（一句话，不堆内容）
     const recent = [...unmastered].sort((a, b) => b.updated_at - a.updated_at)[0];
     if (recent?.lesson?.trim()) {
-      lines.push(`最近一条教训（Blatt ${recent.sheet_id} ${recent.problem_label}）：${recent.lesson.trim().slice(0, 120)}`);
+      lines.push(tr(
+        `最近一条教训（Blatt ${recent.sheet_id} ${recent.problem_label}）：${recent.lesson.trim().slice(0, 120)}`,
+        `Latest lesson (Blatt ${recent.sheet_id} ${recent.problem_label}): ${recent.lesson.trim().slice(0, 120)}`,
+      ));
     }
   } else if (mistakes.length) {
-    lines.push(`错题本：${mistakes.length} 条全部已掌握，可以开始做新题了`);
+    lines.push(tr(
+      `错题本：${mistakes.length} 条全部已掌握，可以开始做新题了`,
+      `Mistakes: all ${mistakes.length} mastered — ready for a new sheet`,
+    ));
   }
 
   // 4) 课堂进度
   if (input.lecture && input.lecture.total > 0) {
     const l = input.lecture;
-    const latest = l.latest ? `，最近一讲「${l.latest.title}」(${l.latest.date})` : '';
-    lines.push(`课堂进度：已复盘 ${l.reviewed}/${l.total} 讲${latest}`);
+    const latest = l.latest ? tr(`，最近一讲「${l.latest.title}」(${l.latest.date})`, `, latest lecture "${l.latest.title}" (${l.latest.date})`) : '';
+    lines.push(tr(
+      `课堂进度：已复盘 ${l.reviewed}/${l.total} 讲${latest}`,
+      `Lecture progress: ${l.reviewed}/${l.total} reviewed${latest}`,
+    ));
   }
 
   const stats = {
@@ -173,11 +207,18 @@ export function buildProgressDigest(input: DigestInput): DigestResult {
  */
 export function nextActionHint(sheet: Sheet): string {
   const prog = sheetProgress(sheet);
-  if (prog.total === 0) return '还没有题目 —— 先导入 PDF 或手动加一道题';
+  if (prog.total === 0) return tr('还没有题目 —— 先导入 PDF 或手动加一道题', 'No problems yet — import a PDF or add one manually');
   const todo = sheet.problems.filter((p) => problemStatus(p) === 'todo');
-  if (todo.length) return `还有 ${todo.length} 题没写答案（${todo.map((p) => p.label || p.id).join('、')}）`;
+  if (todo.length)
+    return tr(
+      `还有 ${todo.length} 题没写答案（${todo.map((p) => p.label || p.id).join('、')}）`,
+      `${todo.length} problems still need an answer (${todo.map((p) => p.label || p.id).join(', ')})`,
+    );
   const fix = sheet.problems.filter((p) => problemStatus(p) === 'needs_fix');
-  if (fix.length) return `${fix.length} 题检查没过 —— 先按提示改，再重新检查`;
-  if (sheet.submitted_at === 0) return '所有题都检查通过了 —— 可以生成提交 PDF 了';
-  return `已生成提交包（${sheet.submission_pages} 页）—— 下载后上传到 Übungsbetrieb`;
+  if (fix.length) return tr(`${fix.length} 题检查没过 —— 先按提示改，再重新检查`, `${fix.length} problems failed the check — apply the hints, then check again`);
+  if (sheet.submitted_at === 0) return tr('所有题都检查通过了 —— 可以生成提交 PDF 了', 'All problems passed — you can generate the submission PDF');
+  return tr(
+    `已生成提交包（${sheet.submission_pages} 页）—— 下载后上传到 Übungsbetrieb`,
+    `Submission package generated (${sheet.submission_pages} pages) — download it and upload to Übungsbetrieb`,
+  );
 }

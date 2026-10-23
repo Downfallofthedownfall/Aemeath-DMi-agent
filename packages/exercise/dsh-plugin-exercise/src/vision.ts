@@ -23,6 +23,7 @@
 import { z } from 'zod';
 import { parseJsonLoose } from './checker.js';
 import type { SplitProblem } from './split.js';
+import { tr } from './locale.js';
 
 /** 多模态通道（index.ts 注入：直连 + 全局凭据 + 关闭推理）。 */
 export type AskVision = (
@@ -76,7 +77,7 @@ export interface VisionSegmentResult {
 }
 
 /** 组装单页的读图 prompt。 */
-export function buildVisionPrompt(page: number, total: number): string {
+export function buildVisionPrompt(page: number, total: number, lang: 'zh' | 'en' = 'zh'): string {
   const lines: string[] = [];
   lines.push(`你在看一份德语/英语的 Übungsblatt（大学物理/数学作业）的**第 ${page} 页（共 ${total} 页）的截图**。`);
   lines.push('');
@@ -89,7 +90,11 @@ export function buildVisionPrompt(page: number, total: number): string {
   lines.push('3. 若某题**从上一页延续**到本页：把上一页的题号写进 `continues`（如 "Aufgabe 2"），`text` 只写本页的**续文**，不要重复题号行。');
   lines.push('4. 若某题在本页**开始**（哪怕延续到下一页）：正常给 `label` 与本题在本页的文本。');
   lines.push('5. 页眉/页脚/页码/姓名栏/"Abgabe: …"/"bitte wenden" 都不属于任何题，别写进 `text`。');
-  lines.push('6. 有插图/示意图/表格：`has_figure` = true，`figure_note` 用一句话中文描述（例："斜面与物块的受力图"），并在 `text` 里保留图注文字（如 "Abb. 1"）。');
+  lines.push(
+    lang === 'en'
+      ? '6. If there is a figure/diagram/table: `has_figure` = true, describe it in one short **English** sentence in `figure_note` (e.g. "free-body diagram of a block on an incline"), and keep the original caption text (e.g. "Abb. 1") in `text`.'
+      : '6. 有插图/示意图/表格：`has_figure` = true，`figure_note` 用一句话中文描述（例："斜面与物块的受力图"），并在 `text` 里保留图注文字（如 "Abb. 1"）。',
+  );
   lines.push('7. `points` 从 `(4 Punkte)` / `[6 P]` / `（4 分）` 提取，没有就 null。');
   lines.push('8. `page` 一律填 ' + page + '。');
   lines.push('');
@@ -222,20 +227,20 @@ function firstLine(text: string): string {
 export async function segmentWithVision(
   pages: readonly VisionPage[],
   ask: AskVision,
-  opts: { maxTokens?: number } = {},
+  opts: { maxTokens?: number; lang?: 'zh' | 'en' } = {},
 ): Promise<VisionSegmentResult> {
-  if (!pages.length) return { ok: false, problems: [], pages: 0, error: '没有页面图片' };
+  if (!pages.length) return { ok: false, problems: [], pages: 0, error: tr('没有页面图片', 'No page images') };
   const total = pages.length;
   const collected: { page: number; problems: VisionProblem[] }[] = [];
   const raws: string[] = [];
 
   for (const p of [...pages].sort((a, b) => a.page - b.page)) {
-    const raw = await ask(buildVisionPrompt(p.page, total), [{ mediaType: p.mediaType, base64: p.base64 }], {
+    const raw = await ask(buildVisionPrompt(p.page, total, opts.lang ?? 'zh'), [{ mediaType: p.mediaType, base64: p.base64 }], {
       maxTokens: opts.maxTokens ?? 2500,
       purpose: `exercise-vision-${p.page}`,
     });
     if (!raw) {
-      return { ok: false, problems: [], pages: total, error: `第 ${p.page} 页：模型没有返回内容`, raw: raws.join('\n---\n') };
+      return { ok: false, problems: [], pages: total, error: tr(`第 ${p.page} 页：模型没有返回内容`, `Page ${p.page}: the model returned no content`), raw: raws.join('\n---\n') };
     }
     raws.push(raw);
     const problems = parseVisionOutput(raw);
@@ -244,7 +249,7 @@ export async function segmentWithVision(
         ok: false,
         problems: [],
         pages: total,
-        error: `第 ${p.page} 页：模型输出不是可解析的 JSON`,
+        error: tr(`第 ${p.page} 页：模型输出不是可解析的 JSON`, `Page ${p.page}: the model output is not parseable JSON`),
         raw: raw.slice(0, 1500),
       };
     }
@@ -253,7 +258,7 @@ export async function segmentWithVision(
 
   const merged = mergeVisionPages(collected);
   if (!merged.length) {
-    return { ok: false, problems: [], pages: total, error: '模型没有识别出任何题目', raw: raws.join('\n---\n').slice(0, 2000) };
+    return { ok: false, problems: [], pages: total, error: tr('模型没有识别出任何题目', 'The model did not recognise any problems'), raw: raws.join('\n---\n').slice(0, 2000) };
   }
   return { ok: true, problems: merged, pages: total, raw: raws.join('\n---\n') };
 }

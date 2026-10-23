@@ -10,6 +10,7 @@
 
 import { useState } from 'react';
 import { apiPost, fileToBase64, type SheetView } from './api.ts';
+import { useT } from './i18n.ts';
 
 export interface ImportDialogProps {
   open: boolean;
@@ -20,6 +21,7 @@ export interface ImportDialogProps {
 }
 
 export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast }: ImportDialogProps): JSX.Element | null {
+  const t = useT();
   const [courseId, setCourseId] = useState(defaultCourse ?? '');
   const [courseTitle, setCourseTitle] = useState('');
   const [title, setTitle] = useState('');
@@ -38,11 +40,11 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
     setWarnings([]);
     const cid = courseId.trim();
     if (!cid) {
-      setError('课程标识不能为空（例如 physik-1）');
+      setError(t('exercise.import.courseIdRequired'));
       return;
     }
     if (!file) {
-      setError('先选一份 PDF（或直接把文件拖进来）');
+      setError(t('exercise.import.fileRequired'));
       return;
     }
     setBusy(true);
@@ -61,7 +63,9 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
       setWarnings(w);
       onImported(cid, r.sheet, w);
       onToast(
-        w.length ? `已导入：${r.sheet.problems.length} 题（有 ${w.length} 条提示）` : `已导入：${r.sheet.problems.length} 题`,
+        w.length
+          ? t('exercise.import.toast.doneWithWarnings', { n: r.sheet.problems.length, w: w.length })
+          : t('exercise.import.toast.done', { n: r.sheet.problems.length }),
       );
       setBusy(false);
       if (!w.length) onClose();
@@ -74,34 +78,41 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
   return (
     <div className="lec-modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="lec-modal">
-        <h2>导入 Übungsblatt</h2>
-        <p>PDF 会抽出文字，**由 LLM 拆成题目**（识别不了就退回规则分块）。公式可在题干里用 $...$ 补。</p>
+        <h2>{t('exercise.import.title')}</h2>
+        <p>{t('exercise.import.lead')}</p>
 
         <div className="lec-field">
           <div className="lec-label">
-            课程标识<span className="lec-req">*</span>（英文短名，会作为文件夹名）
+            {t('exercise.import.courseIdLabel')}
+            <span className="lec-req">*</span>
+            {t('exercise.import.courseIdNote')}
           </div>
           <input className="lec-input" value={courseId} onChange={(e) => setCourseId(e.currentTarget.value)} placeholder="physik-1" />
         </div>
 
         <div style={{ display: 'flex', gap: 8 }}>
           <div className="lec-field" style={{ flex: 1 }}>
-            <div className="lec-label">课程全名（可留空）</div>
+            <div className="lec-label">{t('exercise.import.courseTitleLabel')}</div>
             <input className="lec-input" value={courseTitle} onChange={(e) => setCourseTitle(e.currentTarget.value)} placeholder="Physik I" />
           </div>
           <div className="lec-field" style={{ width: 110 }}>
-            <div className="lec-label">第几套</div>
-            <input className="lec-input" value={number} onChange={(e) => setNumber(e.currentTarget.value)} placeholder="自动" />
+            <div className="lec-label">{t('exercise.import.numberLabel')}</div>
+            <input
+              className="lec-input"
+              value={number}
+              onChange={(e) => setNumber(e.currentTarget.value)}
+              placeholder={t('exercise.import.numberPlaceholder')}
+            />
           </div>
         </div>
 
         <div style={{ display: 'flex', gap: 8 }}>
           <div className="lec-field" style={{ flex: 1 }}>
-            <div className="lec-label">主题（可留空）</div>
+            <div className="lec-label">{t('exercise.import.titleLabel')}</div>
             <input className="lec-input" value={title} onChange={(e) => setTitle(e.currentTarget.value)} placeholder="Mechanik" />
           </div>
           <div className="lec-field" style={{ width: 160 }}>
-            <div className="lec-label">截止日</div>
+            <div className="lec-label">{t('exercise.import.dueLabel')}</div>
             <input className="lec-input" type="date" value={due} onChange={(e) => setDue(e.currentTarget.value)} />
           </div>
         </div>
@@ -119,11 +130,13 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
             setHot(false);
             const f = e.dataTransfer.files?.[0];
             if (f && f.name.toLowerCase().endsWith('.pdf')) setFile(f);
-            else if (f) setError('只接受 PDF 文件');
+            else if (f) setError(t('exercise.import.pdfOnly'));
           }}
           onClick={() => document.getElementById('lec-pdf-input')?.click()}
         >
-          {file ? `${file.name}（${Math.round(file.size / 1024)} KB）` : '把 PDF 拖到这里，或点击选择文件'}
+          {file
+            ? t('exercise.import.fileChosen', { name: file.name, size: Math.round(file.size / 1024) })
+            : t('exercise.import.dropHint')}
         </div>
         <input
           id="lec-pdf-input"
@@ -139,7 +152,7 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
         {error && <div className="lec-warn" style={{ marginTop: 10 }}>{error}</div>}
         {warnings.length > 0 && (
           <div className="lec-warnbox">
-            导入提示：
+            {t('exercise.import.warnings')}
             <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
               {warnings.map((w, i) => (
                 <li key={i}>{w}</li>
@@ -150,10 +163,10 @@ export function ImportDialog({ open, defaultCourse, onClose, onImported, onToast
 
         <div className="lec-modal-actions">
           <button type="button" className="lec-btn lec-btn-ghost" onClick={onClose} disabled={busy}>
-            {warnings.length ? '完成' : '取消'}
+            {warnings.length ? t('exercise.common.done') : t('exercise.common.cancel')}
           </button>
           <button type="button" className="lec-btn" onClick={() => void submit()} disabled={busy}>
-            {busy ? '解析中…' : '导入'}
+            {busy ? t('exercise.import.parsing') : t('exercise.import.submit')}
           </button>
         </div>
       </div>

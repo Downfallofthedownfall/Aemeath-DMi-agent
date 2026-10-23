@@ -24,6 +24,9 @@
 import katex from 'katex';
 import { splitMathSegments } from './math-parse.js';
 
+type Lang = 'zh' | 'en';
+const pick = (lang: Lang, zh: string, en: string): string => (lang === 'en' ? en : zh);
+
 export interface MacroReplacement {
   from: string;
   to: string;
@@ -32,19 +35,31 @@ export interface MacroReplacement {
 }
 
 /** MathLive 专有宏 → KaTeX 通用写法（长模式在前）。 */
-export const MATHLIVE_MACROS: ReadonlyArray<{ from: string; to: string; note?: string }> = [
+export const MATHLIVE_MACROS: ReadonlyArray<{ from: string; to: string }> = [
   { from: '\\placeholder{}', to: '{}' },
-  { from: '\\placeholder', to: '{}', note: '\\placeholder 是 MathLive 的占位框，通用写法是 {}' },
+  { from: '\\placeholder', to: '{}' },
   { from: '\\differentialD', to: '\\mathrm{d}' },
-  {
-    from: '\\differentiald',
-    to: '\\mathrm{d}',
-    note: '\\differentiald 不是 MathLive 的宏（正确写法是 \\differentialD），已按 \\mathrm{d} 渲染',
-  },
+  { from: '\\differentiald', to: '\\mathrm{d}' },
   { from: '\\exponentialE', to: '\\mathrm{e}' },
   { from: '\\imaginaryI', to: '\\mathrm{i}' },
   { from: '\\imaginaryJ', to: '\\mathrm{j}' },
 ];
+
+/** 某个被替换的宏是否需要额外提示（提示随 UI 语言变化）。 */
+function macroNote(from: string, lang: Lang): string | undefined {
+  switch (from) {
+    case '\\placeholder':
+      return pick(lang, '\\placeholder 是 MathLive 的占位框，通用写法是 {}', '\\placeholder is MathLive’s placeholder box; the standard form is {}');
+    case '\\differentiald':
+      return pick(
+        lang,
+        '\\differentiald 不是 MathLive 的宏（正确写法是 \\differentialD），已按 \\mathrm{d} 渲染',
+        '\\differentiald is not a MathLive macro (the correct spelling is \\differentialD); rendered as \\mathrm{d}',
+      );
+    default:
+      return undefined;
+  }
+}
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -54,14 +69,14 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * @returns `tex` 归一化后的文本（**只在渲染用**，不要写回用户数据）；
  *          `replaced` 实际发生的替换（界面据此给"已按 X 渲染"的提示）。
  */
-export function normalizeMathLive(tex: string): { tex: string; replaced: MacroReplacement[] } {
+export function normalizeMathLive(tex: string, lang: Lang = 'zh'): { tex: string; replaced: MacroReplacement[] } {
   let out = tex ?? '';
   const replaced: MacroReplacement[] = [];
   for (const macro of MATHLIVE_MACROS) {
     const re = new RegExp(`${escapeRe(macro.from)}(?![A-Za-z])`, 'g');
     const before = out;
     out = out.replace(re, macro.to);
-    if (out !== before) replaced.push({ from: macro.from, to: macro.to, note: macro.note });
+    if (out !== before) replaced.push({ from: macro.from, to: macro.to, note: macroNote(macro.from, lang) });
   }
   // `\sum_{\placeholder{}}^{…}` → `\sum_{{}}^{{}}`：把多余的一层包裹收掉
   out = out.replace(/\{\{\}\}/g, '{}');
@@ -80,16 +95,23 @@ export interface MathIssue {
 }
 
 /** 给某个未定义命令的建议（已知 MathLive 宏 → 明确写法；其余 → 检查拼写）。 */
-export function hintForCommand(command: string): string {
+export function hintForCommand(command: string, lang: Lang = 'zh'): string {
   const known: Record<string, string> = {
-    '\\differentialD': '讲义（MathLive）专有宏，通用写法是 \\mathrm{d}',
-    '\\differentiald': '大小写写错了：MathLive 的宏是 \\differentialD，通用写法 \\mathrm{d}',
-    '\\exponentialE': '讲义（MathLive）专有宏，通用写法是 \\mathrm{e}',
-    '\\imaginaryI': '讲义（MathLive）专有宏，通用写法是 \\mathrm{i}',
-    '\\imaginaryJ': '讲义（MathLive）专有宏，通用写法是 \\mathrm{j}',
-    '\\placeholder': 'MathLive 的占位框语法，通用写法是 {}',
+    '\\differentialD': pick(lang, '讲义（MathLive）专有宏，通用写法是 \\mathrm{d}', 'MathLive-specific macro from the lecture; the standard form is \\mathrm{d}'),
+    '\\differentiald': pick(
+      lang,
+      '大小写写错了：MathLive 的宏是 \\differentialD，通用写法 \\mathrm{d}',
+      'Wrong capitalisation: the MathLive macro is \\differentialD; standard form \\mathrm{d}',
+    ),
+    '\\exponentialE': pick(lang, '讲义（MathLive）专有宏，通用写法是 \\mathrm{e}', 'MathLive-specific macro from the lecture; the standard form is \\mathrm{e}'),
+    '\\imaginaryI': pick(lang, '讲义（MathLive）专有宏，通用写法是 \\mathrm{i}', 'MathLive-specific macro from the lecture; the standard form is \\mathrm{i}'),
+    '\\imaginaryJ': pick(lang, '讲义（MathLive）专有宏，通用写法是 \\mathrm{j}', 'MathLive-specific macro from the lecture; the standard form is \\mathrm{j}'),
+    '\\placeholder': pick(lang, 'MathLive 的占位框语法，通用写法是 {}', 'MathLive placeholder syntax; the standard form is {}'),
   };
-  return known[command] ?? 'KaTeX 没有这个命令：检查拼写，或改用标准 LaTeX';
+  return (
+    known[command] ??
+    pick(lang, 'KaTeX 没有这个命令：检查拼写，或改用标准 LaTeX', 'KaTeX does not recognise this command: check the spelling or use standard LaTeX')
+  );
 }
 
 const UNDEFINED_RE = /Undefined control sequence:\s*(\\[A-Za-z]+)/;
@@ -101,7 +123,7 @@ const POSITION_RE = /at position (\d+)/;
  * 做法：先跑一次 `throwOnError:true`，从报错里抠出命令名；再把该命令替换成
  * 无关紧要的 `\mathrm{x}` 重试，直到没有新错误（最多 `max` 次，防止死循环）。
  */
-export function collectMathIssues(tex: string, opts: { max?: number } = {}): MathIssue[] {
+export function collectMathIssues(tex: string, opts: { max?: number; lang?: Lang } = {}): MathIssue[] {
   const max = opts.max ?? 5;
   let src = (tex ?? '').trim();
   if (!src) return [];
@@ -121,7 +143,7 @@ export function collectMathIssues(tex: string, opts: { max?: number } = {}): Mat
         command: cmd,
         position: Number(POSITION_RE.exec(message)?.[1] ?? -1),
         message,
-        hint: hintForCommand(cmd),
+        hint: hintForCommand(cmd, opts.lang ?? 'zh'),
       });
       src = src.replace(new RegExp(`${escapeRe(cmd)}(?![A-Za-z])`), '\\mathrm{x}');
     }
@@ -134,12 +156,12 @@ export function collectMathIssues(tex: string, opts: { max?: number } = {}): Mat
  *
  * 给答案编辑器的提示用（`MathText` 渲染的是同一批公式，所以提示和渲染不会错位）。
  */
-export function collectMathIssuesInText(text: string): MathIssue[] {
+export function collectMathIssuesInText(text: string, lang: Lang = 'zh'): MathIssue[] {
   const issues: MathIssue[] = [];
   const seen = new Set<string>();
   for (const seg of splitMathSegments(text ?? '')) {
     if (seg.kind !== 'math') continue;
-    for (const issue of collectMathIssues(normalizeMathLive(seg.tex).tex)) {
+    for (const issue of collectMathIssues(normalizeMathLive(seg.tex, lang).tex, { lang })) {
       if (seen.has(issue.command)) continue;
       seen.add(issue.command);
       issues.push(issue);
@@ -149,12 +171,12 @@ export function collectMathIssuesInText(text: string): MathIssue[] {
 }
 
 /** 一段文本里有哪些 MathLive 宏被兼容层"翻译"过（用于提示"已按 X 渲染"）。 */
-export function collectMathLiveReplacements(text: string): MacroReplacement[] {
+export function collectMathLiveReplacements(text: string, lang: Lang = 'zh'): MacroReplacement[] {
   const out: MacroReplacement[] = [];
   const seen = new Set<string>();
   for (const seg of splitMathSegments(text ?? '')) {
     if (seg.kind !== 'math') continue;
-    for (const r of normalizeMathLive(seg.tex).replaced) {
+    for (const r of normalizeMathLive(seg.tex, lang).replaced) {
       if (seen.has(r.from)) continue;
       seen.add(r.from);
       out.push(r);

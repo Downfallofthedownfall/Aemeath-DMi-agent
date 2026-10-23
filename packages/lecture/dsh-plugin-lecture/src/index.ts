@@ -42,6 +42,7 @@ import { transcribeChunk, looksLikeSummary, isOverExpanded, type AskLlm } from '
 import { ReviewMachine, looksLikeDirectAnswer } from './review.js';
 import { buildHandoff, filterReviewed, writeHandoff, describeHandoff, type Handoff } from './handoff.js';
 import { handleLectureHttp } from './http.js';
+import { setLocaleContext, tr, uiLang } from './locale.js';
 import {
   importHandoff,
   findHandoffFiles,
@@ -201,6 +202,7 @@ interface ActiveLecture {
 }
 
 export async function apply(ctx: Context, config: LectureConfig): Promise<void> {
+  setLocaleContext(ctx);
   const enabledRef = (config as { enabled?: { get?: () => boolean } }).enabled;
   const runtime = {
     get enabled(): boolean {
@@ -598,15 +600,17 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         return ok({
           chunk_seq: seq,
           chunk_count: cur.chunks.length,
-          note: '已记录（后台规范化中，结果不回显）',
+          note: tr('已记录（后台规范化中，结果不回显）', 'Saved (normalizing in the background; the result is not shown in the UI)'),
           // 缺留白时把"该问用户什么"明确交回去，模型照着问即可，不要自己编答案。
           ...(missing.length
             ? {
                 blanks_missing: missing,
                 ask_user:
-                  `这段已记下，但还缺 ${missing.join('、')} —— ` +
-                  '这是要**你自己**写的（主动回忆），我不能替你写。' +
-                  '能用自己的话说说这段讲了什么、哪里还没搞懂吗？说完我补记进去。',
+                  uiLang() === 'en'
+                    ? `Saved. This chunk still needs ${missing.join(', ')} — you have to write that yourself (active recall); I cannot do it for you. Can you say in your own words what this part was about and what is still unclear?`
+                    : `这段已记下，但还缺 ${missing.join('、')} —— ` +
+                      '这是要**你自己**写的（主动回忆），我不能替你写。' +
+                      '能用自己的话说说这段讲了什么、哪里还没搞懂吗？说完我补记进去。',
               }
             : {}),
         });
@@ -659,7 +663,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         const unit = index.units.find((u) => u.id === args.unit_id);
         if (!unit) return fail(`单元不存在: ${args.unit_id}`);
         const existing = store.readReviewState(index.course_id, args.unit_id);
-        const machine = new ReviewMachine(args.unit_id, existing);
+        const machine = new ReviewMachine(args.unit_id, existing, uiLang());
         machines.set(sid, machine);
         // 让 courseIdOf() 在无 active 课堂时也能解析（会话重启后复盘）
         if (!active.has(sid)) {
@@ -706,7 +710,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           const comp = ReviewMachine.parseComparison(out);
           if (!comp) {
             persistReview(sid, m);
-            return ok({ step: 'compare', comparison: null, note: '对照生成失败（LLM 不可用或输出不可解析），可手动填写三栏后继续' });
+            return ok({ step: 'compare', comparison: null, note: tr('对照生成失败（LLM 不可用或输出不可解析），可手动填写三栏后继续', 'Comparison failed (LLM unavailable or output unparseable); you can fill the three columns manually and continue') });
           }
           m.setComparison(comp);
           persistReview(sid, m);
@@ -723,7 +727,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           m.addRepairTurn(lastQ, text);
           persistReview(sid, m);
           const out = await askLlm(m.buildRepairPrompt(), { maxTokens: 500, purpose: 'lecture-repair' });
-          if (!out) return ok({ step: 'repair', question: null, note: '追问生成失败（LLM 不可用）' });
+          if (!out) return ok({ step: 'repair', question: null, note: tr('追问生成失败（LLM 不可用）', 'Follow-up generation failed (LLM unavailable)') });
           const q = out.trim();
           // D12 护栏：引导者不得直接给答案（启发式，见 review.ts）
           if (looksLikeDirectAnswer(q)) {
@@ -731,7 +735,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             return ok({
               step: 'repair',
               question: null,
-              warning: 'LLM 输出疑似直接给答案，已拦截。请让学生继续尝试，或换个角度提问。',
+              warning: tr('LLM 输出疑似直接给答案，已拦截。请让学生继续尝试，或换个角度提问。', 'The LLM output looked like a direct answer, so it was blocked. Let the student keep trying, or ask from a different angle.'),
             });
           }
           m.addRepairTurn(q, '');
@@ -767,10 +771,10 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           const unitId = m.current.unit_id;
           const processing = store.readProcessing(cid, unitId);
           const out = await askLlm(m.buildCandidatesPrompt(chunks, processing), { maxTokens: 2500, purpose: 'lecture-candidates' });
-          const cand = ReviewMachine.parseCandidates(out, unitId);
+          const cand = ReviewMachine.parseCandidates(out, unitId, uiLang());
           if (!cand) {
             persistReview(sid, m);
-            return ok({ step: m.step, candidates: null, note: '候选条目生成失败（LLM 不可用或输出不可解析）' });
+            return ok({ step: m.step, candidates: null, note: tr('候选条目生成失败（LLM 不可用或输出不可解析）', 'Candidate generation failed (LLM unavailable or output unparseable)') });
           }
           store.writeCandidates(cid, cand);
           // D4：复盘到第 4 步（候选生成）才写摘要。
@@ -1024,7 +1028,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           return ok({
             dry_run: true,
             degraded: true,
-            note: 'memory 服务不可用（当前可能是 lecture 独立 profile）——只读出预览，未写入。',
+            note: tr('memory 服务不可用（当前可能是 lecture 独立 profile）——只读出预览，未写入。', 'Memory service unavailable (likely the standalone lecture profile) — read-only preview, nothing was written.'),
             previews,
           });
         }
@@ -1244,7 +1248,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           try {
             const index = store.readIndex(courseId);
             const unit = index?.units.find((u) => u.id === unitId);
-            if (!index || !unit) return { ok: false, error: '课程或单元不存在' };
+            if (!index || !unit) return { ok: false, error: tr('课程或单元不存在', 'Course or lecture not found') };
             // 复用工具层的落盘：从 markdown 恢复已有块，追加新块
             const md = store.readUnitMarkdown(courseId, unit);
             const existing = md ? parseUnitMarkdown(md).chunks : [];
@@ -1288,11 +1292,11 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           try {
             const index = store.readIndex(courseId);
             const unit = index?.units.find((u) => u.id === unitId);
-            if (!index || !unit) return { ok: false, error: '课程或单元不存在' };
+            if (!index || !unit) return { ok: false, error: tr('课程或单元不存在', 'Course or lecture not found') };
             const md = store.readUnitMarkdown(courseId, unit);
             const chunks = md ? parseUnitMarkdown(md).chunks : [];
             const target = chunks.find((c) => c.seq === seq);
-            if (!target) return { ok: false, error: `找不到第 ${seq + 1} 块` };
+            if (!target) return { ok: false, error: tr(`找不到第 ${seq + 1} 块`, `Block ${seq + 1} not found`) };
             // 只改传入的字段（另一栏保持不动）
             if (typeof patch.my_understanding === 'string') {
               target.my_understanding = patch.my_understanding.slice(0, 4000);
@@ -1342,11 +1346,11 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           const unitId = String(payload.unit_id ?? '');
           const index = store.readIndex(courseId);
           const unit = index?.units.find((u) => u.id === unitId);
-          if (!index || !unit) return { error: '课程或单元不存在' };
+          if (!index || !unit) return { error: tr('课程或单元不存在', 'Course or lecture not found') };
 
           // 每次操作都从磁盘恢复状态机（前端可能刷新/换设备）
           const existing = store.readReviewState(courseId, unitId);
-          const m = new ReviewMachine(unitId, existing);
+          const m = new ReviewMachine(unitId, existing, uiLang());
           const save = (): void => {
             try {
               store.writeReviewState(courseId, m.current);
@@ -1364,9 +1368,9 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           }
 
           if (op === 'recall') {
-            if (m.step !== 'recall') return { step: m.step, error: `当前步骤 ${m.step} 不接受"你先说"` };
+            if (m.step !== 'recall') return { step: m.step, error: tr(`当前步骤 ${m.step} 不接受“你先说”`, `Step ${m.step} does not accept a recall answer`) };
             const text = String(payload.text ?? '').trim();
-            if (!text) return { error: '内容为空' };
+            if (!text) return { error: tr('内容为空', 'Content is empty') };
             m.submitRecall(text);
             const chunks = loadChunksFromFile(`web:${courseId}`, unitId);
             const out = await askLlm(m.buildComparePrompt(m.current.recall_text, chunks), {
@@ -1376,7 +1380,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             const comp = ReviewMachine.parseComparison(out);
             if (!comp) {
               save();
-              return { step: 'compare', comparison: null, note: '对照生成失败（LLM 不可用）' };
+              return { step: 'compare', comparison: null, note: tr('对照生成失败（LLM 不可用）', 'Comparison failed (LLM unavailable)') };
             }
             m.setComparison(comp);
             save();
@@ -1384,19 +1388,19 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           }
 
           if (op === 'repair_answer') {
-            if (m.step !== 'repair') return { step: m.step, error: `当前步骤 ${m.step} 不接受补漏回答` };
+            if (m.step !== 'repair') return { step: m.step, error: tr(`当前步骤 ${m.step} 不接受补漏回答`, `Step ${m.step} does not accept a repair answer`) };
             const text = String(payload.text ?? '').trim();
-            if (!text) return { error: '内容为空' };
-            const lastQ = m.current.repair_turns.filter((t) => t.answer === '').at(-1)?.question ?? '(追问)';
+            if (!text) return { error: tr('内容为空', 'Content is empty') };
+            const lastQ = m.current.repair_turns.filter((t) => t.answer === '').at(-1)?.question ?? tr('(追问)', '(follow-up)');
             m.addRepairTurn(lastQ, text);
             save();
             const out = await askLlm(m.buildRepairPrompt(), { maxTokens: 500, purpose: 'lecture-repair' });
-            if (!out) return { step: 'repair', question: null, note: '追问生成失败（LLM 不可用）' };
+            if (!out) return { step: 'repair', question: null, note: tr('追问生成失败（LLM 不可用）', 'Follow-up generation failed (LLM unavailable)') };
             const q = out.trim();
             // D12 护栏：引导者不得直接给答案
             if (looksLikeDirectAnswer(q)) {
               warn('引导输出疑似直接给答案（D12），已拦截');
-              return { step: 'repair', question: null, warning: '模型输出疑似直接给答案，已拦截。换个角度再答一次。' };
+              return { step: 'repair', question: null, warning: tr('模型输出疑似直接给答案，已拦截。换个角度再答一次。', 'The model tried to give the answer directly, so it was blocked. Try a different angle.') };
             }
             m.addRepairTurn(q, '');
             save();
@@ -1408,7 +1412,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               // 用户点"开始补漏"：comparison 已在 recall 步骤写入并带入 repair，
               // 这里只生成第一个问题（setComparison 已完成 compare→repair 转换）。
               if (!m.current.comparison) {
-                return { step: 'compare', error: '还没有对照结果，请先完成第 1 步' };
+                return { step: 'compare', error: tr('还没有对照结果，请先完成第 1 步', 'No comparison yet — complete step 1 first') };
               }
               const out = await askLlm(m.buildRepairPrompt(), { maxTokens: 500, purpose: 'lecture-repair' });
               const q = out && !looksLikeDirectAnswer(out) ? out.trim() : null;
@@ -1426,10 +1430,10 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
                 maxTokens: 2500,
                 purpose: 'lecture-candidates',
               });
-              const cand = ReviewMachine.parseCandidates(out, unitId);
+              const cand = ReviewMachine.parseCandidates(out, unitId, uiLang());
               if (!cand) {
                 save();
-                return { step: 'candidates', candidates: null, note: '候选生成失败（LLM 不可用）' };
+                return { step: 'candidates', candidates: null, note: tr('候选生成失败（LLM 不可用）', 'Candidate generation failed (LLM unavailable)') };
               }
               store.writeCandidates(courseId, cand);
               // D4：候选生成即写摘要（与工具路径同一出口，保证 has_summary 语义一致）
@@ -1437,12 +1441,12 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               save();
               return { step: 'candidates', candidates: cand };
             }
-            return { step: m.step, error: `当前步骤 ${m.step} 不能推进` };
+            return { step: m.step, error: tr(`当前步骤 ${m.step} 不能推进`, `Step ${m.step} cannot advance`) };
           }
 
           if (op === 'commit') {
             if (m.step !== 'candidates' && m.step !== 'commit') {
-              return { step: m.step, error: `当前步骤 ${m.step} 不能确认写入` };
+              return { step: m.step, error: tr(`当前步骤 ${m.step} 不能确认写入`, `Step ${m.step} cannot confirm the commit`) };
             }
             if (m.step === 'candidates') m.setCandidates();
             const accepted = payload.accepted as Candidates | null;
@@ -1485,7 +1489,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             };
           }
 
-          return { error: `未实现的复盘操作: ${op}` };
+          return { error: tr(`未实现的复盘操作: ${op}`, `Unimplemented review action: ${op}`) };
         },
       });
     };

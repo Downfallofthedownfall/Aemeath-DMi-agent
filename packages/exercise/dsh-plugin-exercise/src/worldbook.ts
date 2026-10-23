@@ -22,6 +22,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Lesson, Mistake, Sheet } from './types.js';
+import { tr } from './locale.js';
 
 export const WORLDBOOK_FILE = 'generated_exercise.json';
 
@@ -77,7 +78,7 @@ export function buildWorldbookEntry(input: EntryInput): WorldbookEntry {
   const content = input.content.trim();
   return {
     id: entryIdOf(content),
-    title: (input.title || '习题教训').slice(0, 60),
+    title: (input.title || tr('习题教训', 'Exercise lesson')).slice(0, 60),
     kind: 'knowledge',
     triggers: buildTriggers(content, input.topic ?? input.title, input.tags ?? []),
     constant: false,
@@ -86,7 +87,7 @@ export function buildWorldbookEntry(input: EntryInput): WorldbookEntry {
     priority: input.priority ?? 60,
     chain: [],
     content: content.slice(0, 600),
-    source: input.source ?? 'Übungsblatt 错题沉淀',
+    source: input.source ?? tr('Übungsblatt 错题沉淀', 'Übungsblatt mistake digest'),
     verifiable: false,
   };
 }
@@ -96,20 +97,23 @@ export function mistakeToEntry(m: Mistake): WorldbookEntry | null {
   const lesson = (m.lesson || '').trim();
   const issues = (m.issues ?? []).map((i) => i.trim()).filter(Boolean).slice(0, 3);
   if (!lesson && !issues.length) return null;
-  const head = `【错题】${m.course_title || m.course_id} · ${m.sheet_title || m.sheet_id} · ${m.problem_label || m.problem_id}`;
+  const head = tr(
+    `【错题】${m.course_title || m.course_id} · ${m.sheet_title || m.sheet_id} · ${m.problem_label || m.problem_id}`,
+    `[Mistake] ${m.course_title || m.course_id} · ${m.sheet_title || m.sheet_id} · ${m.problem_label || m.problem_id}`,
+  );
   const body = [
     head,
-    lesson ? `教训：${lesson}` : '',
-    issues.length ? `当时的问题：${issues.join('；')}` : '',
-    m.tags.length ? `主题：${m.tags.join('、')}` : '',
+    lesson ? tr(`教训：${lesson}`, `Lesson: ${lesson}`) : '',
+    issues.length ? tr(`当时的问题：${issues.join('；')}`, `Problems at the time: ${issues.join('; ')}`) : '',
+    m.tags.length ? tr(`主题：${m.tags.join('、')}`, `Topics: ${m.tags.join(', ')}`) : '',
   ]
     .filter(Boolean)
     .join('\n');
   return buildWorldbookEntry({
     content: body,
-    title: `${m.problem_label || '习题'} 错题教训`.slice(0, 60),
+    title: tr(`${m.problem_label || '习题'} 错题教训`, `${m.problem_label || 'Problem'} mistake lesson`).slice(0, 60),
     tags: m.tags,
-    source: `Übungsblatt 错题（${m.course_id}/${m.sheet_id}/${m.problem_id}）`,
+    source: tr(`Übungsblatt 错题（${m.course_id}/${m.sheet_id}/${m.problem_id}）`, `Übungsblatt mistake (${m.course_id}/${m.sheet_id}/${m.problem_id})`),
     priority: 70,
     topic: m.problem_label,
   });
@@ -119,12 +123,15 @@ export function mistakeToEntry(m: Mistake): WorldbookEntry | null {
 export function lessonToEntry(courseTitle: string, sheet: Sheet, lesson: Lesson): WorldbookEntry | null {
   const text = (lesson.text || '').trim();
   if (!text) return null;
-  const body = `【习题经验】${courseTitle} · Übungsblatt ${sheet.number}${sheet.title ? `（${sheet.title}）` : ''}\n${text}`;
+  const body = tr(
+    `【习题经验】${courseTitle} · Übungsblatt ${sheet.number}${sheet.title ? `（${sheet.title}）` : ''}\n${text}`,
+    `[Exercise lesson] ${courseTitle} · Übungsblatt ${sheet.number}${sheet.title ? ` (${sheet.title})` : ''}\n${text}`,
+  );
   return buildWorldbookEntry({
     content: body,
-    title: `Blatt ${sheet.number} 经验`.slice(0, 60),
+    title: tr(`Blatt ${sheet.number} 经验`, `Blatt ${sheet.number} lesson`).slice(0, 60),
     tags: lesson.tags,
-    source: `Übungsblatt 经验（${courseTitle} / ${sheet.id}）`,
+    source: tr(`Übungsblatt 经验（${courseTitle} / ${sheet.id}）`, `Übungsblatt lesson (${courseTitle} / ${sheet.id})`),
     priority: 55,
     topic: sheet.title || `Übungsblatt ${sheet.number}`,
   });
@@ -148,7 +155,7 @@ export function appendWorldbookEntry(libraryDir: string, entry: WorldbookEntry):
     const dir = isAbsolute(libraryDir) ? libraryDir : join(process.cwd(), libraryDir);
     // 馆目录不存在 = 这个 profile 没挂 worldbook（或路径配错）→ 明确报错，不自己造目录：
     // 自己造一个空馆会让"写成功了"变成假象（worldbook 插件根本不看这个路径）。
-    if (!existsSync(dir)) return { ok: false, error: `馆目录不存在: ${dir}` };
+    if (!existsSync(dir)) return { ok: false, error: tr(`馆目录不存在: ${dir}`, `Library directory not found: ${dir}`) };
     const file = join(dir, WORLDBOOK_FILE);
     let entries: WorldbookEntry[] = [];
     if (existsSync(file)) {
@@ -158,7 +165,7 @@ export function appendWorldbookEntry(libraryDir: string, entry: WorldbookEntry):
         if (Array.isArray(parsed)) entries = parsed as WorldbookEntry[];
       } catch {
         // 坏文件：不覆盖（那可能是用户手改坏了，覆盖会丢他自己的内容）
-        return { ok: false, error: `世界书文件不可解析，已跳过写入: ${file}` };
+        return { ok: false, error: tr(`世界书文件不可解析，已跳过写入: ${file}`, `Worldbook file is unparseable; write skipped: ${file}`) };
       }
     }
     if (entries.some((e) => e.id === entry.id)) return { ok: true, id: entry.id, created: false };

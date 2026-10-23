@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProblemView } from './api.ts';
 import { MathText } from './math.tsx';
+import { useT, useLocale } from './i18n.ts';
 import { hasMath } from '../math-parse.ts';
 import { collectMathLiveReplacements, collectMathIssuesInText } from '../mathlive-compat.ts';
 
@@ -92,6 +93,8 @@ export function AnswerEditor({
   onDeleteImage,
   imageUrl,
 }: AnswerEditorProps): JSX.Element {
+  const t = useT();
+  const locale = useLocale();
   const [draft, setDraft] = useState(problem.answer);
   const [notes, setNotes] = useState(problem.notes);
   const [dirty, setDirty] = useState(false);
@@ -99,8 +102,8 @@ export function AnswerEditor({
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [mode, setMode] = useState<EditorMode>('split');
   // 公式内容层面的提示（渲染期兼容 + 未知命令）
-  const mathReplacements = useMemo(() => collectMathLiveReplacements(draft), [draft]);
-  const mathIssues = useMemo(() => collectMathIssuesInText(draft), [draft]);
+  const mathReplacements = useMemo(() => collectMathLiveReplacements(draft, locale === 'en' ? 'en' : 'zh'), [draft, locale]);
+  const mathIssues = useMemo(() => collectMathIssuesInText(draft, locale === 'en' ? 'en' : 'zh'), [draft, locale]);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const timer = useRef<number | null>(null);
@@ -129,7 +132,7 @@ export function AnswerEditor({
     } catch (e) {
       dirtyRef.current = true;
       setDirty(true);
-      onToast(`保存失败：${(e as Error).message}`);
+      onToast(t('exercise.common.saveFailed', { error: (e as Error).message }));
     } finally {
       setSaving(false);
     }
@@ -201,23 +204,29 @@ export function AnswerEditor({
     pv.scrollTop = (ta.scrollTop / max) * Math.max(0, pv.scrollHeight - pv.clientHeight);
   }, []);
 
-  const savedLabel = saving ? '保存中…' : dirty ? '未保存' : savedAt ? '已保存' : '';
+  const savedLabel = saving
+    ? t('exercise.common.saving')
+    : dirty
+      ? t('exercise.common.unsaved')
+      : savedAt
+        ? t('exercise.common.saved')
+        : '';
 
   return (
     <div>
       <div className="lec-answer-head">
-        <span>我的解答</span>
+        <span>{t('exercise.answer.heading')}</span>
         <span className="lec-saved">{savedLabel}</span>
         <span className="lec-grow" />
         <div className="lec-toolrow" style={{ marginTop: 0 }}>
           <button type="button" className="lec-tab" data-active={mode === 'split' ? '1' : '0'} onClick={() => setMode('split')}>
-            分栏
+            {t('exercise.answer.mode.split')}
           </button>
           <button type="button" className="lec-tab" data-active={mode === 'write' ? '1' : '0'} onClick={() => setMode('write')}>
-            只写
+            {t('exercise.answer.mode.write')}
           </button>
           <button type="button" className="lec-tab" data-active={mode === 'render' ? '1' : '0'} onClick={() => setMode('render')}>
-            只看渲染
+            {t('exercise.answer.mode.render')}
           </button>
         </div>
       </div>
@@ -227,7 +236,7 @@ export function AnswerEditor({
           ref={taRef}
           className="lec-textarea"
           value={draft}
-          placeholder="写下推导（可直接写 LaTeX：行内 $F=ma$，独立一行 $$...$$）。右边实时排版 —— 写错了也没关系，检查是给你看的，不是判分。"
+          placeholder={t('exercise.answer.placeholder')}
           onChange={(e) => {
             const v = e.currentTarget.value;
             setDraft(v);
@@ -252,7 +261,7 @@ export function AnswerEditor({
                   <img src={imageUrl?.(img.name)} alt={img.caption || img.name} loading="lazy" />
                   {img.caption ? <figcaption>{img.caption}</figcaption> : null}
                   {onDeleteImage ? (
-                    <button type="button" className="lec-figure-del" title="删除这张图" onClick={() => onDeleteImage(img.id)}>
+                    <button type="button" className="lec-figure-del" title={t('exercise.answer.deleteImageTitle')} onClick={() => onDeleteImage(img.id)}>
                       ×
                     </button>
                   ) : null}
@@ -266,7 +275,7 @@ export function AnswerEditor({
       {onAttachImage ? (
         <div className="lec-toolrow" style={{ marginTop: 6 }}>
           <label className="lec-btn lec-btn-ghost" style={{ cursor: 'pointer', margin: 0 }}>
-            ＋ 图片（画图/照片）
+            {t('exercise.answer.addImage')}
             <input
               type="file"
               accept="image/png,image/jpeg,image/webp,image/gif"
@@ -278,20 +287,21 @@ export function AnswerEditor({
               }}
             />
           </label>
-          <span className="lec-hint">示意图/受力图会一起发给爱弥斯检查，也会印进提交 PDF</span>
+          <span className="lec-hint">{t('exercise.answer.imageHint')}</span>
         </div>
       ) : null}
 
       {draft.trim() && !hasMath(draft) && /\\[A-Za-z]+/.test(draft) && (
         <div className="lec-hint" style={{ marginTop: 6 }}>
-          这段里有 <code>\命令</code> 但没被当成公式 —— 用 <code>$…$</code> 包起来（或单独占一行写成一条公式）就会渲染。
+          {t('exercise.answer.rawCmd.lead')} <code>{t('exercise.answer.rawCmd.code')}</code> {t('exercise.answer.rawCmd.mid')}{' '}
+          <code>$…$</code> {t('exercise.answer.rawCmd.tail')}
         </div>
       )}
 
       {/* 公式内容层面的问题（这条与上一条分工不同：上一行是"没认成公式"，这里是"认成了但内容错"） */}
       {mathReplacements.length > 0 && (
         <div className="lec-hint" style={{ marginTop: 6 }}>
-          讲义里的 MathLive 宏已自动按通用写法渲染：
+          {t('exercise.answer.mathlive.lead')}
           {mathReplacements.map((r) => (
             <span key={r.from}>
               {' '}
@@ -304,18 +314,18 @@ export function AnswerEditor({
               {mathReplacements
                 .filter((r) => r.note)
                 .map((r) => r.note)
-                .join('；')}
+                .join(t('exercise.common.listSep'))}
             </>
           )}
         </div>
       )}
       {mathIssues.length > 0 && (
         <div className="lec-warn" style={{ marginTop: 6, fontWeight: 400 }}>
-          KaTeX 无法解析这些命令 —— 公式会原样显示源码：
+          {t('exercise.answer.katexError.lead')}
           {mathIssues.map((i) => (
             <div key={i.command} style={{ marginTop: 2 }}>
               <code>{i.command}</code>
-              {i.position > 0 ? `（位置 ${i.position}）` : ''} —— {i.hint}
+              {i.position > 0 ? t('exercise.answer.katexError.position', { pos: i.position }) : ''} —— {i.hint}
             </div>
           ))}
         </div>
@@ -323,16 +333,16 @@ export function AnswerEditor({
 
       <div className="lec-toolrow">
         <button type="button" className="lec-btn" onClick={onCheck} disabled={busy}>
-          {busy ? '检查中…' : '让爱弥斯检查这题'}
+          {busy ? t('exercise.check.busy') : t('exercise.answer.check')}
         </button>
         <button type="button" className="lec-btn lec-btn-ghost" onClick={onCollectMistake}>
-          加入错题本
+          {t('exercise.answer.collectMistake')}
         </button>
         <span className="lec-grow" />
         <input
           className="lec-input"
           style={{ width: 220 }}
-          placeholder="备注（这题我老忘什么）"
+          placeholder={t('exercise.answer.notesPlaceholder')}
           value={notes}
           onChange={(e) => {
             const v = e.currentTarget.value;

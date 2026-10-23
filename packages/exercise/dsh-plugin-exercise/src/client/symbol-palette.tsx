@@ -17,6 +17,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, type SymbolGroupView, type SymbolView } from './api.ts';
+import { useT, useLocale } from './i18n.ts';
 import { symbolInsertion } from '../symbol-insert.ts';
 
 /** 最近用过的分组（localStorage；让面板下次打开落在常用的那组）。 */
@@ -55,6 +56,12 @@ export interface SymbolPanelProps {
 }
 
 export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Element {
+  const t = useT();
+  const locale = useLocale();
+  /** 显示用标签/提示：英文界面优先用 host 附带的英文，缺失回退中文原值。 */
+  const groupLabel = (g: SymbolGroupView): string => (locale === 'en' ? g.labelEn ?? g.label : g.label);
+  const symLabel = (s: SymbolView): string => (locale === 'en' ? s.labelEn ?? s.label : s.label);
+  const symHint = (s: SymbolView): string => (locale === 'en' ? s.hintEn ?? s.hint ?? '' : s.hint ?? '');
   const [groups, setGroups] = useState<SymbolGroupView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -107,7 +114,12 @@ export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Elemen
       .map((g) => ({
         ...g,
         symbols: g.symbols.filter(
-          (s) => s.label.toLowerCase().includes(q) || s.insert.toLowerCase().includes(q) || (s.hint ?? '').toLowerCase().includes(q),
+          (s) =>
+            s.label.toLowerCase().includes(q) ||
+            s.insert.toLowerCase().includes(q) ||
+            (s.hint ?? '').toLowerCase().includes(q) ||
+            (s.labelEn ?? '').toLowerCase().includes(q) ||
+            (s.hintEn ?? '').toLowerCase().includes(q),
         ),
       }))
       .filter((g) => g.symbols.length > 0);
@@ -128,11 +140,11 @@ export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Elemen
     } catch {
       didInsert = false;
     }
-    if (didInsert) setInserted(sym.label);
+    if (didInsert) setInserted(symLabel(sym));
 
     // ② 复制（lecture 的老行为保留：想粘到别处也能用）
     const ok = await copyText(text);
-    setCopied(ok ? sym.label : '');
+    setCopied(ok ? symLabel(sym) : '');
 
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
@@ -140,7 +152,7 @@ export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Elemen
       setInserted('');
     }, 1600);
 
-    if (!didInsert && !ok) onToast?.('没有聚焦的答案框，复制也被浏览器拒绝');
+    if (!didInsert && !ok) onToast?.(t('exercise.symbol.noTarget'));
   };
 
   const toggleGroup = (id: string): void => {
@@ -152,16 +164,16 @@ export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Elemen
     });
   };
 
-  if (groups === null) return <div className="lec-hint">符号表加载中…</div>;
+  if (groups === null) return <div className="lec-hint">{t('exercise.symbol.loading')}</div>;
   if (error) {
     return (
       <div>
-        <div className="lec-warn">符号表不可用：{error}</div>
-        <div className="lec-hint">（独立 profile 里没有挂 lecture 插件时会这样；不影响做题与导出）</div>
+        <div className="lec-warn">{t('exercise.symbol.unavailable', { error })}</div>
+        <div className="lec-hint">{t('exercise.symbol.unavailableHint')}</div>
       </div>
     );
   }
-  if (!groups.length) return <div className="lec-empty">符号表为空 —— lecture 插件未安装，可手动输入 LaTeX</div>;
+  if (!groups.length) return <div className="lec-empty">{t('exercise.symbol.empty')}</div>;
 
   return (
     <div className="lec-sympanel">
@@ -169,12 +181,12 @@ export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Elemen
         <input
           className="lec-input"
           style={{ padding: '5px 9px', fontSize: 12 }}
-          placeholder="搜索符号（积分 / sum / 矢量 …）"
+          placeholder={t('exercise.symbol.search')}
           value={query}
           onChange={(e) => setQuery(e.currentTarget.value)}
         />
         {query ? (
-          <button type="button" className="lec-icon-btn" title="清空" onClick={() => setQuery('')}>
+          <button type="button" className="lec-icon-btn" title={t('exercise.symbol.clear')} onClick={() => setQuery('')}>
             ✕
           </button>
         ) : null}
@@ -182,24 +194,26 @@ export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Elemen
 
       <div className="lec-hint" style={{ margin: '6px 10px 0' }}>
         {copied ? (
-          <span style={{ color: 'var(--aem-accent)', fontWeight: 600 }}>已复制 {copied} —— 到答案框粘贴</span>
+          <span style={{ color: 'var(--aem-accent)', fontWeight: 600 }}>{t('exercise.symbol.copied', { label: copied })}</span>
         ) : (
           <>
-            点一下即<b>插入到答案框</b>的光标处，同时复制到剪贴板
+            {t('exercise.symbol.insertLead')}
+            <b>{t('exercise.symbol.insertStrong')}</b>
+            {t('exercise.symbol.insertTail')}
           </>
         )}
       </div>
 
       <div className="lec-sympanel-body">
-        {filtered.length === 0 ? <div className="lec-hint">没有匹配的符号。</div> : null}
+        {filtered.length === 0 ? <div className="lec-hint">{t('exercise.symbol.noMatch')}</div> : null}
         {filtered.map((g) => {
           const open = searching || openGroups.has(g.id);
           return (
             <div key={g.id} className="lec-symgroup">
-              <div className="lec-symgroup-name" onClick={() => toggleGroup(g.id)} title="点击展开 / 收起">
+              <div className="lec-symgroup-name" onClick={() => toggleGroup(g.id)} title={t('exercise.symbol.toggle')}>
                 <span>{open ? '▾' : '▸'}</span>
-                {g.label}
-                <span style={{ opacity: 0.6 }}>（{g.symbols.length}）</span>
+                {groupLabel(g)}
+                <span style={{ opacity: 0.6 }}>{t('exercise.symbol.count', { n: g.symbols.length })}</span>
               </div>
               {open ? (
                 <div className="lec-symgrid">
@@ -209,14 +223,18 @@ export function SymbolPanel({ onInsert, onToast }: SymbolPanelProps): JSX.Elemen
                       type="button"
                       className="lec-sym"
                       data-structured={s.kind === 'structured' ? '1' : '0'}
-                      data-copied={copied === s.label ? '1' : '0'}
-                      data-inserted={inserted === s.label ? '1' : '0'}
-                      title={s.hint ? `${s.label} — ${s.hint}\n点击：插入到答案框 + 复制` : `点击：插入到答案框 + 复制`}
+                      data-copied={copied === symLabel(s) ? '1' : '0'}
+                      data-inserted={inserted === symLabel(s) ? '1' : '0'}
+                      title={
+                        s.hint
+                          ? t('exercise.symbol.tip', { label: symLabel(s), hint: symHint(s) })
+                          : t('exercise.symbol.tipNoHint', { label: symLabel(s) })
+                      }
                       // 不抢焦点：否则插不到光标处
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => void onClick(s, g.id)}
                     >
-                      {s.label}
+                      {symLabel(s)}
                     </button>
                   ))}
                 </div>

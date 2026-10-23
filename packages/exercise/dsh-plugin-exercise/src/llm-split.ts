@@ -32,6 +32,7 @@
 import { z } from 'zod';
 import { parseJsonLoose, type AskLlm } from './checker.js';
 import type { SplitProblem } from './split.js';
+import { tr } from './locale.js';
 
 /** 单次送模型的字符上限（留出 prompt 与输出的余量）。 */
 export const SEGMENT_CHUNK_CHARS = 18_000;
@@ -291,7 +292,7 @@ export async function segmentWithLlm(
   opts: { chunkChars?: number; maxParts?: number } = {},
 ): Promise<SegmentResult> {
   const source = (text ?? '').trim();
-  if (!source) return { ok: false, problems: [], parts: 0, error: '文本为空' };
+  if (!source) return { ok: false, problems: [], parts: 0, error: tr('文本为空', 'Text is empty') };
   const chunks = chunkForSegmentation(source, opts.chunkChars ?? SEGMENT_CHUNK_CHARS);
   const maxParts = opts.maxParts ?? SEGMENT_MAX_PARTS;
   if (chunks.length > maxParts) {
@@ -299,7 +300,7 @@ export async function segmentWithLlm(
       ok: false,
       problems: [],
       parts: chunks.length,
-      error: `文本过长（${chunks.length} 段 > ${maxParts}），跳过 LLM 分块`,
+      error: tr(`文本过长（${chunks.length} 段 > ${maxParts}），跳过 LLM 分块`, `Text too long (${chunks.length} chunks > ${maxParts}); skipping LLM splitting`),
     };
   }
 
@@ -322,7 +323,7 @@ export async function segmentWithLlm(
       }
     }
     if (!raw) {
-      return { ok: false, problems: [], parts: chunks.length, error: 'LLM 不可用或请求失败（返回空）', raw: raws.join('\n---\n') };
+      return { ok: false, problems: [], parts: chunks.length, error: tr('LLM 不可用或请求失败（返回空）', 'LLM unavailable or request failed (empty response)'), raw: raws.join('\n---\n') };
     }
     raws.push(raw);
     if (!anchors) {
@@ -330,7 +331,7 @@ export async function segmentWithLlm(
         ok: false,
         problems: [],
         parts: chunks.length,
-        error: 'LLM 输出里没有可用的锚点（不是预期 JSON 或 start 太短）',
+        error: tr('LLM 输出里没有可用的锚点（不是预期 JSON 或 start 太短）', 'No usable anchors in the LLM output (not the expected JSON, or start too short)'),
         raw: raw.slice(0, 2000),
       };
     }
@@ -340,7 +341,7 @@ export async function segmentWithLlm(
         ok: false,
         problems: [],
         parts: chunks.length,
-        error: 'LLM 给的锚点在原文里定位不到（模型改写了原句）',
+        error: tr('LLM 给的锚点在原文里定位不到（模型改写了原句）', 'The LLM anchors cannot be located in the source text (the model rewrote the sentences)'),
         raw: raw.slice(0, 2000),
       };
     }
@@ -348,7 +349,7 @@ export async function segmentWithLlm(
   }
 
   const merged = dedupe(problems);
-  if (!merged.length) return { ok: false, problems: [], parts: chunks.length, error: 'LLM 没有切出任何题' };
+  if (!merged.length) return { ok: false, problems: [], parts: chunks.length, error: tr('LLM 没有切出任何题', 'The LLM did not split out any problems') };
 
   const normLen = (s: string): number => s.replace(/\s+/g, '').length;
   const srcLen = normLen(source);
@@ -360,7 +361,10 @@ export async function segmentWithLlm(
       problems: merged,
       parts: chunks.length,
       coverage,
-      error: `切出的正文只覆盖原文 ${(coverage * 100).toFixed(0)}%（< ${Math.round(MIN_COVERAGE * 100)}%），退回规则分块`,
+      error: tr(
+        `切出的正文只覆盖原文 ${(coverage * 100).toFixed(0)}%（< ${Math.round(MIN_COVERAGE * 100)}%），退回规则分块`,
+        `The split text covers only ${(coverage * 100).toFixed(0)}% of the source (< ${Math.round(MIN_COVERAGE * 100)}%); falling back to rule-based splitting`,
+      ),
       raw: raws.join('\n---\n').slice(0, 2000),
     };
   }

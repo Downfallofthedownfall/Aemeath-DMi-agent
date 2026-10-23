@@ -27,6 +27,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { tr } from './locale.js';
 
 /** 上传 PDF 需要更大的 body：32MB（base64 后约 24MB 原文件）。 */
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
@@ -94,7 +95,7 @@ export function readBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promi
 /** 以 PDF 形式返回一个文件（inline = 浏览器内预览；attachment = 下载）。 */
 export function servePdfFile(res: ServerResponse, abs: string, downloadName?: string): void {
   if (!existsSync(abs)) {
-    jsonError(res, 404, '文件不存在（还没生成？）');
+    jsonError(res, 404, tr('文件不存在（还没生成？）', 'File not found (not generated yet?)'));
     return;
   }
   try {
@@ -113,7 +114,7 @@ export function servePdfFile(res: ServerResponse, abs: string, downloadName?: st
     res.end(body);
     void st;
   } catch (e) {
-    jsonError(res, 500, `读取失败：${(e as Error).message}`);
+    jsonError(res, 500, tr(`读取失败：${(e as Error).message}`, `Read failed: ${(e as Error).message}`));
   }
 }
 
@@ -349,7 +350,7 @@ export async function handleExerciseHttp(
           }
           const text = deps.readSourceText(course, sheet);
           if (text == null) {
-            jsonError(res, 404, '没有原文存档（手填的题集没有 source.md）');
+            jsonError(res, 404, tr('没有原文存档（手填的题集没有 source.md）', 'No source archive (a manually created sheet has no source.md)'));
             return;
           }
           json(res, 200, { ok: true, text });
@@ -366,7 +367,7 @@ export async function handleExerciseHttp(
           }
           const got = deps.onReadAttachment({ courseId: course, sheetId: sheet, name });
           if (!got) {
-            jsonError(res, 404, '图片不存在');
+            jsonError(res, 404, tr('图片不存在', 'Image not found'));
             return;
           }
           res.writeHead(200, {
@@ -385,7 +386,7 @@ export async function handleExerciseHttp(
           }
           const p = deps.sourcePdfPath(course, sheet);
           if (!p) {
-            jsonError(res, 404, '没有导入的原卷 PDF');
+            jsonError(res, 404, tr('没有导入的原卷 PDF', 'No original PDF was imported'));
             return;
           }
           // 下载还是预览：?download=1
@@ -407,7 +408,7 @@ export async function handleExerciseHttp(
           }
           const img = deps.readPageImage(course, sheet, Math.floor(pageNo));
           if (!img) {
-            jsonError(res, 404, `没有第 ${pageNo} 页截图（这套题可能没有页面图片）`);
+            jsonError(res, 404, tr(`没有第 ${pageNo} 页截图（这套题可能没有页面图片）`, `No screenshot for page ${pageNo} (this sheet may have no page images)`));
             return;
           }
           res.writeHead(200, {
@@ -426,7 +427,7 @@ export async function handleExerciseHttp(
           }
           const p = deps.submissionPdfPath(course, sheet);
           if (!p) {
-            jsonError(res, 404, '还没生成提交包（先 build_submission）');
+            jsonError(res, 404, tr('还没生成提交包（先 build_submission）', 'No submission package yet (run build_submission first)'));
             return;
           }
           const dl = url.searchParams.get('download') === '1';
@@ -477,7 +478,7 @@ export async function handleExerciseHttp(
           const pdfBase64 = typeof parsed.pdf_base64 === 'string' ? parsed.pdf_base64 : undefined;
           const text = typeof parsed.text === 'string' ? parsed.text : undefined;
           if (!pdfBase64 && !text) {
-            jsonError(res, 400, '需要 pdf_base64 或 text（至少一个）');
+            jsonError(res, 400, tr('需要 pdf_base64 或 text（至少一个）', 'pdf_base64 or text is required (at least one)'));
             return;
           }
           const r = await deps.onImport({
@@ -623,7 +624,7 @@ export async function handleExerciseHttp(
           }
           const text = str(parsed.text ?? '', 8000);
           if (!text.trim()) {
-            jsonError(res, 400, 'text required（写点你要答辩的内容）');
+            jsonError(res, 400, tr('text required（写点你要答辩的内容）', 'text required (write what you are rebutting)'));
             return;
           }
           const r = await deps.onRebuttal({ courseId, sheetId, problemId, text });
@@ -680,7 +681,7 @@ export async function handleExerciseHttp(
           }
           const op = str(parsed.op, 12) as 'add' | 'update' | 'delete';
           if (!['add', 'update', 'delete'].includes(op)) {
-            jsonError(res, 400, 'op 必须是 add/update/delete');
+            jsonError(res, 400, tr('op 必须是 add/update/delete', 'op must be add/update/delete'));
             return;
           }
           const r = await deps.onLesson({
@@ -750,7 +751,7 @@ export async function handleExerciseHttp(
             return;
           }
           if (scope === 'sheet' && !sheetId) {
-            jsonError(res, 400, 'sheet_id required（或 scope=course）');
+            jsonError(res, 400, tr('sheet_id required（或 scope=course）', 'sheet_id required (or scope=course)'));
             return;
           }
           const r = await deps.onDelete({ scope, courseId, sheetId: sheetId || undefined });

@@ -17,6 +17,7 @@
 
 import { z } from 'zod';
 import { checkIssueSchema, type Verdict } from './types.js';
+import { tr } from './locale.js';
 
 /** LLM 通道（与 lecture 的 AskLlm 同形，便于复用同一种接线）。 */
 export type ReasoningEffort = 'off' | 'low' | 'high' | 'max';
@@ -55,7 +56,7 @@ export interface CheckInput {
   /** 同主题的历史错题（避免重复踩同一个坑）。 */
   priorMistakes?: string[];
   /** 解释语言：默认中文（用户母语），题目原文保持德语。 */
-  lang?: 'zh' | 'de';
+  lang?: 'zh' | 'de' | 'en';
   /** 学生答案里附的手画图（多模态一起看：受力图/草图对判断很关键） */
   answerImages?: Array<{ base64: string; mediaType: string; name: string }>;
   /** 推理强度（批改默认 max：重在精不在快） */
@@ -170,7 +171,9 @@ export function buildCheckPrompt(input: CheckInput): string {
   lines.push(
     lang === 'de'
       ? '请用德语写 issues/hints/next_steps。'
-      : '请用**中文**写 issues/hints/next_steps（题目术语保留德语原文）。',
+      : lang === 'en'
+        ? 'Write issues/hints/next_steps in **English** (keep German problem terms as they are).'
+        : '请用**中文**写 issues/hints/next_steps（题目术语保留德语原文）。',
   );
   return lines.join('\n');
 }
@@ -373,12 +376,12 @@ export async function runCheck(
       ok: false,
       check: null,
       raw: null,
-      error: 'LLM 不可用（无 apiKey / 请求失败 / 超时）',
+      error: tr('LLM 不可用（无 apiKey / 请求失败 / 超时）', 'LLM unavailable (no apiKey / request failed / timed out)'),
       vision: !!vision,
     };
   }
   const check = parseCheckOutput(raw);
-  if (!check) return { ok: false, check: null, raw, error: 'LLM 输出不可解析（已保留原文供排障）', vision: !!vision };
+  if (!check) return { ok: false, check: null, raw, error: tr('LLM 输出不可解析（已保留原文供排障）', 'LLM output could not be parsed (raw output kept for debugging)'), vision: !!vision };
   return { ok: true, check, raw, vision: !!vision };
 }
 
@@ -450,7 +453,11 @@ export function buildRebuttalPrompt(input: RebuttalInput): string {
   lines.push('');
   lines.push('## 输出格式（严格 JSON，不要代码块）');
   lines.push('{"outcome":"conceded|upheld|partial","reply":"…","withdrawn":[0,2],"remaining":[{"severity":"error|warn|info","text":"…"}],"correct_parts":["…"]}');
-  lines.push('- `reply`：≤200 字，中文，讲清道理；数学用行内 `$...$`。');
+  lines.push(
+    check.lang === 'en'
+      ? '- `reply`: ≤200 words, in **English**; use inline `$...$` for math.'
+      : '- `reply`：≤200 字，中文，讲清道理；数学用行内 `$...$`。',
+  );
   lines.push('- `withdrawn`：原检查里被撤回的 issues 的**下标**（0 开始）；没有就空数组。');
   lines.push('- `remaining`：你仍然坚持的问题（最多 2 条），每条必须能落到学生答案的**具体片段**上。');
   lines.push('');
@@ -485,7 +492,11 @@ export function buildRebuttalPrompt(input: RebuttalInput): string {
   lines.push('## 学生这一轮的答辩');
   lines.push(userText.trim());
   lines.push('');
-  lines.push('请用**中文**写 `reply`/`remaining`/`correct_parts`（题目术语保留德语原文）。');
+  lines.push(
+    check.lang === 'en'
+      ? 'Write `reply`/`remaining`/`correct_parts` in **English** (keep German problem terms as they are).'
+      : '请用**中文**写 `reply`/`remaining`/`correct_parts`（题目术语保留德语原文）。',
+  );
   return lines.join('\n');
 }
 
@@ -535,8 +546,8 @@ export async function runRebuttal(
   const raw = vision
     ? await vision(prompt, images, { maxTokens: 6000, purpose: 'exercise-rebut', reasoning: input.reasoning })
     : await askLlm(prompt, { maxTokens: 6000, purpose: 'exercise-rebut', reasoning: input.reasoning });
-  if (!raw) return { ok: false, rebuttal: null, raw: null, error: 'LLM 不可用（无 apiKey / 请求失败 / 超时）' };
+  if (!raw) return { ok: false, rebuttal: null, raw: null, error: tr('LLM 不可用（无 apiKey / 请求失败 / 超时）', 'LLM unavailable (no apiKey / request failed / timed out)') };
   const rebuttal = parseRebuttal(raw);
-  if (!rebuttal) return { ok: false, rebuttal: null, raw, error: '答辩输出不可解析（已保留原文）' };
+  if (!rebuttal) return { ok: false, rebuttal: null, raw, error: tr('答辩输出不可解析（已保留原文）', 'Rebuttal output could not be parsed (raw output kept)') };
   return { ok: true, rebuttal, raw };
 }

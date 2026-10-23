@@ -20,9 +20,10 @@ import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Workbench } from './workbench.tsx';
 import { injectLectureStyles } from './styles.ts';
+import { installI18n, useT } from './i18n.ts';
 
 export const name = 'aemeath-lecture-client';
-export const inject = ['slots'];
+export const inject = ['slots', 'locale'];
 
 /** 打开课堂模式的窗口事件名（入口按钮派发，浏览器降级时用）。 */
 export const LECTURE_OPEN_EVENT = 'aemeath:open-lecture-mode';
@@ -156,6 +157,9 @@ function StandaloneMount(): void {
 }
 
 export function apply(ctx: ClientContext): void {
+  // i18n 必须先装：下面的入口按钮/工作台都要 t()。
+  installI18n(ctx);
+
   // ⚠️ 样式必须在**插件加载时**就注入，不能等到 Host 渲染时——
   //    真机踩过：只写 ensureStyles() 但没调用，导致 .aem-lec 的 CSS 完全没生效，
   //    面板以 position:static 被挤到页面底部（DOM 在、看上去"没打开"）。
@@ -201,6 +205,7 @@ export function apply(ctx: ClientContext): void {
 
 /** 侧边栏常驻入口按钮（主 agent 内启动，D9）。 */
 function Launcher(): JSX.Element {
+  const t = useT();
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -229,8 +234,8 @@ function Launcher(): JSX.Element {
   return (
     <button
       type="button"
-      title={open ? '课堂记录（窗口已打开）' : '课堂记录'}
-      aria-label="课堂记录"
+      title={open ? t('lecture.launcher.titleOpen') : t('lecture.launcher.title')}
+      aria-label={t('lecture.launcher.aria')}
       onClick={onClick}
       style={{
         display: 'inline-flex',
@@ -263,7 +268,7 @@ function Launcher(): JSX.Element {
           flex: 'none',
         }}
       />
-      课堂
+      {t('lecture.launcher.label')}
     </button>
   );
 }

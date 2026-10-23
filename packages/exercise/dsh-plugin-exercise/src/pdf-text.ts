@@ -12,6 +12,7 @@
 //
 // 本模块**不进 dsh**，可在纯 Node 下单测（见 test/check2.mjs）。
 // ============================================================
+import { tr } from './locale.js';
 
 export interface PdfExtractResult {
   /** 全文（页间以 \f 分隔，保留页边界；已做清洗） */
@@ -295,7 +296,7 @@ export function normalizePdfText(raw: string): string {
 function errorText(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (typeof e === 'string') return e;
-  return '未知错误';
+  return tr('未知错误', 'Unknown error');
 }
 
 /** 去空白后的长度（`\f` 也算空白，这里的入参通常已不含它）。 */
@@ -328,13 +329,13 @@ export async function extractPdfText(bytes: Uint8Array): Promise<PdfExtractResul
 
   try {
     if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
-      return failed('PDF 内容为空');
+      return failed(tr('PDF 内容为空', 'PDF content is empty'));
     }
 
     const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as PdfJsLike;
     const getDocument = pdfjs.getDocument ?? pdfjs.default?.getDocument;
     if (typeof getDocument !== 'function') {
-      return failed('pdfjs-dist 未导出 getDocument（依赖版本不匹配？）');
+      return failed(tr('pdfjs-dist 未导出 getDocument（依赖版本不匹配？）', 'pdfjs-dist does not export getDocument (dependency version mismatch?)'));
     }
 
     const task = getDocument({
@@ -348,7 +349,7 @@ export async function extractPdfText(bytes: Uint8Array): Promise<PdfExtractResul
 
     const total = typeof doc.numPages === 'number' && doc.numPages > 0 ? doc.numPages : 0;
     if (total === 0) {
-      return failed('PDF 没有可读页面');
+      return failed(tr('PDF 没有可读页面', 'PDF has no readable pages'));
     }
 
     const pages: string[] = [];
@@ -365,7 +366,7 @@ export async function extractPdfText(bytes: Uint8Array): Promise<PdfExtractResul
         }
       } catch (e) {
         // 单页失败不放弃整份文档：作业 PDF 常见"最后一页是扫描的评分标准"
-        warnings.push(`第 ${i} 页文本抽取失败：${errorText(e)}`);
+        warnings.push(tr(`第 ${i} 页文本抽取失败：${errorText(e)}`, `Failed to extract text from page ${i}: ${errorText(e)}`));
         pages.push('');
       }
     }
@@ -380,12 +381,12 @@ export async function extractPdfText(bytes: Uint8Array): Promise<PdfExtractResul
     const text = pages.join('\n\f\n');
     const hasText = meaningfulLength(pages.join('')) >= MIN_MEANINGFUL_CHARS;
     if (!hasText) {
-      warnings.push('未抽到有效文本（可能是扫描件/纯公式）：请手动补题干');
+      warnings.push(tr('未抽到有效文本（可能是扫描件/纯公式）：请手动补题干', 'No usable text extracted (possibly a scan or formula-only PDF): please fill in the problem statement manually'));
     }
 
     return { text, pages, pageCount: pages.length, hasText, warnings };
   } catch (e) {
     // 加密（PasswordException）、损坏、依赖缺失…… 一律降级
-    return failed(`PDF 解析失败：${errorText(e)}`);
+    return failed(tr(`PDF 解析失败：${errorText(e)}`, `PDF parsing failed: ${errorText(e)}`));
   }
 }

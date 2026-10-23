@@ -27,6 +27,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { PDFDocument } from 'pdf-lib';
+import { tr } from './locale.js';
 
 // ============================================================
 // 常量
@@ -229,7 +230,7 @@ function ensureDir(dir: string): void {
 export async function mergePdfs(parts: string[], outPdf: string): Promise<{ pages: number; bytes: number }> {
   if (!Array.isArray(parts) || parts.length === 0) {
     // 这是调用方的编程错误（没有任何输入却要合并）→ 明确抛，不静默产出空 PDF
-    throw new Error('mergePdfs：至少需要一个 PDF 文件');
+    throw new Error(tr('mergePdfs：至少需要一个 PDF 文件', 'mergePdfs: at least one PDF file is required'));
   }
 
   const out = await PDFDocument.create();
@@ -312,7 +313,7 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
         return {
           ok: false,
           merged: false,
-          error: `chromePath 不是可执行文件：${opts.chromePath}`,
+          error: tr(`chromePath 不是可执行文件：${opts.chromePath}`, `chromePath is not an executable file: ${opts.chromePath}`),
         };
       }
     } else {
@@ -322,7 +323,7 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
       return {
         ok: false,
         merged: false,
-        error: '未找到 Chromium 内核浏览器（Chrome / Edge / Chromium）。请安装其一，或用 AEMEATH_CHROME 指定可执行文件路径。',
+        error: tr('未找到 Chromium 内核浏览器（Chrome / Edge / Chromium）。请安装其一，或用 AEMEATH_CHROME 指定可执行文件路径。', 'No Chromium-based browser found (Chrome / Edge / Chromium). Install one, or set AEMEATH_CHROME to the executable path.'),
       };
     }
 
@@ -390,7 +391,7 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
 
     if (spawnError) {
       const e = spawnError as Error;
-      return { ok: false, merged: false, renderer: chrome.name, command, error: `浏览器启动失败：${e.message}` };
+      return { ok: false, merged: false, renderer: chrome.name, command, error: tr(`浏览器启动失败：${e.message}`, `Browser failed to start: ${e.message}`) };
     }
     if (timedOut) {
       return {
@@ -398,7 +399,7 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
         merged: false,
         renderer: chrome.name,
         command,
-        error: `浏览器渲染超时（${timeoutMs}ms），已终止。可检查页面 URL 是否可达，或调大 timeoutMs。`,
+        error: tr(`浏览器渲染超时（${timeoutMs}ms），已终止。可检查页面 URL 是否可达，或调大 timeoutMs。`, `Browser rendering timed out (${timeoutMs}ms) and was terminated. Check that the page URL is reachable, or increase timeoutMs.`),
       };
     }
     if (exitCode !== 0) {
@@ -407,7 +408,10 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
         merged: false,
         renderer: chrome.name,
         command,
-        error: `浏览器退出码 ${exitCode}${stderr.trim() ? `：${stderr.trim()}` : ''}`,
+        error: tr(
+          `浏览器退出码 ${exitCode}${stderr.trim() ? `：${stderr.trim()}` : ''}`,
+          `Browser exited with code ${exitCode}${stderr.trim() ? `: ${stderr.trim()}` : ''}`,
+        ),
       };
     }
 
@@ -418,7 +422,10 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
         merged: false,
         renderer: chrome.name,
         command,
-        error: `浏览器退出码 0，但没有生成 PDF：${printTarget}${stderr.trim() ? `（stderr：${stderr.trim()}）` : ''}`,
+        error: tr(
+          `浏览器退出码 0，但没有生成 PDF：${printTarget}${stderr.trim() ? `（stderr：${stderr.trim()}）` : ''}`,
+          `Browser exited with code 0 but produced no PDF: ${printTarget}${stderr.trim() ? ` (stderr: ${stderr.trim()})` : ''}`,
+        ),
       };
     }
 
@@ -434,7 +441,10 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
         merged: false,
         renderer: chrome.name,
         command,
-        error: `输出文件过小（${rawSize} B < ${MIN_PDF_BYTES} B），不是有效 PDF。${stderr.trim() ? `（stderr：${stderr.trim()}）` : ''}`,
+        error: tr(
+          `输出文件过小（${rawSize} B < ${MIN_PDF_BYTES} B），不是有效 PDF。${stderr.trim() ? `（stderr：${stderr.trim()}）` : ''}`,
+          `Output file is too small (${rawSize} B < ${MIN_PDF_BYTES} B) and is not a valid PDF.${stderr.trim() ? ` (stderr: ${stderr.trim()})` : ''}`,
+        ),
       };
     }
 
@@ -449,7 +459,7 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
         bytes: rawSize,
         renderer: chrome.name,
         command,
-        error: `输出不是可解析的 PDF：${errText(err)}`,
+        error: tr(`输出不是可解析的 PDF：${errText(err)}`, `Output is not a parseable PDF: ${errText(err)}`),
       };
     }
 
@@ -475,7 +485,10 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
           pages,
           renderer: chrome.name,
           command,
-          error: `合并原卷失败：${errText(err)}（解答 PDF 已保留在 ${printTarget}）`,
+          error: tr(
+            `合并原卷失败：${errText(err)}（解答 PDF 已保留在 ${printTarget}）`,
+            `Merging the original PDF failed: ${errText(err)} (the solution PDF is kept at ${printTarget})`,
+          ),
         };
       }
 
