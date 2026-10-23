@@ -140,4 +140,16 @@ t('parseRebuttal：未知 outcome 归为 partial，非法输入返回 null', () 
   assert.equal(parseRebuttal('{"outcome":"conceded"'), null);
 });
 
+t('检查 prompt：算不出来就放弃（unclear），不许硬判/编造问题', () => {
+  const p = buildCheckPrompt(base);
+  assert.match(p, /\*\*算不出来就放弃\*\*/);
+  assert.match(p, /宁可不判，也不要误判/);
+});
+
+t('答辩 prompt：判不了就给 partial 并说明卡在哪，不编造证据', () => {
+  const p = buildRebuttalPrompt({ check: base, previous, userText: 'x' });
+  assert.match(p, /\*\*算不出来就放弃\*\*/);
+  assert.match(p, /不要为了分出胜负而硬判/);
+});
+
 console.log(`\n[exercise-checker-prompt] ${passed} 项断言通过`);

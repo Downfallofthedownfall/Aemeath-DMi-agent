@@ -29,7 +29,14 @@ import { tr } from './locale.js';
 export type AskVision = (
   prompt: string,
   images: readonly { mediaType: string; base64: string }[],
-  opts: { maxTokens: number; purpose: string; /** 推理强度（多模态默认 off；批改带学生手画图时用 high/max） */ reasoning?: 'off' | 'low' | 'high' | 'max' },
+  opts: {
+    maxTokens: number;
+    purpose: string;
+    /** 推理强度（批改默认 high；分块/读图这类结构化任务用 off） */
+    reasoning?: 'off' | 'low' | 'high' | 'max';
+    /** 单次调用超时（批改 180s） */
+    timeoutMs?: number;
+  },
 ) => Promise<string | null>;
 
 export interface VisionPage {

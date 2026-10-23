@@ -107,7 +107,7 @@ t('检查 prompt：没有附图时不会冒出这段话', () => {
   assert.ok(!p.includes('手画图'));
 });
 
-await asyncT('runCheck：把 reasoning=max 和 8000 token 传给文本通道', async () => {
+await asyncT('runCheck：把 reasoning=high 和 32000 token 传给文本通道（放开烧 token）', async () => {
   let seen = null;
   const askLlm = async (_prompt, opts) => {
     seen = opts;
@@ -123,13 +123,14 @@ await asyncT('runCheck：把 reasoning=max 和 8000 token 传给文本通道', a
       points: null,
       problemText: 'x',
       answer: 'y',
-      reasoning: 'max',
+      reasoning: 'high',
     },
     askLlm,
   );
   assert.equal(r.ok, true);
-  assert.equal(seen.reasoning, 'max');
-  assert.equal(seen.maxTokens, 8000);
+  assert.equal(seen.reasoning, 'high');
+  assert.equal(seen.maxTokens, 32000);
+  assert.equal(seen.timeoutMs, 180_000, '批改给 180s，别被 60s 掐断');
 });
 
 await asyncT('runCheck：原题图 + 学生手画图一起送多模态（顺序：原题在前）', async () => {
@@ -153,7 +154,7 @@ await asyncT('runCheck：原题图 + 学生手画图一起送多模态（顺序�
       points: null,
       problemText: 'x',
       answer: 'y',
-      reasoning: 'max',
+      reasoning: 'high',
       pageImage: { base64: 'PAGE', mediaType: 'image/jpeg', page: 2 },
       answerImages: [{ base64: 'DRAW', mediaType: 'image/png', name: 'img-1.png' }],
     },
@@ -162,7 +163,9 @@ await asyncT('runCheck：原题图 + 学生手画图一起送多模态（顺序�
   );
   assert.equal(r.ok, true);
   assert.deepEqual(images.map((i) => i.base64), ['PAGE', 'DRAW']);
-  assert.equal(opts.reasoning, 'max');
+  assert.equal(opts.reasoning, 'high');
+  assert.equal(opts.maxTokens, 32000, '多模态批改也给足预算，推理不再被掐断');
+  assert.equal(opts.timeoutMs, 180_000);
 });
 
 t('PDF：答案附图内联成 <figure><img>（带图注，无则只图）', () => {

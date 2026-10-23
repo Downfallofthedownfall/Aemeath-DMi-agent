@@ -32,6 +32,8 @@ export interface AskLlm {
       noReasoning?: boolean;
       /** 跳过全局 LLM 运行时、直接走直连（上一次运行时的输出不可用时才这样重试）。 */
       preferDirect?: boolean;
+      /** 单次调用的超时（批改给 180s：高推理 + 大预算，别被 60s 掐断） */
+      timeoutMs?: number;
       /**
        * 推理强度（`off|low|high|max`）。批改/答辩默认 max —— "重在精不在快"；
        * 分块这类结构任务用 off。
@@ -117,7 +119,9 @@ export function buildCheckPrompt(input: CheckInput): string {
   lines.push('1. **不要写出完整解答**。最多指出"哪一步不成立"，并给出**下一步该验证什么**。');
   lines.push('2. 看不清/信息不足 → verdict="unclear" 并说明缺什么。');
   lines.push('3. 学生答案为空 → verdict="unclear"，issues 说"还没有答案"，hints 给一个**破题问题**。');
-  lines.push('4. 数学表达式一律用 LaTeX（行内 `$...$`），保持题目原有的德语术语。');
+  lines.push('4. **算不出来就放弃**：推理/推导很久仍确定不了对错时，直接给 `unclear` 并说明卡在哪（缺条件、图看不清、需要数值），');
+  lines.push('   **不要为了凑出结论而硬判**，也不要编造一个"可能的问题"。宁可不判，也不要误判。');
+  lines.push('5. 数学表达式一律用 LaTeX（行内 `$...$`），保持题目原有的德语术语。');
   lines.push('');
   lines.push('## 输出格式（严格 JSON，不要 markdown 代码块，不要多余文字）');
   lines.push('{"verdict":"correct|partial|wrong|unclear","score":0.0,"issues":[{"severity":"error|warn|info","text":"…"}],"hints":["…"],"next_steps":["…"]}');
@@ -350,7 +354,7 @@ export async function runCheck(
   askVision?: (
     prompt: string,
     images: readonly { mediaType: string; base64: string }[],
-    opts: { maxTokens: number; purpose: string; reasoning?: ReasoningEffort },
+    opts: { maxTokens: number; purpose: string; reasoning?: ReasoningEffort; timeoutMs?: number },
   ) => Promise<string | null>,
 ): Promise<{ ok: boolean; check: ParsedCheck | null; raw: string | null; error?: string; vision?: boolean }> {
   const prompt = buildCheckPrompt(input);
@@ -366,11 +370,12 @@ export async function runCheck(
   // 否则高推理会把预算烧在 reasoning 上、正文被截断（真机踩过）。
   const raw = vision
     ? await vision(prompt, images, {
-        maxTokens: 8000,
+        maxTokens: 32000,
         purpose: 'exercise-check-vision',
         reasoning: input.reasoning,
+        timeoutMs: 180_000,
       })
-    : await askLlm(prompt, { maxTokens: 8000, purpose: 'exercise-check', reasoning: input.reasoning });
+    : await askLlm(prompt, { maxTokens: 32000, purpose: 'exercise-check', reasoning: input.reasoning, timeoutMs: 180_000 });
   if (!raw) {
     return {
       ok: false,
@@ -450,6 +455,8 @@ export function buildRebuttalPrompt(input: RebuttalInput): string {
   lines.push('- 只有数学/物理上不成立才是错；记号、步骤详略、单位写法不算错。');
   lines.push('- 数值差在 1% 内算对。用了等价方法（能量法 vs 牛顿定律）算对。');
   lines.push('- 你看不清题目（OCR 缺失）就承认，不要把缺失当成学生的错。');
+  lines.push('- **算不出来就放弃**：反复推导仍确定不了对错时，给 partial 并说明卡在哪（缺条件/看不清/需要数值），');
+  lines.push('  不要为了分出胜负而硬判，也不要编造证据。');
   lines.push('');
   lines.push('## 输出格式（严格 JSON，不要代码块）');
   lines.push('{"outcome":"conceded|upheld|partial","reply":"…","withdrawn":[0,2],"remaining":[{"severity":"error|warn|info","text":"…"}],"correct_parts":["…"]}');
@@ -534,7 +541,7 @@ export async function runRebuttal(
   askVision?: (
     prompt: string,
     images: readonly { mediaType: string; base64: string }[],
-    opts: { maxTokens: number; purpose: string; reasoning?: ReasoningEffort },
+    opts: { maxTokens: number; purpose: string; reasoning?: ReasoningEffort; timeoutMs?: number },
   ) => Promise<string | null>,
 ): Promise<{ ok: boolean; rebuttal: ParsedRebuttal | null; raw: string | null; error?: string }> {
   const prompt = buildRebuttalPrompt(input);
@@ -544,8 +551,8 @@ export async function runRebuttal(
   ];
   const vision = images.length && askVision ? askVision : undefined;
   const raw = vision
-    ? await vision(prompt, images, { maxTokens: 6000, purpose: 'exercise-rebut', reasoning: input.reasoning })
-    : await askLlm(prompt, { maxTokens: 6000, purpose: 'exercise-rebut', reasoning: input.reasoning });
+    ? await vision(prompt, images, { maxTokens: 20000, purpose: 'exercise-rebut', reasoning: input.reasoning, timeoutMs: 180_000 })
+    : await askLlm(prompt, { maxTokens: 20000, purpose: 'exercise-rebut', reasoning: input.reasoning, timeoutMs: 180_000 });
   if (!raw) return { ok: false, rebuttal: null, raw: null, error: tr('LLM 不可用（无 apiKey / 请求失败 / 超时）', 'LLM unavailable (no apiKey / request failed / timed out)') };
   const rebuttal = parseRebuttal(raw);
   if (!rebuttal) return { ok: false, rebuttal: null, raw, error: tr('答辩输出不可解析（已保留原文）', 'Rebuttal output could not be parsed (raw output kept)') };

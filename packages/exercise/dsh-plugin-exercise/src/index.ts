@@ -133,10 +133,10 @@ export const Config = z.object({
   /** 合并顺序：sheet-first（原卷在前）| solutions-first（解答在前）。 */
   submissionOrder: z.string().default('sheet-first'),
   /**
-   * 检查/答辩的推理强度：max（默认，重在精不在快）| high | low | off。
+   * 检查/答辩的推理强度：high（默认；评测里 max 并不更好）| max | low | off。
    * 分块/读图这类结构化任务不受影响（它们固定 off）。
    */
-  checkReasoning: z.string().default('max'),
+  checkReasoning: z.string().default('high'),
   /** 浏览器路径（空 = 自动发现 Chrome/Edge/Chromium）。 */
   chromePath: z.string().default(''),
   llm: z.object({
@@ -214,11 +214,12 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   const worldbookDir = config.worldbookLibraryDir ?? 'packages/worldbook/data/physicist';
   const lectureDataDir = config.lectureDataDir ?? 'packages/library/physicist/lectures';
   const autoCollect = config.autoCollectMistakes ?? true;
-  // 批改/答辩的推理强度（用户定案：重在精不在快 → 默认 max）
+  // 批改/答辩的推理强度（用户定案 2026-10-23：默认 high —— 评测里 max 并不更好；
+  // **但绝不因为预算而降级关推理**：推理没了基本必错，宁可烧 token）
   const checkReasoning: 'off' | 'low' | 'high' | 'max' =
     config.checkReasoning === 'off' || config.checkReasoning === 'low' || config.checkReasoning === 'high' || config.checkReasoning === 'max'
       ? config.checkReasoning
-      : 'max';
+      : 'high';
   // 文本导出目录：空 = packages/library/physicist-md/（**不在** gitignore 覆盖范围内，git add 就能管）
   const textExportDir = config.textExportDir || 'packages/library/physicist-md';
   const studentName = config.studentName ?? '';
@@ -332,8 +333,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       purpose: string;
       noReasoning?: boolean;
       attempt?: number;
-      /** 推理强度；批改/答辩给 `max`（重在精不在快），分块给 `off` */
+      /** 推理强度；批改/答辩给 `high`，分块给 `off` */
       reasoning?: 'off' | 'low' | 'high' | 'max';
+      /** 单次调用超时（批改 180s；分块用默认 60s） */
+      timeoutMs?: number;
     },
   ): Promise<string | null> => {
     const rt = llmRuntime();
@@ -345,7 +348,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (!route) return null;
     lastLlmRoute = `dsh:${route.provider}/${route.model}`;
     lastLlmReasoning = opts.noReasoning ? 'off' : (opts.reasoning ?? 'high');
-    const deadline = AbortSignal.timeout(LLM_TIMEOUT_MS_LOCAL);
+    const deadline = AbortSignal.timeout(opts.timeoutMs ?? LLM_TIMEOUT_MS_LOCAL);
     const request = async (noReasoning: boolean): Promise<string | null> => {
       const call = await prepareCall(
         {
@@ -384,9 +387,21 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       );
       const attempt = opts.attempt ?? 1;
       if (finish?.kind === 'max-tokens' && attempt < 3) {
-        const next = Math.min(opts.maxTokens * 4, 16_000);
-        log(`空文本来自 max-tokens 截断 → 放大到 ${next} 并关闭推理重试（第 ${attempt + 1} 次）`);
-        return askViaRuntime(prompt, { ...opts, maxTokens: next, noReasoning: true, attempt: attempt + 1 });
+        // 有推理的任务（批改/答辩）：**只放大预算，绝不关推理** ——
+        // 用户定案"推理没了基本百分百会批错"，宁可烧 token 让模型自己放弃（verdict=unclear）。
+        const next = Math.min(opts.maxTokens * 2, 128_000);
+        const keepReasoning = !!opts.reasoning && opts.reasoning !== 'off' && !opts.noReasoning;
+        log(
+          `空文本来自 max-tokens 截断 → 预算放大到 ${next}` +
+            (keepReasoning ? '，推理保持' : '，关闭推理重试') +
+            `（第 ${attempt + 1} 次）`,
+        );
+        return askViaRuntime(prompt, {
+          ...opts,
+          maxTokens: next,
+          noReasoning: keepReasoning ? undefined : true,
+          attempt: attempt + 1,
+        });
       }
       return null;
     };
@@ -424,6 +439,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         purpose: opts.purpose,
         noReasoning: opts.noReasoning,
         reasoning: opts.reasoning,
+        timeoutMs: opts.timeoutMs,
       });
       if (viaRuntime) return viaRuntime;
     }
@@ -499,17 +515,17 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     for (const img of images) {
       content.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.base64}` } });
     }
-    // 批改要看图，又要求"重在精不在快" → 显式要推理强度（实测 API 接受 reasoning_effort）。
-    // 但 reasoning token 也算进 max_tokens，所以预算给足；万一被截断成空文本，
-    // 再退回 thinking:disabled 重试一次（宁可少想，也不能让检查挂掉）。
+    // 批改要看图，推理强度由调用方给（默认 high）。
+    // **推理不再被关掉**（用户 2026-10-23 定案）：推理没了基本必错；宁可放开烧 token，
+    // 预算不够就放大预算重试，实在算不出来让模型自己给 `unclear`。
     const wantReasoning = opts.reasoning && opts.reasoning !== 'off' ? opts.reasoning : undefined;
     const t0 = Date.now();
-    const call = async (m: string, withReasoning: boolean): Promise<Response> => {
+    const call = async (m: string, withReasoning: boolean, budget = opts.maxTokens): Promise<Response> => {
       const body = {
         model: m,
         messages: [{ role: 'user', content }],
         response_format: { type: 'json_object' },
-        max_tokens: opts.maxTokens,
+        max_tokens: budget,
         temperature: 0.1,
         ...(withReasoning ? { reasoning_effort: wantReasoning } : { thinking: { type: 'disabled' } }),
       };
@@ -517,7 +533,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(LLM_TIMEOUT_MS_LOCAL),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? LLM_TIMEOUT_MS_LOCAL),
       });
     };
     const read = async (resp: Response): Promise<{ text: string; finish: string; reasoningChars: number; usage: unknown } | null> => {
@@ -555,15 +571,19 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         `多模态（${model}，推理${withReasoning ? wantReasoning : '关'}）：${images.length} 图 ${Date.now() - t0}ms ` +
           `len=${got?.text.length ?? 0} finish=${got?.finish ?? '?'} usage=${JSON.stringify(got?.usage ?? {})}`,
       );
-      if (got && !got.text && withReasoning) {
+      // 推理吃满预算 → **放大预算、保持推理**重试（绝不关推理：推理没了基本必错）。
+      // 用户 2026-10-23："放开烧 token 就行了" —— 最多放大三档（32k → 64k → 128k）。
+      let budget = opts.maxTokens;
+      for (let round = 1; got && !got.text && withReasoning && got.finish === 'length' && round <= 3; round++) {
+        const bigger = Math.min(budget * 2, 128_000);
         warn(
-          `多模态返回空文本（推理吃满 max_tokens，finish=${got.finish}，reasoning=${got.reasoningChars} 字）` +
-            ` → 关推理重试一次`,
+          `多模态返回空文本（推理吃满 max_tokens=${budget}，finish=${got.finish}，` +
+            `reasoning=${got.reasoningChars} 字）→ 预算放大到 ${bigger}，推理保持 ${wantReasoning}`,
         );
-        withReasoning = false;
-        lastLlmReasoning = 'off(fallback)';
-        got = await read(await call(model, false));
-        log(`多模态重试：len=${got?.text.length ?? 0} finish=${got?.finish ?? '?'}`);
+        budget = bigger;
+        got = await read(await call(model, true, budget));
+        log(`多模态重试（预算 ${budget}）：len=${got?.text.length ?? 0} finish=${got?.finish ?? '?'}`);
+        if (budget >= 128_000) break;
       }
       if (!got?.text) {
         warn(`多模态返回空文本（${opts.purpose}，finish=${got?.finish ?? '?'}）`);
