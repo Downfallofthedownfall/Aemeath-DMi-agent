@@ -168,6 +168,8 @@ voices/tts/
 # ===== 第三关：运行数据与本地环境 =====
 # memory 插件桥接生成的 worldbook 条目（运行数据，勿提交）
 packages/worldbook/data/**/generated_knowledge.json
+# exercise 插件写入的错题教训/经验条目（运行数据，勿提交）
+packages/worldbook/data/**/generated_exercise.json
 # Python 虚拟环境
 .venv/
 
@@ -199,8 +201,10 @@ packages/**/lib/
 packages/**/dist/
 profiles/**/node_modules/
 *.tsbuildinfo
-# 讲义档案
+# 讲义档案（内容数据，单独管理）
 packages/library/physicist/
+# 习题文本导出（内容数据，单独管理；需要版本化时在该目录独立 git init）
+packages/library/physicist-md/
 # Altklausuren
 packages/benchmark/altklausur/
 temp/

@@ -121,9 +121,8 @@ export const Config = z.object({
   /** 检查结果 wrong/partial 时自动进错题本（仍可手动改/删）。 */
   autoCollectMistakes: z.boolean().default(true),
   /**
-   * 纯文本导出目录（markdown，给 git 管理用）。
-   * 空 = 数据目录同级的 `exercises-md/`（`<dataDir>/../exercises-md`）。
-   * 想进版本库就把这个目录从 .gitignore 里放出来。
+   * 纯文本导出目录（markdown，内容管理用）。
+   * 空 = `packages/library/physicist-md/`（默认 gitignored；内容与 harness 分开管理）。
    */
   textExportDir: z.string().default(''),
   /** 生成提交包时的默认学生姓名（留空 → PDF 上留签名线）。 */
@@ -222,7 +221,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     config.checkReasoning === 'off' || config.checkReasoning === 'low' || config.checkReasoning === 'high' || config.checkReasoning === 'max'
       ? config.checkReasoning
       : 'high';
-  // 文本导出目录：空 = packages/library/physicist-md/（**不在** gitignore 覆盖范围内，git add 就能管）
+  // 文本导出目录：空 = packages/library/physicist-md/（gitignored；内容数据单独管理）
   const textExportDir = config.textExportDir || 'packages/library/physicist-md';
   const studentName = config.studentName ?? '';
   // 默认不合并原卷：只留自己生成的页面（用户定案：习题自己的 pdf 就不要了）

@@ -200,7 +200,7 @@ what you can do**: you write the answer yourself, and the model is only allowed 
 | Submission | Solutions page (KaTeX rendered server-side, fonts inlined) merged with the original sheet via `pdf-lib` → **one PDF** for the Übungsbetrieb; internal verdicts are print-hidden |
 | Figures | Attach drawings/photos to any problem ("＋ 图片"): sniffed by content (png/jpeg/webp/gif, ≤10MB), shown beside the answer, sent to the model with the sheet screenshot when checking, and printed inline in the submission PDF |
 | Rebuttal | The check is a suggestion, so you can argue with it: "答辩" sends your objection, the model re-derives from scratch and must either concede (withdraws the issues, marks the mistake mastered) or hold its ground with concrete evidence (substitution/counterexample) - never just repeat the verdict. Threads are append-only |
-| Text export | One click exports the whole library as deterministic markdown (`README.md`, `mistakes.md`, per-course and per-sheet files with answers/checks/lessons) into `packages/library/physicist-md/` - outside .gitignore, so `git add` just works. Unchanged content is not rewritten, deleted sheets lose their file, and hand-placed files are never touched |
+| Text export | One click exports the whole library as deterministic markdown (`README.md`, `mistakes.md`, per-course and per-sheet files with answers/checks/lessons) into `packages/library/physicist-md/` - gitignored by default: content data is managed separately from the agent harness. Unchanged content is not rewritten, deleted sheets lose their file, and hand-placed files are never touched |
 | Progress | Every new sheet gets a progress_digest: last unfinished sheet, answered/checked counts, unmastered top topics, lecture review progress |
 
 ```powershell
@@ -424,7 +424,7 @@ electron-app/        # v1（冻结，tag v1.0；已迁移文件删除，仅留�
 | 提交 | 解答页（服务端 KaTeX 渲染 + 字体内联）用 `pdf-lib` 与原卷合并 → **一份 PDF** 交给 Übungsbetrieb；内部 verdict 在打印时隐藏 |
 | 附图 | 每道题可以贴手画示意图/照片（「＋ 图片」）：按内容嗅探格式（png/jpeg/webp/gif，≤10MB），显示在答案旁边，**检查时和原题截图一起发给模型**，也会**印进提交 PDF** |
 | 答辩 | 检查只是建议，可以反驳：「答辩」把你的意见发过去，模型**重新独立推导**，要么认错撤回（对应问题划线、错题自动标已掌握），要么给出具体证据（代入数值/反例）坚持；不会只重复结论。对话追加保存 |
-| 文本导出 | 一键把题库导出成确定性 markdown（`README.md` / `mistakes.md` / 每门课 + 每套题），落在 `packages/library/physicist-md/`（**不在 gitignore 里**，`git add` 就能管）；内容没变不重写、删套题会移除对应文件、手工放进去的文件绝不动 |
+| 文本导出 | 一键把题库导出成确定性 markdown（`README.md` / `mistakes.md` / 每门课 + 每套题），落在 `packages/library/physicist-md/`（**默认 gitignored**：内容数据与 agent harness 分开管理）；内容没变不重写、删套题会移除对应文件、手工放进去的文件绝不动 |
 | 进度 | 每开一套新题自动附 `progress_digest`：上次没做完哪套、已答/已检查、未掌握的高频主题、课堂复盘进度 |
 
 ```powershell
