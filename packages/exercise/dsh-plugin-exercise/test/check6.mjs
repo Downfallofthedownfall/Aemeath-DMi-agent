@@ -330,6 +330,21 @@ await asyncT('POST build_submission 透传 order/include_source', async () => {
   assert.equal(input.includeSource, false);
 });
 
+await asyncT('POST build_submission 不传 include_source → 默认 false（只出解答页）', async () => {
+  const calls = [];
+  const res = makeRes();
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', {
+      action: 'build_submission',
+      course_id: 'physik-1',
+      sheet_id: 'ub03',
+    }),
+    res,
+    fakeDeps(calls),
+  );
+  const [, input] = calls[0];
+  assert.equal(input.includeSource, false, '2026-10-24 起默认不合并原卷');
+});
 await asyncT('POST 未知 action → 400；GET 未知 action → 400', async () => {
   let res = makeRes();
   await handleExerciseHttp(makeReq('POST', '/aemeath/api/exercise', { action: 'nope' }), res, fakeDeps([]));

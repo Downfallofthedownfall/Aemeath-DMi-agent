@@ -748,7 +748,8 @@ export function buildSubmissionHtml(input: SubmissionHtmlInput): string {
       points,
       verdict,
       '</div>',
-      titleRaw ? `<h2 class="problem-title">${escapeHtml(titleRaw)}</h2>` : '',
+      // 标题里也可能有公式（LLM 生成的标题常带 `$m$`）→ 走行内渲染，别原样印 `$m$`
+      titleRaw ? `<h2 class="problem-title">${inlineToHtml(escapeHtml(titleRaw), renderMath)}</h2>` : '',
       '</div>',
       `<div class="statement">${statement}</div>`,
       '<div class="answer">',
@@ -799,7 +800,7 @@ export function buildSubmissionHtml(input: SubmissionHtmlInput): string {
     `<span class="course-id">${escapeHtml(courseId)}</span>`,
     '</div>',
     `<h1 class="sheet-heading">${escapeHtml(heading)}</h1>`,
-    sheetTitle ? `<div class="sheet-sub">${escapeHtml(sheetTitle)}</div>` : '',
+    sheetTitle ? `<div class="sheet-sub">${inlineToHtml(escapeHtml(sheetTitle), renderMath)}</div>` : '',
     '<div class="dates">',
     `<span><span class="k">${t.issued}:</span>${escapeHtml(String(sheet.issued ?? ''))}</span>`,
     `<span><span class="k">${t.due}:</span>${escapeHtml(String(sheet.due ?? ''))}</span>`,

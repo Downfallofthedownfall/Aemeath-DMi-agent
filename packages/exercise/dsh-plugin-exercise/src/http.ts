@@ -714,7 +714,7 @@ export async function handleExerciseHttp(
           const r = await deps.onBuildSubmission({
             courseId,
             sheetId,
-            includeSource: parsed.include_source !== false,
+            includeSource: parsed.include_source === true,
             order,
             draft: parsed.draft === true,
           });

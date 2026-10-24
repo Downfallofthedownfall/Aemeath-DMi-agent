@@ -129,7 +129,8 @@ export const Config = z.object({
   /** 生成提交包时的默认学生姓名（留空 → PDF 上留签名线）。 */
   studentName: z.string().default(''),
   /** 是否把原卷合并进提交包。 */
-  includeSourcePdf: z.boolean().default(true),
+  /** 提交包是否合并原卷 PDF。默认 false：只输出生成的解答页（用户 2026-10-24 定案）。 */
+  includeSourcePdf: z.boolean().default(false),
   /** 合并顺序：sheet-first（原卷在前）| solutions-first（解答在前）。 */
   submissionOrder: z.string().default('sheet-first'),
   /**
@@ -208,7 +209,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     log(`settings 已更新: enabled=${runtime.enabled}`);
   });
 
-  const dataDir = config.dataDir ?? 'packages/library/physicist/exercises';
+  // 测试/多实例隔离：EXERCISE_DATA_DIR 可以覆盖数据目录（e2e 用独立目录，避免动到真实题库）
+  const dataDir = (process.env.EXERCISE_DATA_DIR ?? '').trim() || config.dataDir || 'packages/library/physicist/exercises';
   const store = new ExerciseStore({ rootDir: dataDir } satisfies StoreOptions);
   const handoffDir = config.handoffDir || join(dataDir, 'handoff');
   const worldbookDir = config.worldbookLibraryDir ?? 'packages/worldbook/data/physicist';
@@ -223,7 +225,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // 文本导出目录：空 = packages/library/physicist-md/（**不在** gitignore 覆盖范围内，git add 就能管）
   const textExportDir = config.textExportDir || 'packages/library/physicist-md';
   const studentName = config.studentName ?? '';
-  const includeSourceDefault = config.includeSourcePdf ?? true;
+  // 默认不合并原卷：只留自己生成的页面（用户定案：习题自己的 pdf 就不要了）
+  const includeSourceDefault = config.includeSourcePdf ?? false;
   const submissionOrder = config.submissionOrder === 'solutions-first' ? 'solutions-first' : 'sheet-first';
   const llm = {
     /** 显式覆盖（一般留空）：空 = 走全局 dsh 的 LLM 运行时。 */
@@ -2331,7 +2334,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       parameters: {
         course_id: { type: 'string', required: true, description: '课程标识' },
         sheet_id: { type: 'string', required: true, description: '套题标识' },
-        include_source: { type: 'boolean', description: '是否合并原卷（缺省 true）' },
+        include_source: { type: 'boolean', description: '是否合并原卷 PDF（缺省 false：只输出生成的解答页）' },
       },
       output: { schema: { type: 'json' }, render: renderJson },
       execute: async (args: { course_id: string; sheet_id: string; include_source?: boolean }) => {
