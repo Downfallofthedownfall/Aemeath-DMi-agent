@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path';
 import { PDFDocument } from 'pdf-lib';
 
 import { buildSubmissionHtml, renderMarkdownFragment } from '../lib/pdf-html.js';
+import { katexCssInlined } from '../lib/pdf-math.js';
 import { countPdfPages, findChromium, mergePdfs, renderSubmissionPdf } from '../lib/pdf-render.js';
 
 let passed = 0;
@@ -484,4 +485,28 @@ await t('renderSubmissionPdf：无原卷时 merged 为 false（失败结果也�
   assert.equal(typeof res.error, 'string');
 });
 
+await t('katexCssInlined：真的找到了 katex.min.css（分数线/上下标靠它）', () => {
+  const css = katexCssInlined();
+  assert.ok(css.length > 10_000, `CSS 太小（${css.length}）：说明没找到 katex.min.css`);
+  assert.ok(css.includes('.mfrac'), '必须有分数规则');
+  assert.ok(css.includes('.katex'), '必须有 katex 基础规则');
+  assert.ok(css.includes('data:font/woff2;base64,'), '字体要内联（file:// 下不能引用相对路径）');
+});
+
+await t('打印 CSS：.math.display 不能有 overflow-x:auto（会在 PDF 里画出滚动条 ▲▼）', () => {
+  const html = buildSubmissionHtml({
+    courseTitle: 'Physik I',
+    courseId: 'physik-1',
+    sheet: { id: 'ub01', number: 1, title: '', issued: '', due: '' },
+    problems: [{ label: 'A1', title: '', text: 'x', points: null, answer: '$$a=b$$' }],
+    renderMath: (tex) => `<span class="katex">${tex}</span>`,
+  });
+  const i = html.indexOf('.math.display {');
+  assert.ok(i > 0, '要有 .math.display 规则');
+  const rule = html.slice(i, i + 260);
+  assert.ok(!/^\s*overflow-x\s*:\s*auto/m.test(rule), '横向滚动会印出滚动条按钮');
+  assert.match(rule, /overflow:\s*visible/);
+});
+
 console.log(`\n[exercise-pdf-html] ${passed} 项断言通过`);
+

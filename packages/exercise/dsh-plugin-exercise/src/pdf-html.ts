@@ -24,6 +24,7 @@
 // ============================================================
 
 import { normalizeMathDelimiters } from './math-parse.js';
+import { wrapBareLatexLines } from './print-normalize.js';
 
 // ============================================================
 // 对外类型（与 types.ts 的 Problem 解耦：导出层不依赖 zod，client 也能直接读）
@@ -211,20 +212,21 @@ function inlineToHtml(escaped: string, renderMath?: MathRenderer, depth = 0): st
   return out;
 }
 
-function splitListMarker(line: string): { kind: 'ul' | 'ol'; content: string } | null {
+function splitListMarker(line: string): { kind: 'ul' | 'ol'; content: string; num?: number } | null {
   // 无续行/嵌套：只认平铺列表。`*x*`（斜体）不会被误判，因为标记后必须跟空白。
   const m = /^\s*([-*+]|\d{1,3}[.)])\s+(.*)$/.exec(line);
   if (!m) return null;
   const marker = m[1]!;
   const kind: 'ul' | 'ol' = /^\d/.test(marker) ? 'ol' : 'ul';
-  return { kind, content: m[2]! };
+  // 保留原始序号：`3)` 要印成 3.，不能被 CSS 重新从 1 开始编号
+  return { kind, content: m[2]!, num: kind === 'ol' ? Number(marker.replace(/[.)]$/, '')) : undefined };
 }
 
 function renderBlocks(escapedBlockText: string, displayBlocks: string[], renderMath?: MathRenderer): string {
   const lines = escapedBlockText.split('\n');
   const out: string[] = [];
   let para: string[] = [];
-  let list: { kind: 'ul' | 'ol'; items: string[] } | null = null;
+  let list: { kind: 'ul' | 'ol'; items: string[]; start?: number } | null = null;
 
   const flushPara = (): void => {
     if (para.length === 0) return;
@@ -237,7 +239,8 @@ function renderBlocks(escapedBlockText: string, displayBlocks: string[], renderM
   const flushList = (): void => {
     if (!list) return;
     const tag = list.kind;
-    out.push(`<${tag}>${list.items.map((it) => `<li>${inlineToHtml(it, renderMath)}</li>`).join('')}</${tag}>`);
+    const startAttr = list.kind === 'ol' && list.start && list.start > 1 ? ` start="${list.start}"` : '';
+    out.push(`<${tag}${startAttr}>${list.items.map((it) => `<li>${inlineToHtml(it, renderMath)}</li>`).join('')}</${tag}>`);
     list = null;
   };
 
@@ -283,7 +286,7 @@ function renderBlocks(escapedBlockText: string, displayBlocks: string[], renderM
       flushPara();
       if (!list || list.kind !== item.kind) {
         flushList();
-        list = { kind: item.kind, items: [] };
+        list = { kind: item.kind, items: [], start: item.num };
       }
       list.items.push(item.content);
       continue;
@@ -299,9 +302,11 @@ function renderBlocks(escapedBlockText: string, displayBlocks: string[], renderM
 }
 
 function renderFragment(src: string, renderMath?: MathRenderer): string {
-  // \[…\] / \(…\) / 裸露的 \begin{aligned} 统一成 $$… / $…$，
-  // 之后这条管线只认 $ 形式（用户写哪种都能打印出来）。
-  const normalized = normalizeMathDelimiters(normalizeSource(src));
+  // ① 打印侧宽容：**整行就是 LaTeX** 的（`F = m \frac{dv}{dt}`）包成 $$…$$，
+  //    用户屏幕按 `$` 规则写、纸上也不会印出源码（见 print-normalize.ts）。
+  // ② \[…\] / \(…\) / 裸露的 \begin{aligned} 统一成 $$… / $…$，
+  //    之后这条管线只认 $ 形式（用户写哪种都能打印出来）。
+  const normalized = normalizeMathDelimiters(normalizeSource(wrapBareLatexLines(src)));
   if (normalized.trim() === '') return '';
 
   // 1) 先转义：此后整条管线里不存在"原始用户 HTML"
@@ -601,7 +606,11 @@ h1, h2, h3 { font-family: var(--sans); line-height: 1.3; }
   display: block;
   margin: 2.5mm 0;
   text-align: center;
-  overflow-x: auto;
+  /* ⚠️ 不要给这里加横向滚动：那会让浏览器画出一根滚动条，
+     而滚动条的 ▲▼ 按钮在打印/PDF 里也会被印出来（真机 2026-10-24：公式右侧出现 ▲▼）。
+     超宽公式宁可略微溢出，也不要让纸上多出这些符号。 */
+  overflow: visible;
+  max-width: 100%;
 }
 
 /* KaTeX display 自带 margin，这里压掉一层，避免和 .math.display 叠加 */

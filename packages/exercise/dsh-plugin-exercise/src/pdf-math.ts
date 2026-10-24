@@ -21,16 +21,40 @@ import { normalizeMathLive } from './mathlive-compat.js';
 
 let katexDirCache: string | null | undefined;
 
-/** katex 包目录（按 Node 解析规则找，不写死 cwd）。 */
+/**
+ * katex 包目录（按 Node 解析规则找，不写死 cwd）。
+ *
+ * ⚠️ 不能直接 `dirname(require.resolve('katex'))`：它解析到
+ * `node_modules/katex/dist/katex.js`，dirname 之后是 `katex/dist`，
+ * 再拼 `dist/katex.min.css` 就变成 `katex/dist/dist/…` → 永远找不到，
+ * 结果打印页只有 KaTeX 的 HTML、没有 CSS：分数没有横线、上下标不升降
+ * （真机 2026-10-24 才发现，之前只看文本抽取所以没暴露）。
+ *
+ * 做法：从解析到的文件往上找，直到看见 `dist/katex.min.css` 为止。
+ */
 function katexDir(): string | null {
   if (katexDirCache !== undefined) return katexDirCache;
   try {
     const req = createRequire(import.meta.url);
-    katexDirCache = dirname(req.resolve('katex'));
+    let dir = dirname(req.resolve('katex'));
+    for (let i = 0; i < 4; i++) {
+      if (existsSync(join(dir, 'dist', 'katex.min.css'))) {
+        katexDirCache = dir;
+        return dir;
+      }
+      dir = dirname(dir);
+    }
+    katexDirCache = null;
   } catch {
     katexDirCache = null;
   }
   return katexDirCache;
+}
+
+/** 对外暴露 dist 目录（assets.ts 复用，避免两处各自拼错）。 */
+export function katexDistDir(): string | null {
+  const dir = katexDir();
+  return dir ? join(dir, 'dist') : null;
 }
 
 /**

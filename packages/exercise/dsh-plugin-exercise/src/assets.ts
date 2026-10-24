@@ -13,22 +13,14 @@
 // ============================================================
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readKatexFont } from './pdf-math.js';
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { katexDistDir, readKatexFont } from './pdf-math.js';
+import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 
 /** 挂载点（与前端常量一致）。 */
 export const ASSETS_PREFIX = '/aemeath/api/exercise/assets';
 
-function katexDistDir(): string | null {
-  try {
-    const req = createRequire(import.meta.url);
-    return join(dirname(req.resolve('katex')), 'dist');
-  } catch {
-    return null;
-  }
-}
+
 
 /**
  * 处理一个资产请求。
