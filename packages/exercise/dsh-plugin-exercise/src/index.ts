@@ -1637,7 +1637,6 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       lang: 'de',
       renderMath: renderMathToHtml,
       inlineCss: katexCssInlined(),
-      now: Date.now(),
     });
     return { ok: true, html };
   };
