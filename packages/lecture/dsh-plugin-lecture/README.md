@@ -61,8 +61,6 @@
 | 存储是**单文件全量 JSON** | 跨机器双写会整体覆盖，静默损坏 |
 | 宿主**没有 tab/router 系统** | 只有 4 个 layout seat，"新界面" = `shell.overlay` 全屏层 |
 
-完整论证见 [`docs/lecture-mode-plan.md`](../../../docs/lecture-mode-plan.md) §2。
-
 ---
 
 ## 快速开始
@@ -577,24 +575,17 @@ checkpoint flush 来固化这个时序，**不要删掉那个测试**。
 - **崩溃/重启** → 指针残留 → `lecture_capture` 从 markdown 重建并接着记
 - **正常 `session/disposed`** → 清指针（防新会话静默继承旧课）
 
-### 尚未实现
+### 已知限制
 
-- **讲义导出到 retriever**（`exportToNotes`）：开关已接线，但只在主 profile 下有意义；
-  尚未做端到端验证
-- **跨机器握手实测**：schema / 导入器 / 单元测试都齐了，但还**没在两台真机上跑过一遍**
-  （mac 导出 → 局域网 → Windows 导入）。这是唯一还靠"推理正确"而非"实测正确"的环节
-- **课堂内 LLM 转录的端到端验证**：转录员本身有单测，但"真跑一遍看输出质量"还没做过
-
-> **已完成**（本节早先写着"未做"，是文档债）：
-> P3 前端（三栏工作台 + 独立界面模式）、P4 导入入口、**删除**（单元/课程）、
-> **新建课程**、**macOS 实机启动**（用户实测通过）。
+- **讲义导出到 retriever**（`exportToNotes`）：开关已接线，只在主 profile 下有意义，尚未做端到端验证。
+- **跨机器握手**：schema / 导入器 / 单元测试齐全，但尚未在两台真机上实测
+  （mac 导出 → 局域网 → Windows 导入）。
+- **课堂内 LLM 转录**：转录员有单元测试，但尚未端到端验证输出质量。
 
 ---
 
 ## 相关文档
 
 - [**使用说明 · macOS**](../../../使用说明-课堂模式-macOS.md) — 面向使用者的启动与日常流程
-- [`docs/lecture-mode-plan.md`](../../../docs/lecture-mode-plan.md) — 执行计划（14 项决策 / 代码核实依据 / 分期）
-- [`docs/lecture-devlog.md`](../../../docs/lecture-devlog.md) — 开发日志（含每次真机事故的根因与教训）
-- [`packages/memory/dsh-plugin-memory`](../memory/dsh-plugin-memory) — 主记忆层（lecture **不**直接依赖）
-- [`packages/retriever/dsh-plugin-retriever`](../retriever/dsh-plugin-retriever) — 讲义检索（消费导出的 `.md`）
+- [`packages/memory/dsh-plugin-memory`](../../memory/dsh-plugin-memory) — 主记忆层（lecture **不**直接依赖）
+- [`packages/retriever/dsh-plugin-retriever`](../../retriever/dsh-plugin-retriever) — 讲义检索（消费导出的 `.md`）
