@@ -43,6 +43,8 @@ export interface SubmissionProblem {
   note?: string;     // 用户备注（可选，小字）
   /** 答案附图（data URI；由 host 从 store 读出后注入，保持渲染层无 IO） */
   images?: Array<{ name: string; caption?: string; dataUri: string }>;
+  /** 题干截图（极简模式上传的题目图片） */
+  statementImages?: Array<{ name: string; caption?: string; dataUri: string }>;
 }
 
 export interface SubmissionHtmlInput {
@@ -735,6 +737,15 @@ export function buildSubmissionHtml(input: SubmissionHtmlInput): string {
 
     const statement = renderFragment(textSrc, renderMath) || `<p class="muted">${t.noText}</p>`;
     const answer = renderFragment(answerSrc, renderMath) || `<p class="muted">${t.noAnswer}</p>`;
+    // 题干截图（极简模式上传的题目图片）：印在题目下面
+    const statementPics = (p.statementImages ?? [])
+      .map(
+        (img) =>
+          `<figure class="answer-figure statement-figure"><img src="${img.dataUri}" alt="${escapeHtml(img.caption || img.name)}" />` +
+          (img.caption ? `<figcaption>${escapeHtml(img.caption)}</figcaption>` : '') +
+          `</figure>`,
+      )
+      .join('\n');
     // 答案附图（手画示意图）：data URI 内联，PDF 生成走 file:// 也能显示
     const pics = (p.images ?? [])
       .map(
@@ -760,7 +771,7 @@ export function buildSubmissionHtml(input: SubmissionHtmlInput): string {
       // 标题里也可能有公式（LLM 生成的标题常带 `$m$`）→ 走行内渲染，别原样印 `$m$`
       titleRaw ? `<h2 class="problem-title">${inlineToHtml(escapeHtml(titleRaw), renderMath)}</h2>` : '',
       '</div>',
-      `<div class="statement">${statement}</div>`,
+      `<div class="statement">${statement}${statementPics}</div>`,
       '<div class="answer">',
       `<h3 class="answer-head">${t.answer}</h3>`,
       answer,

@@ -508,5 +508,30 @@ await t('打印 CSS：.math.display 不能有 overflow-x:auto（会在 PDF 里�
   assert.match(rule, /overflow:\s*visible/);
 });
 
+
+await t('buildSubmissionHtml：题干截图印在题目下面（statement）', () => {
+  const html = buildSubmissionHtml({
+    courseTitle: 'Physik I',
+    courseId: 'physik-1',
+    sheet: { id: 'ub01', number: 1, title: '', issued: '', due: '' },
+    problems: [
+      {
+        label: 'Aufgabe 1',
+        title: '',
+        text: '题目文字',
+        points: 4,
+        answer: '答案',
+        statementImages: [{ name: 'problem.png', caption: '题目截图', dataUri: 'data:image/png;base64,PPP' }],
+        images: [{ name: 'answer.png', caption: '受力图', dataUri: 'data:image/png;base64,AAA' }],
+      },
+    ],
+  });
+  const stmt = html.slice(html.indexOf('<div class="statement">'), html.indexOf('<div class="answer">'));
+  assert.ok(stmt.includes('data:image/png;base64,PPP'), '题干图在 statement 里');
+  assert.ok(stmt.includes('statement-figure'));
+  assert.ok(!stmt.includes('base64,AAA'), '解答图不该出现在题干里');
+  const ans = html.slice(html.indexOf('<div class="answer">'));
+  assert.ok(ans.includes('data:image/png;base64,AAA'), '解答图在 answer 里');
+});
 console.log(`\n[exercise-pdf-html] ${passed} 项断言通过`);
 

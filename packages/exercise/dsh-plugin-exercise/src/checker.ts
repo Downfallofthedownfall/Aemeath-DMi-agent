@@ -61,6 +61,8 @@ export interface CheckInput {
   lang?: 'zh' | 'de' | 'en';
   /** 学生答案里附的手画图（多模态一起看：受力图/草图对判断很关键） */
   answerImages?: Array<{ base64: string; mediaType: string; name: string }>;
+  /** 题目本身的截图/照片（极简模式：题目是拍/贴进来的，OCR 不可信 → 以图为准） */
+  statementImages?: Array<{ base64: string; mediaType: string; name: string }>;
   /** 推理强度（批改默认 max：重在精不在快） */
   reasoning?: ReasoningEffort;
   /** 有原题页面截图时：附图检查（多模态），题干里可能有图/公式 OCR 不准。 */
@@ -136,6 +138,12 @@ export function buildCheckPrompt(input: CheckInput): string {
   lines.push(`## 上下文`);
   lines.push(`- 课程：${input.courseTitle} · Übungsblatt ${input.sheetNumber}${input.sheetTitle ? `（${input.sheetTitle}）` : ''}`);
   lines.push(`- 题号：${input.problemLabel}${input.points != null ? `（${input.points} Punkte）` : ''}`);
+  if (input.statementImages?.length) {
+    lines.push(
+      `- **题目以图片形式提供**（${input.statementImages.length} 张，见附件，排在原题截图之前）：` +
+        '题干文字可能是 OCR/手打的，**以图为准**；图里的公式、坐标系、示意图都要读。',
+    );
+  }
   if (input.answerImages?.length) {
     lines.push(
       `- **学生答案里附了 ${input.answerImages.length} 张手画图**（见附件，排在原题图之后）。` +
@@ -362,6 +370,8 @@ export async function runCheck(
   // 整条有效批改变成"解析失败"（真机第一次检查就踩到了）。
   // 图片：原题截图在前，学生手画图在后（prompt 里也按这个顺序描述的）
   const images = [
+    // 顺序与 prompt 描述一致：题目截图 → 原卷页 → 学生手画图
+    ...(input.statementImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
     ...(input.pageImage ? [{ mediaType: input.pageImage.mediaType, base64: input.pageImage.base64 }] : []),
     ...(input.answerImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
   ];

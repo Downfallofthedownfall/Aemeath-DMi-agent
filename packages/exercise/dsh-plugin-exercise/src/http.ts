@@ -228,6 +228,8 @@ export interface ExerciseHttpDeps {
     problemId: string;
     base64: string;
     caption?: string;
+    /** 题目截图（problem）还是答案附图（answer，默认） */
+    role?: 'answer' | 'problem';
   }): Promise<{ ok: boolean; error?: string; image?: unknown; sheet?: unknown }>;
 
   /** POST delete_attachment */
@@ -240,6 +242,15 @@ export interface ExerciseHttpDeps {
 
   /** GET scratch：极简工作区（临时做题；必要时自动创建） */
   onScratch(): { ok: boolean; error?: string; sheet?: unknown };
+
+  /** POST import_scratch_pdf：极简模式上传题目 PDF（base64） */
+  onImportScratchPdf(input: { base64: string }): Promise<{
+    ok: boolean;
+    error?: string;
+    sheet?: unknown;
+    text_length?: number;
+    pages?: number;
+  }>;
 
   /** POST scratch（reset: true 重置） */
   onScratchReset(): { ok: boolean; error?: string; sheet?: unknown };
@@ -611,6 +622,7 @@ export async function handleExerciseHttp(
             problemId,
             base64: str(parsed.base64 ?? '', 20 * 1024 * 1024),
             caption: parsed.caption ? str(parsed.caption, 200) : undefined,
+            role: parsed.role === 'problem' ? 'problem' : 'answer',
           });
           json(res, r.ok ? 200 : 400, r);
           return;
@@ -730,6 +742,12 @@ export async function handleExerciseHttp(
             order,
             draft: parsed.draft === true,
           });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'import_scratch_pdf': {
+          const r = await deps.onImportScratchPdf({ base64: str(parsed.base64 ?? '', 40 * 1024 * 1024) });
           json(res, r.ok ? 200 : 400, r);
           return;
         }

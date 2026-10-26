@@ -47,6 +47,8 @@ export interface ProblemImageView {
   media_type: string;
   bytes: number;
   caption: string;
+  /** answer=解答附图（默认）；problem=题干/题目截图 */
+  role: 'answer' | 'problem';
   created_at: number;
 }
 

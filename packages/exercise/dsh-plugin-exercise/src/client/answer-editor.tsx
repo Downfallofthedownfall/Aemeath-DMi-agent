@@ -255,9 +255,9 @@ export function AnswerEditor({
         />
         <div className="lec-preview-pane" ref={previewRef}>
           {draft.trim() ? <MathText text={draft} /> : null}
-          {(problem.images ?? []).length > 0 && (
+          {(problem.images ?? []).filter((i) => i.role !== 'problem').length > 0 && (
             <div className="lec-figure-strip">
-              {(problem.images ?? []).map((img) => (
+              {(problem.images ?? []).filter((i) => i.role !== 'problem').map((img) => (
                 <figure key={img.id} className="lec-figure">
                   <img src={imageUrl?.(img.name)} alt={img.caption || img.name} loading="lazy" />
                   {img.caption ? <figcaption>{img.caption}</figcaption> : null}

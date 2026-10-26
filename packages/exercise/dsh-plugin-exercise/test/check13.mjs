@@ -205,4 +205,49 @@ t('PDF：没有附图时不产生 figure 块', () => {
   assert.ok(!html.includes('<figure class="answer-figure"'), 'CSS 里本来就有 .answer-figure，这里查的是实际标记');
 });
 
+
+t('检查 prompt：题干截图单独声明（以图为准）', () => {
+  const p = buildCheckPrompt({
+    courseTitle: 'Physik I',
+    sheetNumber: 1,
+    sheetTitle: '',
+    problemLabel: 'Aufgabe 1',
+    problemTitle: '',
+    points: null,
+    problemText: 'OCR 文本',
+    answer: 'x',
+    statementImages: [{ base64: 'IMG', mediaType: 'image/png', name: 'problem.png' }],
+  });
+  assert.match(p, /题目以图片形式提供/);
+  assert.match(p, /以图为准/);
+});
+
+await asyncT('runCheck：题干截图排在原题截图和学生手画图之前', async () => {
+  let images = null;
+  const askLlm = async () => {
+    throw new Error('不该走文本通道');
+  };
+  const askVision = async (_p, imgs) => {
+    images = imgs;
+    return JSON.stringify({ verdict: 'correct', score: 1, issues: [], hints: [], next_steps: [] });
+  };
+  await runCheck(
+    {
+      courseTitle: 'Physik I',
+      sheetNumber: 1,
+      sheetTitle: '',
+      problemLabel: 'A1',
+      problemTitle: '',
+      points: null,
+      problemText: 'x',
+      answer: 'y',
+      statementImages: [{ base64: 'PROB', mediaType: 'image/png', name: 'p.png' }],
+      pageImage: { base64: 'PAGE', mediaType: 'image/jpeg', page: 1 },
+      answerImages: [{ base64: 'DRAW', mediaType: 'image/png', name: 'a.png' }],
+    },
+    askLlm,
+    askVision,
+  );
+  assert.deepEqual(images.map((i) => i.base64), ['PROB', 'PAGE', 'DRAW']);
+});
 console.log(`\n[exercise-attachments] ${passed} 项断言通过`);

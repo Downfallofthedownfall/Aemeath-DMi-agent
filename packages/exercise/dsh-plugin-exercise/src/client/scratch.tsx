@@ -118,6 +118,39 @@ export function ScratchWorkspace({ onToast }: ScratchWorkspaceProps): JSX.Elemen
     }
   };
 
+  /** 上传题目：图片 → 存成 problem 角色的附图；PDF → 抽文本 + 前两页当页面截图。 */
+  const uploadProblem = async (file: File): Promise<void> => {
+    setBusy(true);
+    try {
+      const base64 = await fileToBase64(file);
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+      if (isPdf) {
+        const r = await apiPost<{ sheet: SheetView; text_length?: number; pages?: number }>('import_scratch_pdf', {
+          base64,
+        });
+        setSheet(r.sheet);
+        setText(r.sheet.problems[0]?.text ?? '');
+        setSavedHint(t('exercise.scratch.savedAt'));
+        onToast(t('exercise.scratch.uploadedPdf', { pages: r.pages ?? 0, chars: r.text_length ?? 0 }));
+      } else {
+        const r = await apiPost<{ sheet: SheetView }>('add_attachment', {
+          course_id: SCRATCH_COURSE,
+          sheet_id: SCRATCH_SHEET,
+          problem_id: SCRATCH_PROBLEM,
+          base64,
+          role: 'problem',
+          caption: file.name,
+        });
+        setSheet(r.sheet);
+        onToast(t('exercise.scratch.uploadedImage', { name: file.name }));
+      }
+    } catch (e) {
+      onToast(t('exercise.scratch.uploadFailed', { error: (e as Error).message }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const attachImage = async (file: File): Promise<void> => {
     setBusy(true);
     try {
@@ -196,7 +229,40 @@ export function ScratchWorkspace({ onToast }: ScratchWorkspaceProps): JSX.Elemen
               <div className="lec-scratch-problem">
                 <div className="lec-answer-head">
                   <span>{t('exercise.scratch.problem')}</span>
+                  <span className="lec-grow" />
+                  <label className="lec-btn lec-btn-ghost" style={{ cursor: 'pointer', margin: 0 }}>
+                    {t('exercise.scratch.uploadProblem')}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const file = e.currentTarget.files?.[0];
+                        e.currentTarget.value = '';
+                        if (file) void uploadProblem(file);
+                      }}
+                    />
+                  </label>
                 </div>
+                {(problem.images ?? []).some((i) => i.role === 'problem') && (
+                  <div className="lec-figure-strip" style={{ marginTop: 6 }}>
+                    {(problem.images ?? [])
+                      .filter((i) => i.role === 'problem')
+                      .map((img) => (
+                        <figure key={img.id} className="lec-figure">
+                          <img src={imageUrl(img.name)} alt={img.caption || img.name} />
+                          <button
+                            type="button"
+                            className="lec-figure-del"
+                            title={t('exercise.common.delete')}
+                            onClick={() => void deleteImage(img.id)}
+                          >
+                            ×
+                          </button>
+                        </figure>
+                      ))}
+                  </div>
+                )}
                 <textarea
                   className="lec-textarea lec-scratch-input"
                   rows={5}
@@ -205,6 +271,9 @@ export function ScratchWorkspace({ onToast }: ScratchWorkspaceProps): JSX.Elemen
                   onChange={(e) => scheduleText(e.currentTarget.value)}
                   spellCheck={false}
                 />
+                <div className="lec-hint" style={{ marginTop: 4 }}>
+                  {t('exercise.scratch.uploadHint')}
+                </div>
               </div>
 
               <AnswerEditor

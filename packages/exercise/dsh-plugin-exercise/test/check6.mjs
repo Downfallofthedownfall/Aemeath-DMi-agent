@@ -218,6 +218,10 @@ function fakeDeps(calls) {
     },
     onExportHandoff: async () => ({ ok: true, files: ['a.json'], dir: '/h' }),
     onScratch: () => { calls.push(['onScratch']); return { ok: true, sheet: { id: 'ub01' } }; },
+    onImportScratchPdf: async (input) => { calls.push(['import_scratch_pdf', input]); return { ok: true, sheet: {}, text_length: 10, pages: 1 }; },
+    onAddAttachment: async (input) => { calls.push(['add_attachment', input]); return { ok: true, sheet: {} }; },
+    onDeleteAttachment: async () => ({ ok: true, sheet: {} }),
+    onReadAttachment: () => null,
     onScratchReset: () => { calls.push(['onScratchReset']); return { ok: true, sheet: { id: 'ub01' } }; },
     onDelete: async () => ({ ok: true }),
     log: () => undefined,
@@ -408,6 +412,38 @@ await asyncT('GET scratch / POST reset_scratch 走的是极简工作区', async 
     fakeDeps(calls),
   );
   assert.equal(calls[1][0], 'onScratchReset');
+});
+
+await asyncT('POST import_scratch_pdf 透传 base64（极简模式上传题目）', async () => {
+  const calls = [];
+  const res = makeRes();
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', { action: 'import_scratch_pdf', base64: 'JVBERi0=' }),
+    res,
+    fakeDeps(calls),
+  );
+  assert.equal(res.out.status, 200);
+  const [name, input] = calls[0];
+  assert.equal(name, 'import_scratch_pdf');
+  assert.equal(input.base64, 'JVBERi0=');
+});
+
+await asyncT('POST add_attachment 透传 role=problem', async () => {
+  const calls = [];
+  const res = makeRes();
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', {
+      action: 'add_attachment',
+      course_id: 'physik-1',
+      sheet_id: 'ub01',
+      problem_id: 'p01',
+      base64: 'AAAA',
+      role: 'problem',
+    }),
+    res,
+    fakeDeps(calls),
+  );
+  assert.equal(res.out.status, 200);
 });
 
 console.log(`\n[exercise-check-http] ${passed} 项断言通过`);

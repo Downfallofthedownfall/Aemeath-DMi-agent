@@ -1206,6 +1206,44 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     return fresh;
   };
 
+  /**
+   * 极简模式：上传题目 PDF。
+   *
+   * 用户："我题目怎么上传啊" —— 书上/资料里的题往往是 PDF 或照片，不该逼着他手打。
+   * 做法：抽文本（有文本就填进题目框）+ 渲染前两页当页面截图（检查时多模态以图为准）。
+   */
+  const importScratchPdf = async (input: { base64: string }): Promise<{
+    ok: boolean;
+    error?: string;
+    sheet?: Sheet;
+    text_length?: number;
+    pages?: number;
+  }> => {
+    const sheet = scratchSheet();
+    const p = sheet.problems[0];
+    if (!p) return { ok: false, error: tr('极简工作区没有题目', 'Scratch has no problem') };
+    const raw = (input.base64 ?? '').replace(/^data:[^;]+;base64,/, '').trim();
+    if (!raw) return { ok: false, error: tr('没有 PDF 数据', 'No PDF data') };
+    const bytes = Buffer.from(raw, 'base64');
+    if (!bytes.length) return { ok: false, error: tr('PDF 为空', 'Empty PDF') };
+
+    const extracted = await extractPdfText(bytes);
+    let pages = 0;
+    try {
+      const rendered = await renderPdfPages(bytes, { maxPages: 2 });
+      for (const pg of rendered) {
+        store.writePageImage(SCRATCH_COURSE, SCRATCH_SHEET, pg.page, pg.bytes);
+        pages++;
+      }
+    } catch (e) {
+      warn(`极简模式：PDF 页面渲染失败（仍可用文本）：${(e as Error).message}`);
+    }
+    if (extracted.hasText) p.text = extracted.text.slice(0, 12_000).trim();
+    sheet.has_page_images = pages > 0;
+    store.writeSheet(SCRATCH_COURSE, sheet);
+    log(`极简模式：导入题目 PDF（${extracted.pageCount} 页，文本 ${p.text.length} 字，截图 ${pages} 张）`);
+    return { ok: true, sheet, text_length: p.text.length, pages };
+  };
   /** 重置极简工作区：清空题目/答案/检查/附图。 */
   const resetScratch = (): Sheet => {
     const fresh = blankScratchSheet();
@@ -1254,13 +1292,18 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const pageImg = pageNo ? store.readPageImage(input.courseId, input.sheetId, pageNo) : null;
     if (pageImg) log(`检查附带原图：第 ${pageNo} 页（多模态）`);
     // 学生自己画的手画图（受力图/草图）也要看：最多 3 张，避免请求过大
-    const answerImages = p.images
-      .slice(0, 3)
-      .map((img) => {
-        const got = store.readImage(input.courseId, input.sheetId, img.name);
-        return got ? { base64: got.bytes.toString('base64'), mediaType: got.mediaType, name: img.name } : null;
-      })
-      .filter((x): x is { base64: string; mediaType: string; name: string } => !!x);
+    const readImages = (role: 'problem' | 'answer'): Array<{ base64: string; mediaType: string; name: string }> =>
+      p.images
+        .filter((img) => (role === 'problem' ? img.role === 'problem' : img.role !== 'problem'))
+        .slice(0, 3)
+        .map((img) => {
+          const got = store.readImage(input.courseId, input.sheetId, img.name);
+          return got ? { base64: got.bytes.toString('base64'), mediaType: got.mediaType, name: img.name } : null;
+        })
+        .filter((x): x is { base64: string; mediaType: string; name: string } => !!x);
+    const statementImages = readImages('problem');
+    const answerImages = readImages('answer');
+    if (statementImages.length) log(`检查附带题目截图：${statementImages.length} 张`);
     if (answerImages.length) log(`检查附带手画图：${answerImages.length} 张`);
 
     const result = await runCheck(
@@ -1278,6 +1321,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         priorMistakes: prior,
         lang: uiLang(),
         reasoning: checkReasoning,
+        statementImages,
         answerImages,
         pageImage: pageImg
           ? { base64: pageImg.bytes.toString('base64'), mediaType: pageImg.mediaType, page: pageNo }
@@ -1348,7 +1392,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     problemId: string;
     base64: string;
     caption?: string;
+    /** 题目截图 or 答案附图（默认 answer） */
+    role?: 'answer' | 'problem';
   }): Promise<{ ok: boolean; error?: string; image?: ProblemImage; sheet?: Sheet }> => {
+    // 极简模式：第一次上传时工作区可能还没创建 → 按需建好，别让用户看到"题集不存在"
+    if (input.courseId === SCRATCH_COURSE) scratchSheet();
     const sheet = store.readSheet(input.courseId, input.sheetId);
     if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const p = store.findProblem(sheet, input.problemId);
@@ -1377,6 +1425,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       media_type: kind.media,
       bytes: bytes.length,
       caption: (input.caption ?? '').trim().slice(0, 200),
+      role: input.role === 'problem' ? 'problem' : 'answer',
       created_at: now,
     };
     p.images.push(image);
@@ -1428,6 +1477,15 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const pageNo = p.page > 0 && pageNumbers.includes(p.page) ? p.page : pageNumbers[0] ?? 0;
     const pageImg = pageNo ? store.readPageImage(input.courseId, input.sheetId, pageNo) : null;
     const answerImages = p.images
+      .filter((img) => img.role !== 'problem')
+      .slice(0, 3)
+      .map((img) => {
+        const got = store.readImage(input.courseId, input.sheetId, img.name);
+        return got ? { base64: got.bytes.toString('base64'), mediaType: got.mediaType, name: img.name } : null;
+      })
+      .filter((x): x is { base64: string; mediaType: string; name: string } => !!x);
+    const statementImages = p.images
+      .filter((img) => img.role === 'problem')
       .slice(0, 3)
       .map((img) => {
         const got = store.readImage(input.courseId, input.sheetId, img.name);
@@ -1705,8 +1763,19 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       answer: p.answer,
       verdict: lastFreshCheck(p.checks)?.verdict ?? null,
       note: p.notes,
-      // 手画示意图：读成 data URI 内联（PDF 走 file://，不能引用 http 资源）
+      // 附图：读成 data URI 内联（PDF 走 file://，不能引用 http 资源）。
+      // 题干截图（role=problem）印在题目下面，解答附图印在 Lösung 下面。
+      statementImages: p.images
+        .filter((img) => img.role === 'problem')
+        .map((img) => {
+          const got = store.readImage(courseId, sheet.id, img.name);
+          return got
+            ? { name: img.name, caption: img.caption, dataUri: `data:${got.mediaType};base64,${got.bytes.toString('base64')}` }
+            : null;
+        })
+        .filter((x): x is { name: string; caption: string; dataUri: string } => !!x),
       images: p.images
+        .filter((img) => img.role !== 'problem')
         .map((img) => {
           const got = store.readImage(courseId, sheet.id, img.name);
           return got
@@ -2804,6 +2873,16 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         } catch (e) {
           return { ok: false, error: (e as Error).message };
         }
+      },
+      onImportScratchPdf: async (input) => {
+        const r = await importScratchPdf(input);
+        if (!r.ok) return { ok: false, error: r.error };
+        return {
+          ok: true,
+          sheet: viewOf(SCRATCH_COURSE, SCRATCH_SHEET),
+          text_length: r.text_length,
+          pages: r.pages,
+        };
       },
       onScratchReset: () => {
         try {

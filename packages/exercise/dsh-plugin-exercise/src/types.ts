@@ -99,6 +99,8 @@ export const problemImageSchema = z.object({
   bytes: z.number().default(0),
   /** 一句话说明（可选，比如"受力图"） */
   caption: z.string().default(''),
+  /** 这张图属于哪边：answer=我的解答（默认）；problem=题干/题目截图 */
+  role: z.enum(['answer', 'problem']).default('answer'),
   created_at: z.number().default(0),
 });
 export type ProblemImage = z.infer<typeof problemImageSchema>;
