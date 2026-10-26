@@ -238,6 +238,12 @@ export interface ExerciseHttpDeps {
     imageId: string;
   }): Promise<{ ok: boolean; error?: string; sheet?: unknown }>;
 
+  /** GET scratch：极简工作区（临时做题；必要时自动创建） */
+  onScratch(): { ok: boolean; error?: string; sheet?: unknown };
+
+  /** POST scratch（reset: true 重置） */
+  onScratchReset(): { ok: boolean; error?: string; sheet?: unknown };
+
   /** POST rebut（答辩：学生质疑批改，模型重新推导后承认或给出证据） */
   onRebuttal(input: { courseId: string; sheetId: string; problemId: string; text: string }): Promise<{
     ok: boolean;
@@ -311,6 +317,12 @@ export async function handleExerciseHttp(
         case 'courses':
           json(res, 200, { ok: true, courses: deps.buildCourses() });
           return;
+
+        case 'scratch': {
+          const r = deps.onScratch();
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
 
         case 'sheet': {
           if (!course || !sheet) {
@@ -718,6 +730,12 @@ export async function handleExerciseHttp(
             order,
             draft: parsed.draft === true,
           });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'reset_scratch': {
+          const r = deps.onScratchReset();
           json(res, r.ok ? 200 : 400, r);
           return;
         }

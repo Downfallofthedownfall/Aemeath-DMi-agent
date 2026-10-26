@@ -133,6 +133,8 @@ export class ExerciseStore {
       return readdirSync(this.root, { withFileTypes: true })
         .filter((d) => d.isDirectory() && existsSync(join(this.root, d.name, 'index.json')))
         .map((d) => d.name)
+        // `_` 开头的课程是内部工作区（极简模式的 `_scratch`），不进课程列表
+        .filter((id) => !id.startsWith('_'))
         .sort();
     } catch (e) {
       warn(`列出课程失败: ${(e as Error).message}`);

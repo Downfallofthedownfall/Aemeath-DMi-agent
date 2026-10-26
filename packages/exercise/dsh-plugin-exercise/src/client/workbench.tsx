@@ -30,6 +30,7 @@ import { ProblemCard } from './problem-card.tsx';
 import { MistakesPanel } from './mistakes-panel.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { ImportDialog } from './import-dialog.tsx';
+import { ScratchWorkspace } from './scratch.tsx';
 import { insertIntoActiveEditor } from './answer-editor.tsx';
 import { MathText } from './math.tsx';
 import { EX_CLASS } from './styles.ts';
@@ -80,6 +81,21 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
   const [lessonDraft, setLessonDraft] = useState('');
   const [printUrl, setPrintUrl] = useState('');
   const [navOpen, setNavOpen] = useState(true);
+  // 极简模式：临时做题（一个工作区、无课程/提交功能），偏好记在 localStorage
+  const [minimal, setMinimal] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('aemeath-exercise-minimal') === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('aemeath-exercise-minimal', minimal ? '1' : '0');
+    } catch {
+      /* 隐私模式下写不了，忽略 */
+    }
+  }, [minimal]);
   /** 每门课的折叠状态（`true` = 收起）；未记录的课按"当前选中那门展开"处理。 */
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const toastTimer = useRef<number | null>(null);
@@ -498,40 +514,63 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     <div className={EX_CLASS} data-standalone={standalone ? '1' : '0'} data-workbench="1">
       {/* ── 顶栏 ── */}
       <div className="lec-top">
-        <button
-          type="button"
-          className="lec-icon-btn"
-          title={navOpen ? t('exercise.wb.nav.collapse') : t('exercise.wb.nav.expand')}
-          onClick={() => setNavOpen((v) => !v)}
-        >
-          {navOpen ? '‹' : '›'}
-        </button>
+        {!minimal && (
+          <button
+            type="button"
+            className="lec-icon-btn"
+            title={navOpen ? t('exercise.wb.nav.collapse') : t('exercise.wb.nav.expand')}
+            onClick={() => setNavOpen((v) => !v)}
+          >
+            {navOpen ? '‹' : '›'}
+          </button>
+        )}
         <span className="lec-title">{t('exercise.wb.title')}</span>
         <span className="lec-sub">
-          {sheet ? `${current?.title ?? courseId} · Übungsblatt ${sheet.number}` : t('exercise.wb.noSheet')}
+          {minimal
+            ? t('exercise.scratch.title')
+            : sheet
+              ? `${current?.title ?? courseId} · Übungsblatt ${sheet.number}`
+              : t('exercise.wb.noSheet')}
         </span>
         <span className="lec-grow" />
-        <button type="button" className="lec-btn-tiny" onClick={() => setImportOpen(true)}>
-          {t('exercise.wb.importPdf')}
-        </button>
-        <button type="button" className="lec-btn-tiny" onClick={() => void newSheet()} disabled={!courseId}>
-          {t('exercise.wb.newSheet')}
-        </button>
-        <button type="button" className="lec-btn-tiny" onClick={() => void exportHandoff()} disabled={busy}>
-          {t('exercise.wb.exportHandoff')}
-        </button>
-        <button type="button" className="lec-btn-tiny" onClick={() => void importHandoff()} disabled={busy}>
-          {t('exercise.wb.importHandoff')}
-        </button>
-        <button type="button" className="lec-btn" onClick={() => void buildSubmission()} disabled={busy || !sheet}>
-          {busy ? t('exercise.wb.processing') : t('exercise.wb.buildSubmission')}
+        {!minimal && (
+          <>
+            <button type="button" className="lec-btn-tiny" onClick={() => setImportOpen(true)}>
+              {t('exercise.wb.importPdf')}
+            </button>
+            <button type="button" className="lec-btn-tiny" onClick={() => void newSheet()} disabled={!courseId}>
+              {t('exercise.wb.newSheet')}
+            </button>
+            <button type="button" className="lec-btn-tiny" onClick={() => void exportHandoff()} disabled={busy}>
+              {t('exercise.wb.exportHandoff')}
+            </button>
+            <button type="button" className="lec-btn-tiny" onClick={() => void importHandoff()} disabled={busy}>
+              {t('exercise.wb.importHandoff')}
+            </button>
+            <button type="button" className="lec-btn" onClick={() => void buildSubmission()} disabled={busy || !sheet}>
+              {busy ? t('exercise.wb.processing') : t('exercise.wb.buildSubmission')}
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          className="lec-btn-tiny"
+          data-active={minimal ? '1' : '0'}
+          title={minimal ? t('exercise.scratch.exit') : t('exercise.scratch.enter')}
+          onClick={() => setMinimal((v) => !v)}
+        >
+          {minimal ? t('exercise.scratch.exit') : t('exercise.scratch.enter')}
         </button>
         <button type="button" className="lec-icon-btn" title={t('exercise.common.close')} onClick={onClose}>
           ✕
         </button>
       </div>
 
-      <div className="lec-wb">
+      <div className="lec-wb" data-minimal={minimal ? '1' : '0'}>
+        {minimal ? (
+          <ScratchWorkspace onToast={showToast} />
+        ) : (
+          <>
         {/* ── 左栏：课程 / 套题 ── */}
         {navOpen ? (
           <aside className="lec-wb-nav">
@@ -900,6 +939,8 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
             )}
           </div>
         </aside>
+          </>
+        )}
       </div>
 
       <ImportDialog

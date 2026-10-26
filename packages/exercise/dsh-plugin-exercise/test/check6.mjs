@@ -217,6 +217,8 @@ function fakeDeps(calls) {
       return { ok: true, url: '/x.pdf', pages: 3, bytes: 1000 };
     },
     onExportHandoff: async () => ({ ok: true, files: ['a.json'], dir: '/h' }),
+    onScratch: () => { calls.push(['onScratch']); return { ok: true, sheet: { id: 'ub01' } }; },
+    onScratchReset: () => { calls.push(['onScratchReset']); return { ok: true, sheet: { id: 'ub01' } }; },
     onDelete: async () => ({ ok: true }),
     log: () => undefined,
     warn: () => undefined,
@@ -391,6 +393,21 @@ t('parseCheckOutput：转义坏味不再退化成"0 条 issues"', () => {
   assert.equal(check.verdict, 'partial');
   assert.equal(check.issues.length, 2, 'issues 不能被丢掉');
   assert.equal(check.hints.length, 1);
+});
+
+await asyncT('GET scratch / POST reset_scratch 走的是极简工作区', async () => {
+  const calls = [];
+  let res = makeRes();
+  await handleExerciseHttp(makeReq('GET', '/aemeath/api/exercise?action=scratch'), res, fakeDeps(calls));
+  assert.equal(calls[0][0], 'onScratch');
+
+  res = makeRes();
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', { action: 'reset_scratch' }),
+    res,
+    fakeDeps(calls),
+  );
+  assert.equal(calls[1][0], 'onScratchReset');
 });
 
 console.log(`\n[exercise-check-http] ${passed} 项断言通过`);

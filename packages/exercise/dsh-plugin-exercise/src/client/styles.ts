@@ -1022,6 +1022,17 @@ const CSS = `
 
 /* 公式解析失败：显示源码（等宽 + 虚线下划线），不是"红字塞进公式里" */
 .${EX_CLASS} .ex-math-error, .${EX_CLASS} .ex-math-fallback { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.94em; color: var(--aem-ink); background: light-dark(#fdf6e3, rgba(240, 200, 120, 0.12)); border: 1px solid light-dark(#e8d9b0, rgba(240, 200, 120, 0.28)); border-radius: 4px; padding: 0 3px; white-space: pre-wrap; cursor: help; }
+/* === 极简模式（临时做题）：一个工作区，无课程/提交 === */
+.${EX_CLASS} .lec-wb[data-minimal="1"] { display: block; overflow-y: auto; }
+.${EX_CLASS} .lec-scratch { display: flex; flex-direction: column; min-height: 100%; }
+.${EX_CLASS} .lec-scratch-head { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--aem-line); background: var(--aem-surface); position: sticky; top: 0; z-index: 2; }
+.${EX_CLASS} .lec-scratch-title { font-weight: 600; font-size: 13px; }
+.${EX_CLASS} .lec-scratch-body { display: flex; align-items: flex-start; gap: 0; }
+.${EX_CLASS} .lec-scratch-main { flex: 1; min-width: 0; padding: 12px 16px 48px; }
+.${EX_CLASS} .lec-scratch-side { width: 300px; flex: 0 0 300px; border-left: 1px solid var(--aem-line); padding: 10px; align-self: stretch; }
+.${EX_CLASS} .lec-scratch-problem { margin-bottom: 12px; }
+.${EX_CLASS} .lec-scratch-input { width: 100%; box-sizing: border-box; min-height: 96px; resize: vertical; }
+.${EX_CLASS} .lec-btn-tiny[data-active="1"] { border-color: var(--aem-accent, #7b5aa6); color: var(--aem-accent, #7b5aa6); }
 /* 答辩（学生 vs 批改）：我的原话靠右、爱弥斯的回复靠左 */
 .${EX_CLASS} .lec-rebut-thread { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .${EX_CLASS} .lec-rebut-turn { display: flex; flex-direction: column; gap: 4px; }

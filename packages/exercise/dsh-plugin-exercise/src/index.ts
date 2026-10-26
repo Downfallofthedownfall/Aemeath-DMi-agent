@@ -1132,6 +1132,97 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   };
 
   // ============================================================
+  // 极简模式（临时做题）：一个隐藏的 _scratch 工作区
+  //
+  // 用户："拓展一个极简模式用来临时做题…因为是临时的所以不需要多项目管理，
+  //       有一个工作区然后可以手动 reset 就行了"。
+  //
+  // 做法：复用同一套 Sheet/Problem 模型，但放在 `_scratch` 课程下（列表里过滤掉），
+  // 固定只有一道题；重置 = 覆盖成空 sheet + 删掉附图。
+  // ============================================================
+
+  const SCRATCH_COURSE = '_scratch';
+  const SCRATCH_SHEET = 'ub01';
+  const SCRATCH_PROBLEM = 'p01';
+
+  const blankScratchSheet = (): Sheet => ({
+    id: SCRATCH_SHEET,
+    number: 1,
+    title: '',
+    issued: '',
+    due: '',
+    source_pdf: '',
+    source_pages: 0,
+    import_mode: 'manual',
+    split_by: 'manual',
+    has_page_images: false,
+    imported_at: Date.now(),
+    needs_manual_text: false,
+    progress_digest: '',
+    progress_digest_at: 0,
+    problems: [
+      {
+        id: SCRATCH_PROBLEM,
+        label: '',
+        title: '',
+        text: '',
+        points: null,
+        page: 0,
+        has_figure: false,
+        figure_note: '',
+        answer: '',
+        answer_updated_at: 0,
+        answer_edited_by: 'user',
+        checks: [],
+        rebuttals: [],
+        images: [],
+        mistakes: [],
+        notes: '',
+      },
+    ],
+    lessons: [],
+    submitted_at: 0,
+    submission_pdf: '',
+    submission_pages: 0,
+    version: 1,
+    created_at: Date.now(),
+    updated_at: Date.now(),
+  } as Sheet);
+
+  /** 取（必要时创建）极简工作区的 sheet。 */
+  const scratchSheet = (): Sheet => {
+    store.ensureCourse(SCRATCH_COURSE, tr('临时做题', 'Scratch'));
+    const existing = store.readSheet(SCRATCH_COURSE, SCRATCH_SHEET);
+    if (existing) {
+      // 老数据/手改过的 JSON 可能没有题目 → 补一道空的，保证界面总有东西可写
+      if (!existing.problems.length) {
+        existing.problems = blankScratchSheet().problems;
+        store.writeSheet(SCRATCH_COURSE, existing);
+      }
+      return existing;
+    }
+    const fresh = blankScratchSheet();
+    store.writeSheet(SCRATCH_COURSE, fresh);
+    return fresh;
+  };
+
+  /** 重置极简工作区：清空题目/答案/检查/附图。 */
+  const resetScratch = (): Sheet => {
+    const fresh = blankScratchSheet();
+    // 删掉旧附图（它们挂在旧 sheet 目录下）
+    const imgDir = store.imagesDir(SCRATCH_COURSE, SCRATCH_SHEET);
+    if (existsSync(imgDir)) {
+      try {
+        rmSync(imgDir, { recursive: true, force: true });
+      } catch {
+        /* 删不掉不影响重置 */
+      }
+    }
+    store.writeSheet(SCRATCH_COURSE, fresh);
+    log('极简工作区已重置');
+    return fresh;
+  };
+  // ============================================================
   // 手动检查（D3）
   // ============================================================
 
@@ -1224,8 +1315,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
 
     // 错 → 自动进错题本（可手动删/标注；autoCollectMistakes=false 时只提示）
+    // 极简模式（临时做题）不进错题本：没有多项目管理，错题本只会变成垃圾场。
     let mistake: Mistake | undefined;
-    if (shouldCollectMistake(p.checks)) {
+    if (input.courseId !== SCRATCH_COURSE && shouldCollectMistake(p.checks)) {
       if (autoCollect) {
         mistake =
           collectMistakeInternal({
@@ -2365,6 +2457,32 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   ctx.tools.register(
     defineTool({
+      name: 'exercise_scratch',
+      description:
+        '极简模式（临时做题）：一个独立工作区，只有一道题 —— 粘题目、写答案、手动检查/答辩。' +
+        '没有多项目管理、没有提交/导出。传 `reset: true` 清空（题目、答案、检查、附图）。',
+      parameters: {
+        reset: { type: 'boolean', description: 'true = 清空工作区后返回' },
+      },
+      output: { schema: { type: 'json' }, render: renderJson },
+      execute: async (args: { reset?: boolean }) => {
+        const sheet = args.reset === true ? resetScratch() : scratchSheet();
+        const p = sheet.problems[0];
+        return ok({
+          course_id: SCRATCH_COURSE,
+          sheet_id: SCRATCH_SHEET,
+          problem_id: SCRATCH_PROBLEM,
+          text: p?.text ?? '',
+          answer: p?.answer ?? '',
+          checks: String(p?.checks.length ?? 0),
+          reset: args.reset === true,
+        });
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
       name: 'exercise_attach_image',
       description:
         '给某道题附一张图（手画示意图/受力图/照片）。图会：① 在答案旁边显示；② 检查时随多模态一起发给模型；' +
@@ -2679,7 +2797,23 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           math_warnings: Array.isArray(d.math_warnings) ? (d.math_warnings as string[]) : undefined,
         };
       },
-            onReadAttachment: (input) => store.readImage(input.courseId, input.sheetId, input.name),
+            onScratch: () => {
+        try {
+          scratchSheet();
+          return { ok: true, sheet: viewOf(SCRATCH_COURSE, SCRATCH_SHEET) };
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+      },
+      onScratchReset: () => {
+        try {
+          resetScratch();
+          return { ok: true, sheet: viewOf(SCRATCH_COURSE, SCRATCH_SHEET) };
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+      },
+      onReadAttachment: (input) => store.readImage(input.courseId, input.sheetId, input.name),
       onAddAttachment: async (input) => {
         const r = await addAttachment(input);
         if (!r.ok) return { ok: false, error: r.error };
@@ -2814,7 +2948,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   log(
     '工具已注册：exercise_list / exercise_new_sheet / exercise_open / exercise_problem / ' +
       'exercise_save_answer / exercise_resplit / exercise_check / exercise_collect_mistake / exercise_lessons / ' +
-        'exercise_attach_image / exercise_export_text / ' +
+        'exercise_scratch / exercise_attach_image / exercise_export_text / ' +
       'exercise_sync_worldbook / exercise_build_submission / exercise_progress / ' +
       'exercise_export_handoff / exercise_import_handoff',
   );

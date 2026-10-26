@@ -248,5 +248,13 @@ t('坏索引不会拖垮 listCourses', () => {
   assert.equal(store.listSheets('broken').length, 0);
 });
 
+t('listCourses：`_` 开头的内部工作区（极简模式 `_scratch`）不进课程列表', () => {
+  store.ensureCourse('_scratch', '临时做题');
+  const ids = store.listCourses();
+  assert.ok(ids.length > 0, '正常课程还在');
+  assert.ok(!ids.includes('_scratch'), '内部工作区必须被过滤掉');
+});
+
 rmSync(root, { recursive: true, force: true });
+
 console.log(`\n[exercise-store] ${passed} 项断言通过`);

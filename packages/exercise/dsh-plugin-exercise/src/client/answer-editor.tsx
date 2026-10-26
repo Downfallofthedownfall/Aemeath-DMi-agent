@@ -69,7 +69,8 @@ export interface AnswerEditorProps {
   problem: ProblemView;
   onSave: (patch: { answer?: string; notes?: string }) => Promise<void>;
   onCheck: () => void;
-  onCollectMistake: () => void;
+  /** 可选：极简模式没有错题本，不传就不显示按钮 */
+  onCollectMistake?: () => void;
   onToast: (msg: string) => void;
   busy?: boolean;
   /** 图片附件：上传（File → 后端存盘）/ 删除 / 取 URL */
@@ -335,9 +336,11 @@ export function AnswerEditor({
         <button type="button" className="lec-btn" onClick={onCheck} disabled={busy}>
           {busy ? t('exercise.check.busy') : t('exercise.answer.check')}
         </button>
-        <button type="button" className="lec-btn lec-btn-ghost" onClick={onCollectMistake}>
-          {t('exercise.answer.collectMistake')}
-        </button>
+        {onCollectMistake ? (
+          <button type="button" className="lec-btn lec-btn-ghost" onClick={onCollectMistake}>
+            {t('exercise.answer.collectMistake')}
+          </button>
+        ) : null}
         <span className="lec-grow" />
         <input
           className="lec-input"
