@@ -57,7 +57,7 @@ t('检查 prompt：历史错题被标成"过去"，不得当作本次答案的�
 });
 
 t('检查 prompt：带原图时声明"以图片为准"', () => {
-  const p = buildCheckPrompt({ ...base, pageImage: { base64: 'x', mediaType: 'image/jpeg', page: 2 } });
+  const p = buildCheckPrompt({ ...base, pageImages: [{ base64: 'x', mediaType: 'image/jpeg', page: 2 }] });
   assert.match(p, /本题原图见附件/);
   assert.match(p, /以图片为准/);
 });

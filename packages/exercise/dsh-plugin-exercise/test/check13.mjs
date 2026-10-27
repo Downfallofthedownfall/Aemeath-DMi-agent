@@ -155,7 +155,7 @@ await asyncT('runCheck：原题图 + 学生手画图一起送多模态（顺序�
       problemText: 'x',
       answer: 'y',
       reasoning: 'high',
-      pageImage: { base64: 'PAGE', mediaType: 'image/jpeg', page: 2 },
+      pageImages: [{ base64: 'PAGE', mediaType: 'image/jpeg', page: 2 }],
       answerImages: [{ base64: 'DRAW', mediaType: 'image/png', name: 'img-1.png' }],
     },
     askLlm,
@@ -242,12 +242,31 @@ await asyncT('runCheck：题干截图排在原题截图和学生手画图之前'
       problemText: 'x',
       answer: 'y',
       statementImages: [{ base64: 'PROB', mediaType: 'image/png', name: 'p.png' }],
-      pageImage: { base64: 'PAGE', mediaType: 'image/jpeg', page: 1 },
+      pageImages: [{ base64: 'PAGE', mediaType: 'image/jpeg', page: 1 }],
       answerImages: [{ base64: 'DRAW', mediaType: 'image/png', name: 'a.png' }],
     },
     askLlm,
     askVision,
   );
   assert.deepEqual(images.map((i) => i.base64), ['PROB', 'PAGE', 'DRAW']);
+});
+
+t('跨页：多张原卷页一起发，prompt 明确"一道题跨页了"', () => {
+  const p = buildCheckPrompt({
+    courseTitle: 'Physik I',
+    sheetNumber: 1,
+    sheetTitle: '',
+    problemLabel: 'A1',
+    problemTitle: '',
+    points: null,
+    problemText: 'x',
+    answer: 'y',
+    pageImages: [
+      { base64: 'P1', mediaType: 'image/jpeg', page: 2 },
+      { base64: 'P2', mediaType: 'image/jpeg', page: 3 },
+    ],
+  });
+  assert.match(p, /原卷第 2、3 页截图/);
+  assert.match(p, /一道题跨页了/);
 });
 console.log(`\n[exercise-attachments] ${passed} 项断言通过`);

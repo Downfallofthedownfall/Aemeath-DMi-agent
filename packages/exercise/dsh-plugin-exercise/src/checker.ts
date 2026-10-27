@@ -65,8 +65,9 @@ export interface CheckInput {
   statementImages?: Array<{ base64: string; mediaType: string; name: string }>;
   /** 推理强度（批改默认 max：重在精不在快） */
   reasoning?: ReasoningEffort;
-  /** 有原题页面截图时：附图检查（多模态），题干里可能有图/公式 OCR 不准。 */
-  pageImage?: { base64: string; mediaType: string; page: number };
+  /** 有原题页面截图时：附图检查（多模态），题干里可能有图/公式 OCR 不准。
+   *  一道题**跨页**时会有多张（按页码升序）。 */
+  pageImages?: Array<{ base64: string; mediaType: string; page: number }>;
 }
 
 export interface ParsedCheck {
@@ -150,10 +151,11 @@ export function buildCheckPrompt(input: CheckInput): string {
         '他的受力图/草稿可能只画在图上 —— 把图里的内容也算进答案再判断。',
     );
   }
-  if (input.pageImage) {
+  if (input.pageImages?.length) {
+    const pages = input.pageImages.map((p) => p.page).join('、');
     lines.push(
-      `- **本题原图见附件**（原卷第 ${input.pageImage.page} 页截图）。OCR 文本可能漏掉公式/插图，` +
-        `**以图片为准**；题干里的图、示意图、坐标系都在图上。判断学生答案时优先依据图。`,
+      `- **本题原图见附件**（原卷第 ${pages} 页截图${input.pageImages.length > 1 ? '，**一道题跨页了：要把这些页连起来读**' : ''}）。` +
+        `OCR 文本可能漏掉公式/插图，**以图片为准**；题干里的图、示意图、坐标系都在图上。判断学生答案时优先依据图。`,
     );
   }
   if (input.progressDigest) {
@@ -372,7 +374,7 @@ export async function runCheck(
   const images = [
     // 顺序与 prompt 描述一致：题目截图 → 原卷页 → 学生手画图
     ...(input.statementImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
-    ...(input.pageImage ? [{ mediaType: input.pageImage.mediaType, base64: input.pageImage.base64 }] : []),
+    ...(input.pageImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
     ...(input.answerImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
   ];
   const vision = images.length && askVision ? askVision : undefined;
@@ -556,7 +558,8 @@ export async function runRebuttal(
 ): Promise<{ ok: boolean; rebuttal: ParsedRebuttal | null; raw: string | null; error?: string }> {
   const prompt = buildRebuttalPrompt(input);
   const images = [
-    ...(input.check.pageImage ? [{ mediaType: input.check.pageImage.mediaType, base64: input.check.pageImage.base64 }] : []),
+    ...(input.check.pageImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
+    ...(input.check.statementImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
     ...(input.check.answerImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
   ];
   const vision = images.length && askVision ? askVision : undefined;

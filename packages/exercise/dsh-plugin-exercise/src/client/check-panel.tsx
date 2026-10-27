@@ -143,7 +143,12 @@ function CheckBody({ check, stale }: { check: CheckView; stale?: boolean }): JSX
   );
 }
 
-/** 答辩：输入框 + 历史对话。 */
+/**
+ * 答辩：**默认折叠**（用户："答辩模式应该作为一个临时的东西，至少也要可以折叠起来"）。
+ *
+ * 折叠时只显示一行摘要（轮数 + 最近结论）；展开才看到对话，再点才出现输入框。
+ * 这样检查面板不会因为一段对线记录变得很长。
+ */
 function RebuttalBox({
   problem,
   onSubmit,
@@ -155,59 +160,80 @@ function RebuttalBox({
 }): JSX.Element {
   const t = useT();
   const [text, setText] = useState('');
-  const [open, setOpen] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const thread = problem.rebuttals ?? [];
   const last = thread.at(-1);
   const canWrite = !!problem.checks.length;
 
+  const threadBody = (
+    <div className="lec-rebut-thread">
+      {thread.map((r) => (
+        <div key={r.id} className="lec-rebut-turn">
+          <div className="lec-rebut-mine">
+            <span className="lec-rebut-who">{t('exercise.check.who.me')}</span> {r.user_text}
+          </div>
+          <div className="lec-rebut-ai" data-outcome={r.outcome}>
+            <span className="lec-rebut-who">
+              {t('exercise.check.who.aemeath')} · {t(OUTCOME_KEY[r.outcome])}
+            </span>{' '}
+            <MathText text={r.reply} compact />
+            {r.correct_parts.length > 0 && (
+              <div className="lec-hint" style={{ marginTop: 4 }}>
+                {t('exercise.check.concededParts')}
+                {r.correct_parts.join(t('exercise.common.listSep'))}
+              </div>
+            )}
+            {r.remaining.length > 0 && (
+              <ul className="lec-mistake-issues" style={{ marginTop: 4 }}>
+                {r.remaining.map((i, idx) => (
+                  <li key={idx}>
+                    <MathText text={i.text} compact />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
   return (
     <div className="lec-rebut" style={{ marginTop: 8 }}>
-      {thread.length > 0 && (
-        <div className="lec-rebut-thread">
-          {thread.map((r) => (
-            <div key={r.id} className="lec-rebut-turn">
-              <div className="lec-rebut-mine">
-                <span className="lec-rebut-who">{t('exercise.check.who.me')}</span> {r.user_text}
-              </div>
-              <div className="lec-rebut-ai" data-outcome={r.outcome}>
-                <span className="lec-rebut-who">
-                  {t('exercise.check.who.aemeath')} · {t(OUTCOME_KEY[r.outcome])}
-                </span>{' '}
-                <MathText text={r.reply} compact />
-                {r.correct_parts.length > 0 && (
-                  <div className="lec-hint" style={{ marginTop: 4 }}>
-                    {t('exercise.check.concededParts')}
-                    {r.correct_parts.join(t('exercise.common.listSep'))}
-                  </div>
-                )}
-                {r.remaining.length > 0 && (
-                  <ul className="lec-mistake-issues" style={{ marginTop: 4 }}>
-                    {r.remaining.map((i, idx) => (
-                      <li key={idx}>
-                        <MathText text={i.text} compact />
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {!open ? (
+      <div className="lec-toolrow" style={{ marginTop: 0 }}>
         <button
           type="button"
           className="lec-btn lec-btn-ghost"
-          disabled={!canWrite || busy}
-          title={
-            canWrite ? t('exercise.check.rebuttal.title') : t('exercise.check.rebuttal.disabledTitle')
-          }
-          onClick={() => setOpen(true)}
+          data-open={expanded ? '1' : '0'}
+          disabled={!thread.length}
+          onClick={() => setExpanded((v) => !v)}
         >
-          {last?.outcome === 'upheld' ? t('exercise.check.rebuttal.continue') : t('exercise.check.rebuttal.start')}
+          {thread.length
+            ? t('exercise.check.rebuttal.summary', { n: thread.length }) +
+              (last ? ` · ${t(OUTCOME_KEY[last.outcome])}` : '') +
+              (expanded ? ` · ${t('exercise.check.rebuttal.collapse')}` : ` · ${t('exercise.check.rebuttal.expand')}`)
+            : t('exercise.check.rebuttal.none')}
         </button>
-      ) : (
+        {!composing ? (
+          <button
+            type="button"
+            className="lec-btn lec-btn-ghost"
+            disabled={!canWrite || busy}
+            title={canWrite ? t('exercise.check.rebuttal.title') : t('exercise.check.rebuttal.disabledTitle')}
+            onClick={() => {
+              setExpanded(true);
+              setComposing(true);
+            }}
+          >
+            {last?.outcome === 'upheld' ? t('exercise.check.rebuttal.continue') : t('exercise.check.rebuttal.start')}
+          </button>
+        ) : null}
+      </div>
+
+      {expanded && thread.length > 0 && threadBody}
+
+      {composing ? (
         <div>
           <textarea
             className="lec-textarea lec-rebut-input"
@@ -222,12 +248,15 @@ function RebuttalBox({
               className="lec-btn"
               disabled={busy || !text.trim()}
               onClick={() => {
-                void onSubmit(text).then(() => setText(''));
+                void onSubmit(text).then(() => {
+                  setText('');
+                  setComposing(false);
+                });
               }}
             >
               {busy ? t('exercise.check.rebuttal.busy') : t('exercise.check.rebuttal.submit')}
             </button>
-            <button type="button" className="lec-btn lec-btn-ghost" onClick={() => setOpen(false)} disabled={busy}>
+            <button type="button" className="lec-btn lec-btn-ghost" onClick={() => setComposing(false)} disabled={busy}>
               {t('exercise.common.cancel')}
             </button>
             <span className="lec-hint" style={{ marginLeft: 'auto' }}>
@@ -235,11 +264,10 @@ function RebuttalBox({
             </span>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
-
 export interface CheckPanelProps {
   problem: ProblemView;
   onRecheck: () => void;

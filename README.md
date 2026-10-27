@@ -168,7 +168,7 @@ never to hand you the solution.
 | Knowledge | Lessons and mistakes become worldbook entries in the physicist library (`generated_exercise.json`), hot-reloaded in ≤3 s |
 | Submission | KaTeX-rendered solutions merged with the original sheet via `pdf-lib` into one PDF for the Übungsbetrieb; internal verdicts are print-hidden |
 | Handoff | Reuses Lecture Mode's handoff schema and writer; one-way, received through the gatekeeper (`dry_run` by default) |
-| Extras | Minimal mode for problems from a book (paste text or upload a screenshot/PDF), figure attachments checked multimodally and printed inline, rebuttal ("答辩") where the model must re-derive and either concede or hold its ground, deterministic markdown export, and a progress digest on every new sheet |
+| Extras | Minimal mode for problems from a book (paste text or upload a screenshot/PDF), figure attachments checked multimodally and printed inline, rebuttal ("答辩") where the model must re-derive and either concede or hold its ground, collapsible rebuttal thread, cross-page problems checked with both page screenshots, deterministic markdown export, and a progress digest on every new sheet |
 
 ```powershell
 .\scripts\dsh.ps1 --profile exercise --port 3084   # standalone workbench
@@ -378,7 +378,7 @@ electron-app/          # v1（冻结，仅保留壳参考）
 | 知识 | 教训与错题写成 physicist 馆的世界书条目（`generated_exercise.json`），热重载 ≤3s |
 | 提交 | 解答页（服务端 KaTeX 渲染 + 字体内联）用 `pdf-lib` 与原卷合并成**一份 PDF** 交给 Übungsbetrieb；内部 verdict 在打印时隐藏 |
 | 握手 | **直接借用 lecture 的 handoff**：schema 继承、同一个写入器；方向单向，接收侧必过守门员（缺省 `dry_run`） |
-| 其他 | 极简模式（书上题目：粘贴文字或上传截图/PDF）、附图（随检查一起发给模型并印进提交 PDF）、答辩（模型须重新独立推导，认错撤回或给出证据坚持）、确定性 markdown 导出、每套新题附进度摘要 |
+| 其他 | 极简模式（书上题目：粘贴文字或上传截图/PDF）、附图（随检查一起发给模型并印进提交 PDF）、答辩（模型须重新独立推导，认错撤回或给出证据坚持）、答辩折叠（默认只有一行摘要）、跨页题目（两页原图一起看）、确定性 markdown 导出、每套新题附进度摘要 |
 
 ```powershell
 .\scripts\dsh.ps1 --profile exercise --port 3084   # 独立习题工作台

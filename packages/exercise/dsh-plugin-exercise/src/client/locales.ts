@@ -207,6 +207,10 @@ export const zh = {
   'exercise.check.rebuttal.title': '认为批改错了？让她重新推导一遍',
   'exercise.check.rebuttal.disabledTitle': '先检查一次，才能答辩',
   'exercise.check.rebuttal.continue': '继续答辩',
+  'exercise.check.rebuttal.summary': '答辩记录（{n} 轮）',
+  'exercise.check.rebuttal.expand': '展开',
+  'exercise.check.rebuttal.collapse': '收起',
+  'exercise.check.rebuttal.none': '答辩（还没有记录）',
   'exercise.check.rebuttal.start': '答辩 · 我认为这里没错',
   'exercise.check.rebuttal.placeholder':
     '指出你觉得被误判的那一步，比如：这里 $N$ 由球面约束给出，不是 $mg\\cos\\alpha$；我第 2 行已经写了 $v=\\dot x$…',
@@ -513,6 +517,10 @@ export const en: Record<ExerciseKey, string> = {
   'exercise.check.rebuttal.title': 'Think the check is wrong? Ask her to re-derive it',
   'exercise.check.rebuttal.disabledTitle': 'Run a check first — then you can rebut',
   'exercise.check.rebuttal.continue': 'Continue rebuttal',
+  'exercise.check.rebuttal.summary': 'Rebuttal ({n} turn(s))',
+  'exercise.check.rebuttal.expand': 'expand',
+  'exercise.check.rebuttal.collapse': 'collapse',
+  'exercise.check.rebuttal.none': 'Rebuttal (no turns yet)',
   'exercise.check.rebuttal.start': 'Rebut · I think this is right',
   'exercise.check.rebuttal.placeholder':
     'Point out the step you think was misjudged, e.g. $N$ comes from the spherical constraint, not $mg\\cos\\alpha$; I already wrote $v=\\dot x$ on line 2…',

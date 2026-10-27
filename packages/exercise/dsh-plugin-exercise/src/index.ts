@@ -1230,7 +1230,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const extracted = await extractPdfText(bytes);
     let pages = 0;
     try {
-      const rendered = await renderPdfPages(bytes, { maxPages: 2 });
+      const rendered = await renderPdfPages(bytes, { maxPages: 4 });
       for (const pg of rendered) {
         store.writePageImage(SCRATCH_COURSE, SCRATCH_SHEET, pg.page, pg.bytes);
         pages++;
@@ -1286,11 +1286,19 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       .slice(0, 3)
       .map((m) => `${m.problem_label || m.problem_id}：${m.lesson || m.issues.join('；')}`);
 
-    // 有原卷截图就带上：OCR 漏掉的公式/插图在图上还在（多模态检查）
+    // 有原卷截图就带上：OCR 漏掉的公式/插图在图上还在（多模态检查）。
+    // **跨页**：一道题常常写满两页 → 极简模式把前 4 页都带上；普通套题带 p.page 和下一页。
     const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
-    const pageNo = p.page > 0 && pageNumbers.includes(p.page) ? p.page : pageNumbers[0] ?? 0;
-    const pageImg = pageNo ? store.readPageImage(input.courseId, input.sheetId, pageNo) : null;
-    if (pageImg) log(`检查附带原图：第 ${pageNo} 页（多模态）`);
+    const pageNos =
+      input.courseId === SCRATCH_COURSE
+        ? pageNumbers.slice(0, 4)
+        : (p.page > 0 ? [p.page, p.page + 1] : pageNumbers.slice(0, 1)).filter((n) => pageNumbers.includes(n));
+    const pageImages: Array<{ base64: string; mediaType: string; page: number }> = [];
+    for (const n of pageNos) {
+      const got = store.readPageImage(input.courseId, input.sheetId, n);
+      if (got) pageImages.push({ base64: got.bytes.toString('base64'), mediaType: got.mediaType, page: n });
+    }
+    if (pageImages.length) log(`检查附带原图：第 ${pageImages.map((i) => i.page).join('、')} 页（多模态）`);
     // 学生自己画的手画图（受力图/草图）也要看：最多 3 张，避免请求过大
     const readImages = (role: 'problem' | 'answer'): Array<{ base64: string; mediaType: string; name: string }> =>
       p.images
@@ -1323,9 +1331,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         reasoning: checkReasoning,
         statementImages,
         answerImages,
-        pageImage: pageImg
-          ? { base64: pageImg.bytes.toString('base64'), mediaType: pageImg.mediaType, page: pageNo }
-          : undefined,
+        pageImages,
       },
       askLlm,
       askVision,
@@ -1474,8 +1480,15 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
     const course = store.readIndex(input.courseId);
     const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
-    const pageNo = p.page > 0 && pageNumbers.includes(p.page) ? p.page : pageNumbers[0] ?? 0;
-    const pageImg = pageNo ? store.readPageImage(input.courseId, input.sheetId, pageNo) : null;
+    const pageNos =
+      input.courseId === SCRATCH_COURSE
+        ? pageNumbers.slice(0, 4)
+        : (p.page > 0 ? [p.page, p.page + 1] : pageNumbers.slice(0, 1)).filter((n) => pageNumbers.includes(n));
+    const pageImages: Array<{ base64: string; mediaType: string; page: number }> = [];
+    for (const n of pageNos) {
+      const got = store.readPageImage(input.courseId, input.sheetId, n);
+      if (got) pageImages.push({ base64: got.bytes.toString('base64'), mediaType: got.mediaType, page: n });
+    }
     const answerImages = p.images
       .filter((img) => img.role !== 'problem')
       .slice(0, 3)
@@ -1507,10 +1520,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           notes: p.notes,
           progressDigest: sheet.progress_digest,
           lang: uiLang(),
+          statementImages,
           answerImages,
-          pageImage: pageImg
-            ? { base64: pageImg.bytes.toString('base64'), mediaType: pageImg.mediaType, page: pageNo }
-            : undefined,
+          pageImages,
         },
         previous: { verdict: target.verdict, issues: target.issues },
         userText: text,
