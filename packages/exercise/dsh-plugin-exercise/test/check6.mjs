@@ -219,6 +219,7 @@ function fakeDeps(calls) {
     onExportHandoff: async () => ({ ok: true, files: ['a.json'], dir: '/h' }),
     onScratch: () => { calls.push(['onScratch']); return { ok: true, sheet: { id: 'ub01' } }; },
     onImportScratchPdf: async (input) => { calls.push(['import_scratch_pdf', input]); return { ok: true, sheet: {}, text_length: 10, pages: 1 }; },
+    onApproach: async (input) => { calls.push(['approach', input]); return { ok: true, verdict: 'on_track', issues: [], note: '' }; },
     onAddAttachment: async (input) => { calls.push(['add_attachment', input]); return { ok: true, sheet: {} }; },
     onDeleteAttachment: async () => ({ ok: true, sheet: {} }),
     onReadAttachment: () => null,
@@ -444,6 +445,31 @@ await asyncT('POST add_attachment 透传 role=problem', async () => {
     fakeDeps(calls),
   );
   assert.equal(res.out.status, 200);
+});
+
+await asyncT('POST approach 透传 course/sheet/problem（思路检查）', async () => {
+  const calls = [];
+  const res = makeRes();
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', {
+      action: 'approach',
+      course_id: 'physik-1',
+      sheet_id: 'ub01',
+      problem_id: 'p01',
+    }),
+    res,
+    fakeDeps(calls),
+  );
+  assert.equal(res.out.status, 200);
+  const [name, input] = calls[0];
+  assert.equal(name, 'approach');
+  assert.deepEqual(input, { courseId: 'physik-1', sheetId: 'ub01', problemId: 'p01' });
+});
+
+await asyncT('POST approach 缺参数 → 400', async () => {
+  const res = makeRes();
+  await handleExerciseHttp(makeReq('POST', '/aemeath/api/exercise', { action: 'approach' }), res, fakeDeps([]));
+  assert.equal(res.out.status, 400);
 });
 
 console.log(`\n[exercise-check-http] ${passed} 项断言通过`);

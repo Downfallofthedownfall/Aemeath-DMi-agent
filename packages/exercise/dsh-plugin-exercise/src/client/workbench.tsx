@@ -31,6 +31,7 @@ import { MistakesPanel } from './mistakes-panel.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { ImportDialog } from './import-dialog.tsx';
 import { ScratchWorkspace } from './scratch.tsx';
+import type { ApproachResult } from './approach-panel.tsx';
 import { insertIntoActiveEditor } from './answer-editor.tsx';
 import { MathText } from './math.tsx';
 import { EX_CLASS } from './styles.ts';
@@ -750,6 +751,13 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                     mistakeCount={p.mistakes.length}
                     onSave={(patch) => saveProblem(p.id, patch)}
                     onCheck={() => void checkProblem(p.id)}
+            onApproach={() =>
+              apiPost<ApproachResult & { ok: boolean; error?: string }>('approach', {
+                course_id: courseId,
+                sheet_id: sheet.id,
+                problem_id: p.id,
+              })
+            }
                     imageUrl={(name) =>
                       `${API_BASE}?action=attachment&course=${encodeURIComponent(courseId)}&sheet=${encodeURIComponent(sheet.id)}&name=${encodeURIComponent(name)}`
                     }

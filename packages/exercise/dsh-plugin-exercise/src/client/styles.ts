@@ -1022,6 +1022,12 @@ const CSS = `
 
 /* 公式解析失败：显示源码（等宽 + 虚线下划线），不是"红字塞进公式里" */
 .${EX_CLASS} .ex-math-error, .${EX_CLASS} .ex-math-fallback { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.94em; color: var(--aem-ink); background: light-dark(#fdf6e3, rgba(240, 200, 120, 0.12)); border: 1px solid light-dark(#e8d9b0, rgba(240, 200, 120, 0.28)); border-radius: 4px; padding: 0 3px; white-space: pre-wrap; cursor: help; }
+/* === 思路检查（临时提示，不长期占地方） === */
+.${EX_CLASS} .lec-approach { margin-top: 10px; }
+.${EX_CLASS} .lec-approach-box { margin-top: 6px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--aem-line); background: var(--aem-surface); font-size: 12.5px; }
+.${EX_CLASS} .lec-approach-box[data-verdict="wrong"] { border-color: #b3453f66; }
+.${EX_CLASS} .lec-approach-box[data-verdict="at_risk"] { border-color: #b08a2a66; }
+.${EX_CLASS} .lec-approach-box[data-verdict="on_track"] { border-color: #3f7d4a66; }
 /* === 极简模式（临时做题）：一个工作区，无课程/提交 === */
 .${EX_CLASS} .lec-wb[data-minimal="1"] { display: block; overflow-y: auto; }
 .${EX_CLASS} .lec-scratch { display: flex; flex-direction: column; min-height: 100%; }

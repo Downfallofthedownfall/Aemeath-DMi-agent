@@ -68,7 +68,6 @@ export const checkSchema = z.object({
 });
 export type Check = z.infer<typeof checkSchema>;
 
-/** 一轮答辩（学生 vs 批改）。追加式保存，永不覆盖历史。 */
 export const rebuttalSchema = z.object({
   id: z.string(),
   created_at: z.number(),

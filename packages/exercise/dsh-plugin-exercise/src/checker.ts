@@ -415,6 +415,238 @@ export async function runCheck(
 // 这样模型不会理所当然地维护自己上一次的结论。
 // ============================================================
 
+
+// ============================================================
+// 思路检查（做题中途）：只挑"走歪了"，不给解法
+//
+// 用户 2026-10-28："做题做一半的时候 LLM 检查做题思路和路径，避免让 llm 写出解题方法，
+//   只要指出错误点，避免白白浪费时间科技树点歪，尽量保守提示。"
+//
+// 设计约束（都写进 prompt，不靠模型自觉）：
+//   ① 禁止给解法/步骤/公式/答案/中间结果 —— 一旦给了，这个功能就变成"代做"；
+//   ② 只在**明确**不成立时提（物理前提、漏条件、方法不适用、量纲、数学上不成立）；
+//   ③ 最多 2 条，每条只说"哪里不成立/缺什么"，不说怎么改；
+//   ④ 不确定就不提（宁可漏报，不要误报打断思路）。
+// ============================================================
+
+export interface ApproachInput {
+  courseTitle: string;
+  sheetNumber: number;
+  sheetTitle: string;
+  problemLabel: string;
+  problemTitle: string;
+  points: number | null;
+  problemText: string;
+  /** 当前草稿（可能只有半页） */
+  draft: string;
+  notes?: string;
+  /** 题目截图 / 页面截图 / 手画图（多模态一起看） */
+  statementImages?: Array<{ base64: string; mediaType: string; name: string }>;
+  pageImages?: Array<{ base64: string; mediaType: string; page: number }>;
+  answerImages?: Array<{ base64: string; mediaType: string; name: string }>;
+  lang: 'zh' | 'de' | 'en';
+}
+
+const APPROACH_VERDICTS = ['on_track', 'at_risk', 'wrong', 'unclear'] as const;
+export type ApproachVerdict = (typeof APPROACH_VERDICTS)[number];
+
+export interface ParsedApproach {
+  verdict: ApproachVerdict;
+  issues: Array<{ severity: 'error' | 'warn' | 'info'; text: string }>;
+  note: string;
+}
+
+export function buildApproachPrompt(input: ApproachInput): string {
+  const zh = input.lang === 'zh';
+  const de = input.lang === 'de';
+  const L = (zhText: string, deText: string, enText: string): string => (zh ? zhText : de ? deText : enText);
+
+  const lines: string[] = [];
+  lines.push(
+    L(
+      '你是一位严格的物理/数学助教。学生**正在做题**，做到一半把当前草稿给你看。',
+      'Du bist ein strenger Physik-/Mathe-Tutor. Die/der Studierende **rechnet gerade** und zeigt dir den halbfertigen Entwurf.',
+      'You are a strict physics/maths tutor. The student is **in the middle of solving** and shows you the current draft.',
+    ),
+  );
+  lines.push('');
+  lines.push(
+    L(
+      '## 你这次只做一件事：判断"思路/路径"有没有明显走歪\n' +
+        '- **绝对不要**给出解题方法、步骤、公式变形、答案或任何中间结果；不要提示"先算 X 再算 Y"。\n' +
+        '- 也不要在心里替他做完再"暗示"。你只做**路牌**，不做导航。',
+      '## Deine einzige Aufgabe: prüfen, ob der **Lösungsweg** klar in die falsche Richtung läuft\n' +
+        '- **Keine** Lösungsmethode, keine Schritte, keine Formeln, keine Ergebnisse, keine Zwischenwerte; kein "erst X, dann Y".\n' +
+        '- Du bist ein Wegweiser, kein Navi.',
+      '## Your only job: check whether the **approach** is clearly heading the wrong way\n' +
+        '- **Never** give a method, steps, formula manipulations, answers or intermediate results; no "first X, then Y".\n' +
+        '- You are a signpost, not a navigator.',
+    ),
+  );
+  lines.push('');
+  lines.push(
+    L(
+      '## 只有这些情况才算"错误点"（保守优先）\n' +
+        '1. 物理前提/适用条件明显不成立（例：有摩擦却按无摩擦列方程；非惯性系漏惯性力；把刚体当质点）。\n' +
+        '2. **明确**漏掉关键条件或已知量，且这个漏项必然导致结果错。\n' +
+        '3. 方法从根本上不适用（例：非保守力做功却直接套机械能守恒）。\n' +
+        '4. 量纲/单位明显不对。\n' +
+        '5. 数学上明显不成立（例：把发散的积分硬拆、在奇点处直接代入）。\n\n' +
+        '以下**不要提**：不确定的、只是"可能更简单"的、符号/写法风格、"你可以再想想"这类空话。\n' +
+        '**宁可漏报，也不要误报** —— 误报会打断他的思路，比不报更糟。',
+      '## Nur diese Fälle zählen als Fehler (konservativ!)\n' +
+        '1. Physikalische Voraussetzung/Gültigkeit klar verletzt (z. B. Reibung ignoriert, Trägheitskraft im beschleunigten System vergessen).\n' +
+        '2. Eine **klar** fehlende Randbedingung/Gegebene, die zwingend zum falschen Ergebnis führt.\n' +
+        '3. Methode grundsätzlich ungeeignet (z. B. Energieerhaltung trotz nichtkonservativer Kräfte).\n' +
+        '4. Einheiten/Dimensionen offensichtlich falsch.\n' +
+        '5. Mathematisch offensichtlich falsch (z. B. divergentes Integral aufspalten).\n\n' +
+        'Nicht nennen: Unsicheres, "vielleicht einfacher", reine Schreibweise, leere Floskeln.\n' +
+        '**Lieber auslassen als falsch alarmieren.**',
+      '## Only these count as error points (be conservative)\n' +
+        '1. The physical premise clearly fails (friction ignored, inertial force missing, treating a rigid body as a point mass).\n' +
+        '2. A **clear** missing constraint/given that unavoidably produces a wrong result.\n' +
+        '3. The method is fundamentally inapplicable (energy conservation with non-conservative work).\n' +
+        '4. Units/dimensions obviously wrong.\n' +
+        '5. Mathematically obviously invalid (splitting a divergent integral, substituting at a singularity).\n\n' +
+        'Do not mention: anything uncertain, "maybe simpler", style, or empty encouragement.\n' +
+        '**Better to miss than to false-alarm.**',
+    ),
+  );
+  lines.push('');
+  lines.push(
+    L(
+      '## 输出（严格 JSON，不要 Markdown 包裹）\n' +
+        '{"verdict":"on_track|at_risk|wrong|unclear","issues":[{"severity":"error|warn","text":"一句话：哪里不成立/缺什么"}],"note":"一句话补充"}\n' +
+        '- verdict：`on_track`=没看到明显问题，可以继续；`at_risk`=有疑点但不致命；`wrong`=明确走歪；`unclear`=草稿太少看不出来。\n' +
+        '- issues 最多 2 条；**只说"哪里不成立"，不说怎么改**；不确定就留空。\n' +
+        '- note：可以是一句"这步没问题"，也可以是"继续写，我再看"；不要借 note 夹带解法。',
+      '## Ausgabe (striktes JSON)\n' +
+        '{"verdict":"on_track|at_risk|wrong|unclear","issues":[{"severity":"error|warn","text":"ein Satz: was gilt nicht / fehlt"}],"note":"ein Satz"}\n' +
+        '- verdict: on_track = kein klares Problem; at_risk = Zweifel; wrong = klar falsche Richtung; unclear = zu wenig Entwurf.\n' +
+        '- höchstens 2 issues; **nur was nicht gilt, nicht wie man es behebt**.\n' +
+        '- note: ein Satz, keine Lösung.',
+      '## Output (strict JSON)\n' +
+        '{"verdict":"on_track|at_risk|wrong|unclear","issues":[{"severity":"error|warn","text":"one sentence: what does not hold / is missing"}],"note":"one sentence"}\n' +
+        '- verdict: on_track = nothing clearly wrong; at_risk = doubt; wrong = clearly off track; unclear = draft too thin.\n' +
+        '- at most 2 issues; **only what fails, never how to fix it**.\n' +
+        '- note: one sentence, no solution.',
+    ),
+  );
+
+  lines.push('');
+  lines.push(
+    L(`# 题目（${input.courseTitle}）`, `# Aufgabe (${input.courseTitle})`, `# Problem (${input.courseTitle})`),
+  );
+  lines.push(
+    L(
+      `- 题号：${input.problemLabel}${input.points != null ? `（${input.points} 分）` : ''}`,
+      `- Aufgabe: ${input.problemLabel}${input.points != null ? ` (${input.points} P.)` : ''}`,
+      `- Problem: ${input.problemLabel}${input.points != null ? ` (${input.points} pts)` : ''}`,
+    ),
+  );
+  if (input.problemTitle) lines.push(`- ${input.problemTitle}`);
+  lines.push('');
+  lines.push(L('## 题干', '## Angabe', '## Statement'));
+  lines.push(input.problemText.trim() || L('（题干缺失，只有图片）', '(keine Angabe, nur Bild)', '(no statement, image only)'));
+
+  if (input.statementImages?.length) {
+    lines.push('');
+    lines.push(
+      L(
+        `## 题目的图片（${input.statementImages.length} 张，见附件，以图为准）`,
+        `## Aufgabenbilder (${input.statementImages.length}, siehe Anhang)`,
+        `## Problem images (${input.statementImages.length}, attached, authoritative)`,
+      ),
+    );
+  }
+  if (input.pageImages?.length) {
+    const pages = input.pageImages.map((p) => p.page).join('、');
+    lines.push('');
+    lines.push(
+      L(
+        `## 原卷截图：第 ${pages} 页${input.pageImages.length > 1 ? '（跨页：连起来读）' : ''}`,
+        `## Originalseiten: ${pages}`,
+        `## Sheet pages: ${pages}`,
+      ),
+    );
+  }
+
+  lines.push('');
+  lines.push(L('## 学生的当前草稿（可能只写了一半）', '## Aktueller Entwurf (evtl. halb fertig)', '## Current draft (maybe half done)'));
+  lines.push(input.draft.trim() || L('（还是空的）', '(noch leer)', '(still empty)'));
+  if (input.notes?.trim()) {
+    lines.push('');
+    lines.push(L(`## 学生自己写的备注：${input.notes.trim()}`, `## Notiz: ${input.notes.trim()}`, `## Student note: ${input.notes.trim()}`));
+  }
+  lines.push('');
+  lines.push(
+    L(
+      '现在只检查路径，不要解题。输出 JSON。',
+      'Prüfe jetzt nur den Weg, löse nicht. Gib JSON aus.',
+      'Now check only the path, do not solve. Output JSON.',
+    ),
+  );
+  return lines.join('\n');
+}
+
+export function parseApproachOutput(raw: string | null): ParsedApproach | null {
+  if (!raw) return null;
+  const obj = parseJsonLoose(raw) as Record<string, unknown> | null;
+  if (!obj) return null;
+  const verdict = typeof obj.verdict === 'string' && (APPROACH_VERDICTS as readonly string[]).includes(obj.verdict)
+    ? (obj.verdict as ApproachVerdict)
+    : 'unclear';
+  const issues = Array.isArray(obj.issues)
+    ? obj.issues
+        .map((x) => {
+          const item = x as Record<string, unknown>;
+          const text = typeof item.text === 'string' ? item.text.trim() : '';
+          if (!text) return null;
+          const sev = item.severity === 'error' || item.severity === 'warn' ? item.severity : 'warn';
+          return { severity: sev as 'error' | 'warn', text };
+        })
+        .filter((x): x is { severity: 'error' | 'warn'; text: string } => !!x)
+        .slice(0, 2)
+    : [];
+  const note = typeof obj.note === 'string' ? obj.note.trim() : '';
+  return { verdict, issues, note };
+}
+
+/** 跑一次思路检查。故意**不复用**批改的 prompt/结果，避免"批改结论"泄漏答案。 */
+export async function runApproach(
+  input: ApproachInput,
+  askLlm: AskLlm,
+  askVision?: (
+    prompt: string,
+    images: readonly { mediaType: string; base64: string }[],
+    opts: { maxTokens: number; purpose: string; reasoning?: ReasoningEffort; timeoutMs?: number },
+  ) => Promise<string | null>,
+): Promise<{ ok: boolean; parsed: ParsedApproach | null; raw: string; error?: string }> {
+  const prompt = buildApproachPrompt(input);
+  const images = [
+    ...(input.statementImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
+    ...(input.pageImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
+    ...(input.answerImages ?? []).map((i) => ({ mediaType: i.mediaType, base64: i.base64 })),
+  ];
+  const vision = images.length && askVision ? askVision : undefined;
+  const raw = vision
+    ? ((await vision(prompt, images, {
+        maxTokens: 16_000,
+        purpose: 'exercise-approach',
+        reasoning: 'high',
+        timeoutMs: 120_000,
+      })) ?? '')
+    : await askLlm(prompt, {
+        maxTokens: 16_000,
+        purpose: 'exercise-approach',
+        reasoning: 'high',
+        timeoutMs: 120_000,
+      });
+  if (!raw || !raw.trim()) return { ok: false, parsed: null, raw: '', error: 'empty response' };
+  const parsed = parseApproachOutput(raw);
+  if (!parsed) return { ok: false, parsed: null, raw, error: 'unparseable JSON' };
+  return { ok: true, parsed, raw };
+}
 export interface RebuttalInput {
   check: CheckInput;
   /** 上一次检查的结论与 issues（作为"被质疑的主张"） */

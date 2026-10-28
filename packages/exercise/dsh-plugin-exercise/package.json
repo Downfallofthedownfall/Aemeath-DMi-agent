@@ -50,7 +50,7 @@
     "build": "tsc -p tsconfig.json && node build-client.mjs",
     "build:client": "node build-client.mjs",
     "typecheck:client": "tsc -p tsconfig.client.json",
-    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs && node test/check7.mjs && node test/check8.mjs && node test/check9.mjs && node test/check10.mjs && node test/check11.mjs && node test/check12.mjs && node test/check13.mjs && node test/check14.mjs && node test/check-i18n.mjs"
+    "test": "node test/check.mjs && node test/check2.mjs && node test/check3.mjs && node test/check4.mjs && node test/check5.mjs && node test/check6.mjs && node test/check7.mjs && node test/check8.mjs && node test/check9.mjs && node test/check10.mjs && node test/check11.mjs && node test/check12.mjs && node test/check13.mjs && node test/check14.mjs && node test/check15.mjs && node test/check-i18n.mjs && node test/check-i18n.mjs"
   },
   "dsh": {
     "client": {

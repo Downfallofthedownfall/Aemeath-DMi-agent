@@ -54,7 +54,7 @@ import {
   type DigestResult,
   type LectureProgress,
 } from './digest.js';
-import { buildCheckPrompt, parseCheckOutput, runCheck, runRebuttal, type AskLlm } from './checker.js';
+import { buildCheckPrompt, parseCheckOutput, runApproach, runCheck, runRebuttal, type AskLlm } from './checker.js';
 import { answerFingerprint } from './hash.js';
 import {
   buildExerciseHandoff,
@@ -1243,6 +1243,94 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     store.writeSheet(SCRATCH_COURSE, sheet);
     log(`极简模式：导入题目 PDF（${extracted.pageCount} 页，文本 ${p.text.length} 字，截图 ${pages} 张）`);
     return { ok: true, sheet, text_length: p.text.length, pages };
+  };
+  /**
+   * 思路检查（**可重复、临时**，不落盘）。
+   *
+   * 用户 2026-10-28："做题做一半的时候 LLM 检查做题思路和路径，避免让 llm 写出解题方法，
+   *   只要指出错误点，避免白白浪费时间科技树点歪，尽量保守提示。"
+   * 之后又澄清："人工激活，不是说做到一半检查一次，就加一个检查思路的可重复执行就行了，
+   *   输出就临时的不要一直占用前端篇幅，但是也不要一改内容就消失，毕竟要看着改的，
+   *   就人工重置就行了。"
+   *
+   * 因此：不发自动触发、不写 sheet.json、不进错题本 —— 只把当前草稿和题目交给模型，
+   * 返回一份临时结果，前端自己拿在手里，直到用户点「清除」。
+   */
+  const checkApproach = async (input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+  }): Promise<{
+    ok: boolean;
+    error?: string;
+    verdict?: string;
+    issues?: Array<{ severity: string; text: string }>;
+    note?: string;
+    model?: string;
+    provider?: string;
+    reasoning?: string;
+  }> => {
+    const sheet = store.readSheet(input.courseId, input.sheetId);
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
+    const p = store.findProblem(sheet, input.problemId);
+    if (!p) return { ok: false, error: tr('题目不存在', 'Problem not found') };
+    const draft = (p.answer ?? '').trim();
+    if (!draft) return { ok: false, error: tr('答案还是空的 —— 先写两行思路再来检查', 'The answer is empty - write a couple of lines first') };
+
+    const course = store.readIndex(input.courseId);
+    const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
+    const pageNos =
+      input.courseId === SCRATCH_COURSE
+        ? pageNumbers.slice(0, 4)
+        : (p.page > 0 ? [p.page, p.page + 1] : pageNumbers.slice(0, 1)).filter((n) => pageNumbers.includes(n));
+    const pageImages: Array<{ base64: string; mediaType: string; page: number }> = [];
+    for (const n of pageNos) {
+      const got = store.readPageImage(input.courseId, input.sheetId, n);
+      if (got) pageImages.push({ base64: got.bytes.toString('base64'), mediaType: got.mediaType, page: n });
+    }
+    const readImages = (role: 'problem' | 'answer'): Array<{ base64: string; mediaType: string; name: string }> =>
+      p.images
+        .filter((img) => (role === 'problem' ? img.role === 'problem' : img.role !== 'problem'))
+        .slice(0, 3)
+        .map((img) => {
+          const got = store.readImage(input.courseId, input.sheetId, img.name);
+          return got ? { base64: got.bytes.toString('base64'), mediaType: got.mediaType, name: img.name } : null;
+        })
+        .filter((x): x is { base64: string; mediaType: string; name: string } => !!x);
+
+    const result = await runApproach(
+      {
+        courseTitle: course?.title ?? input.courseId,
+        sheetNumber: sheet.number,
+        sheetTitle: sheet.title,
+        problemLabel: p.label || p.id,
+        problemTitle: p.title,
+        points: p.points,
+        problemText: p.text,
+        draft,
+        notes: p.notes,
+        statementImages: readImages('problem'),
+        pageImages,
+        answerImages: readImages('answer'),
+        lang: uiLang(),
+      },
+      askViaRuntime,
+      askVision,
+    );
+    if (!result.ok || !result.parsed) {
+      warn(`思路检查失败（${p.id}）：${result.error}`);
+      return { ok: false, error: result.error ?? tr('模型没返回可解析的结果', 'Unparseable model output') };
+    }
+    log(`思路检查（${p.id}）：${result.parsed.verdict} · ${result.parsed.issues.length} 条`);
+    return {
+      ok: true,
+      verdict: result.parsed.verdict,
+      issues: result.parsed.issues,
+      note: result.parsed.note,
+      model: llm.model,
+      provider: llmProvider(),
+      reasoning: llmReasoningState(),
+    };
   };
   /** 重置极简工作区：清空题目/答案/检查/附图。 */
   const resetScratch = (): Sheet => {
@@ -2886,6 +2974,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           return { ok: false, error: (e as Error).message };
         }
       },
+      onApproach: (input) => checkApproach(input),
       onImportScratchPdf: async (input) => {
         const r = await importScratchPdf(input);
         if (!r.ok) return { ok: false, error: r.error };

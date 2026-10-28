@@ -243,6 +243,22 @@ export interface ExerciseHttpDeps {
   /** GET scratch：极简工作区（临时做题；必要时自动创建） */
   onScratch(): { ok: boolean; error?: string; sheet?: unknown };
 
+  /** POST approach：思路检查（可重复、临时，不落盘） */
+  onApproach(input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+  }): Promise<{
+    ok: boolean;
+    error?: string;
+    verdict?: string;
+    issues?: Array<{ severity: string; text: string }>;
+    note?: string;
+    model?: string;
+    provider?: string;
+    reasoning?: string;
+  }>;
+
   /** POST import_scratch_pdf：极简模式上传题目 PDF（base64） */
   onImportScratchPdf(input: { base64: string }): Promise<{
     ok: boolean;
@@ -741,6 +757,22 @@ export async function handleExerciseHttp(
             includeSource: parsed.include_source === true,
             order,
             draft: parsed.draft === true,
+          });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'approach': {
+          const courseId = str(parsed.course_id ?? '', 120);
+          const sheetId = str(parsed.sheet_id ?? '', 40);
+          if (!courseId || !sheetId || !parsed.problem_id) {
+            jsonError(res, 400, 'course/sheet/problem required');
+            return;
+          }
+          const r = await deps.onApproach({
+            courseId,
+            sheetId,
+            problemId: str(parsed.problem_id, 40),
           });
           json(res, r.ok ? 200 : 400, r);
           return;

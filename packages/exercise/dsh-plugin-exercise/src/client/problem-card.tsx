@@ -14,6 +14,7 @@
 import { useState } from 'react';
 import type { ProblemView } from './api.ts';
 import { AnswerEditor } from './answer-editor.tsx';
+import { ApproachPanel, type ApproachResult } from './approach-panel.tsx';
 import { CheckPanel } from './check-panel.tsx';
 import { MathText } from './math.tsx';
 import { useT } from './i18n.ts';
@@ -40,6 +41,8 @@ export interface ProblemCardProps {
   onCheck: () => void;
   /** 答辩：把学生的话发给爱弥斯（重新推导后承认或坚持） */
   onRebuttal: (text: string) => Promise<void>;
+  /** 思路检查（可重复、临时，不落盘） */
+  onApproach?: () => Promise<ApproachResult & { ok: boolean; error?: string }>;
   /** 上传/删除答案附图，以及拼图片 URL */
   onAttachImage?: (file: File) => Promise<void>;
   onDeleteImage?: (imageId: string) => void;
@@ -57,6 +60,7 @@ export function ProblemCard({
   onSave,
   onCheck,
   onRebuttal,
+  onApproach,
   onAttachImage,
   onDeleteImage,
   imageUrl,
@@ -178,6 +182,7 @@ export function ProblemCard({
         </div>
       )}
 
+      {onApproach ? <ApproachPanel onRun={onApproach} hasDraft={!!problem.answer.trim()} onToast={onToast} /> : null}
       <CheckPanel problem={problem} onRecheck={onCheck} onRebuttal={onRebuttal} busy={busy} />
     </div>
   );

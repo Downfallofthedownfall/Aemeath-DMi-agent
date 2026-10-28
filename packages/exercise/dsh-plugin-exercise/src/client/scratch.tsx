@@ -16,6 +16,7 @@ import type { ProblemView, SheetView } from './api.ts';
 import { API_BASE, apiGet, apiPost, fileToBase64 } from './api.ts';
 import { AnswerEditor, insertIntoActiveEditor } from './answer-editor.tsx';
 import { CheckPanel } from './check-panel.tsx';
+import { ApproachPanel, type ApproachResult } from './approach-panel.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { useT } from './i18n.ts';
 
@@ -285,6 +286,18 @@ export function ScratchWorkspace({ onToast }: ScratchWorkspaceProps): JSX.Elemen
                 onAttachImage={attachImage}
                 onDeleteImage={(id) => void deleteImage(id)}
                 imageUrl={imageUrl}
+              />
+
+              <ApproachPanel
+                hasDraft={!!(problem.answer ?? '').trim()}
+                onToast={onToast}
+                onRun={() =>
+                  apiPost<ApproachResult & { ok: boolean; error?: string }>('approach', {
+                    course_id: SCRATCH_COURSE,
+                    sheet_id: SCRATCH_SHEET,
+                    problem_id: SCRATCH_PROBLEM,
+                  })
+                }
               />
 
               <CheckPanel
