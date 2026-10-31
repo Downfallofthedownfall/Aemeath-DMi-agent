@@ -227,8 +227,13 @@ try {
   await ta('session/disposed 才清内存态', async () => {
     for (const fn of b.listeners.get('session/disposed') ?? []) await fn(SESSION);
     const st = await dispatch(b, 'lecture_status', {}, SESSION);
-    assert.equal(st.ok, false);
     assert.equal(st.data.active, false);
+    // 注：这里原来断言 `ok === false`。后来改成 ok + active:false + courses ——
+    // "没有正在记的课堂"不是错误，而是正常状态；而且这正是**列出已有课程**的入口
+    //（主 agent 被问"课堂讲了什么"时唯一的线索来源，见 check8 的对应断言）。
+    assert.equal(st.ok, true);
+    assert.ok(Array.isArray(st.data.courses), '无活跃课堂时应列出已有课程');
+    assert.ok(st.data.courses.length > 0, '至少应有本测试创建的 physik-1');
   });
 
   await ta('数据文件真实存在（课程索引）', () => {

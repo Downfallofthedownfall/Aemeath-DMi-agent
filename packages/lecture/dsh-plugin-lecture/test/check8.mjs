@@ -1402,4 +1402,69 @@ t('对照要产出「能被追问的句子」，不是元评论', () => {
   assert.match(fn[0], /没跟上|记不清/, '应把学生自认不懂的点算进 wrong_or_vague');
 });
 
+t('「课堂讲了什么」要有路可走（status 能列课、read 能读笔记）', () => {
+  // 真机踩过（截图）：用户在主 agent 里问"课堂讲了什么"，
+  // agent 手上没有任何能列出课程或读取笔记的工具 ——
+  // 它先猜 course_id（猜了 physik-1），猜错后开始 glob
+  // `**/*.json` / `**/lecture*`，翻了七八次才摸到文件，最后放弃。
+  //
+  // 两个缺口：
+  //   · lecture_status 在没有进行中的课堂时只回 `active:false`，
+  //     等于"我不知道有哪些课"；
+  //   · 没有任何工具能读某一讲的笔记正文。
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+
+  // 1) status 必须列出已有课程
+  const status = idx.match(/name: 'lecture_status'[\s\S]{0,2400}/);
+  assert.ok(status, '找不到 lecture_status');
+  assert.match(status[0], /buildCourseList/, '没有活跃课堂时应列出磁盘上的课程');
+  assert.match(status[0], /course_id: c\.course_id|course_id/, '列表里要有 course_id');
+  assert.match(status[0], /hint/, '应告诉模型接下来能怎么用');
+  // 不能只有一句 active:false 就完事 —— `if (!cur)` 块里必须返回 ok + 课程列表
+  const noActive = status[0].match(/if \(!cur\) \{[\s\S]{0,1400}/);
+  assert.ok(noActive, '找不到 `if (!cur)` 分支');
+  assert.ok(
+    !/return fail\(/.test(noActive[0].split('return ok(')[0] ?? ''),
+    '没有活跃课堂时不该返回失败（那等于说"我不知道有哪些课"）',
+  );
+  assert.match(noActive[0], /return ok\(/, '应返回 ok + 课程列表');
+
+  // 2) 必须有读笔记的工具
+  const read = idx.match(/name: 'lecture_read'[\s\S]{0,2600}/);
+  assert.ok(read, '应有 lecture_read 工具（读某一讲笔记正文）');
+  assert.match(read[0], /readUnitMarkdown/, '应读 markdown 原文');
+  assert.match(read[0], /省略/, '两个参数都该可省略');
+  // 未指定 unit 时要跳过空单元（刚开课会建出 0 chunk 的空单元）
+  assert.match(read[0], /reverse\(\)/, '应优先取有内容的单元');
+  assert.match(read[0], /readUnitMarkdown\(cid, u\)/, '按"有没有内容"筛');
+});
+
+t('导出工具的 course_id 必须是真可选（不能又要必填又说可省略）', () => {
+  // 原来写的是 `required: true` 而描述说"缺省导出全部课程"—— 自相矛盾。
+  // 结果主 agent 必须传一个它不知道的 id。
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  const exp = idx.match(/name: 'lecture_export_handoff'[\s\S]{0,1800}/);
+  assert.ok(exp, '找不到 lecture_export_handoff');
+  // 只看实际的 schema 块 —— 注释里提到 `required: true` 是在解释历史，不算违规
+  assert.ok(
+    !/course_id:\s*\{[^}]*required:\s*true/s.test(exp[0]),
+    '不该再强制 course_id',
+  );
+  // 传了不存在的 id 时要回可用列表，而不是一句"没有可导出的课程"
+  assert.match(exp[0], /available/, '应返回可用课程列表');
+  assert.match(exp[0], /listCourses/, '应基于真实课程列表判断');
+});
+
+t('工具返回类型要容得下结构化数据（courses / units 数组）', () => {
+  // 这几个 helper 原来把 data 限制成
+  // `string | number | boolean | string[] | null`，装不下对象数组，
+  // 逼得调用方把结构序列化。用 JsonValue 才对。
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  assert.match(idx, /type ToolResult = \{ ok: boolean; data: Record<string, JsonValue> \}/, 'ToolResult 应用 JsonValue');
+  assert.match(idx, /function ok\(data: Record<string, JsonValue>/, 'ok 应用 JsonValue');
+  assert.match(idx, /function fail\(error: string, extra: Record<string, JsonValue>/, 'fail 应用 JsonValue');
+  // 可选参数的写法：省略 required（类型只接受 required: true 或省略）
+  assert.ok(!/required: false/.test(idx), '可选参数不能写 required: false（类型不接受）');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

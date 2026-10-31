@@ -30,6 +30,7 @@ import { hostname } from 'node:os';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { registerVolatileSettings } from '@aemeath/dsh-plugin-common';
 import type {} from '@deepseek-ai/cordis-plugin-loader';
@@ -41,7 +42,7 @@ import { ASSETS_PREFIX, serveAsset } from './assets.js';
 import { transcribeChunk, looksLikeSummary, isOverExpanded, type AskLlm } from './transcriber.js';
 import { ReviewMachine, looksLikeDirectAnswer } from './review.js';
 import { buildHandoff, filterReviewed, writeHandoff, describeHandoff, type Handoff } from './handoff.js';
-import { handleLectureHttp } from './http.js';
+import { handleLectureHttp, buildCourseList } from './http.js';
 import { setLocaleContext, tr, uiLang } from './locale.js';
 import {
   importHandoff,
@@ -172,15 +173,22 @@ const LLM_TIMEOUT_MS = 60_000;
  * 会出现 `missing?: undefined`，从而违反索引签名。
  * 因此所有工具统一经 `ok()` / `fail()` 构造，保证键值永不为 undefined。
  */
-type ToolResult = { ok: boolean; data: Record<string, string | number | boolean | string[] | null> };
+type ToolResult = { ok: boolean; data: Record<string, JsonValue> };
 
-/** 成功结果：data 内不应有 undefined（调用方保证）。 */
-function ok(data: Record<string, string | number | boolean | string[] | null> = {}): ToolResult {
+/**
+ * 成功结果：data 内不应有 undefined（调用方保证）。
+ *
+ * 值类型放宽到 unknown：工具输出本来就是任意 JSON（`output: { schema: { type: 'json' } }`），
+ * 而"列出课程"这类返回天然是对象数组。原来的
+ * `string | number | boolean | string[] | null` 逼得调用方把结构序列化成字符串，
+ * 模型读起来反而更费劲。
+ */
+function ok(data: Record<string, JsonValue> = {}): ToolResult {
   return { ok: true, data };
 }
 
 /** 失败结果：统一 `{ ok:false, error }`，错误信息放 data.error。 */
-function fail(error: string, extra: Record<string, string | number | boolean | string[] | null> = {}): ToolResult {
+function fail(error: string, extra: Record<string, JsonValue> = {}): ToolResult {
   return { ok: false, data: { error, ...extra } };
 }
 
@@ -737,13 +745,44 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   ctx.tools.register(
     defineTool({
       name: 'lecture_status',
-      description: '查看当前课堂记录状态：课程、单元、已记录块数与强制留白完成情况。',
+      description:
+        '查看课堂记录状态。**这也是查"有哪些课"的入口** —— 没有进行中的课堂时，' +
+        '它会列出磁盘上所有课程与单元（course_id / 标题 / 日期 / 是否已复盘）。' +
+        '想知道"课堂讲了什么"、或需要 course_id 时先调它，不要靠猜或去翻文件系统。',
       parameters: {},
       output: { schema: { type: 'json' }, render: renderJson },
       execute: async (_args, exec) => {
         const sid = exec.agent?.session?.id ?? 'default';
         const cur = activeOf(sid);
-        if (!cur) return fail('当前无进行中的课堂', { active: false });
+        if (!cur) {
+          // ⚠️ 真机踩过：这里原来只回 `active:false`，于是主 agent 被问
+          //    "课堂讲了什么"时完全不知道有哪些课，只能猜一个 course_id
+          //    （猜了 physik-1），猜错之后开始 glob 全盘找 json，最后放弃。
+          //    没有进行中的课堂 ≠ 没有课堂数据 —— 必须把已有的列出来。
+          let courses: JsonValue[] = [];
+          try {
+            courses = buildCourseList(store).map((c) => ({
+              course_id: c.course_id,
+              title: c.title,
+              units: c.units.map((u) => ({
+                unit_id: u.id,
+                date: u.date,
+                title: u.title,
+                reviewed: u.reviewed,
+                chunk_count: u.chunk_count,
+              })),
+            }));
+          } catch (e) {
+            warn(`列出课程失败：${(e as Error).message}`);
+          }
+          return ok({
+            active: false,
+            courses,
+            hint: courses.length
+              ? '当前没有正在记的课堂。上面是已有的课程；要看某一讲讲了什么，用它所在的课程目录下的 markdown（讲座目录见 lecture_export_handoff 的 handoff_dir）。'
+              : '当前没有进行中的课堂，磁盘上也还没有任何课程记录。',
+          });
+        }
         const blanks = allBlanksOk(cur.chunks);
         return ok({
           active: true,
@@ -1063,14 +1102,37 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
       name: 'lecture_export_handoff',
       description:
         '导出握手包（课程进度 + 用户短板 + 粗略单元内容）到局域网文件，供上传到主 agent。' +
-        '只导出已复盘单元的内容；不含课堂原始速记。',
+        '只导出已复盘单元的内容；不含课堂原始速记。' +
+        '**course_id 可以省略**（省略就导出全部课程）；不确定有哪些课时先调 lecture_status。',
       parameters: {
-        course_id: { type: 'string', required: true, description: '课程标识；缺省导出全部课程' },
+        // ⚠️ 这里原来是 required: true，而描述却写着"缺省导出全部课程"—— 自相矛盾。
+        //    结果主 agent 必须传一个 id，但它不知道有哪些课，只能猜（猜了 physik-1），
+        //    猜错后开始在文件系统里 glob 找 json。改成真可选。
+        course_id: {
+          type: 'string',
+          
+          description: '课程标识；省略 = 导出全部课程。用 lecture_status 可以查到所有 course_id。',
+        },
       },
       output: { schema: { type: 'json' }, render: renderJson },
       execute: async (args: { course_id?: string }) => {
+        const known = store.listCourses();
+        // 传了 id 但不存在 → 直接把可用的列出来，别让它去猜
+        if (args.course_id && !known.includes(args.course_id)) {
+          return fail(
+            `没有课程 "${args.course_id}"。可用的 course_id：${known.length ? known.join('、') : '(磁盘上还没有任何课程)'}`,
+            { active: false, course_id: args.course_id, available: known },
+          );
+        }
         const { files: written, summaries } = exportHandoffNow(args.course_id);
-        if (!written.length) return fail('没有可导出的课程');
+        if (!written.length) {
+          return fail(
+            known.length
+              ? `没有可导出的课程内容。磁盘上的课程：${known.join('、')}（可能都还没复盘）`
+              : '磁盘上还没有任何课程记录',
+            { active: false, available: known },
+          );
+        }
         log(`握手包已导出 ${written.length} 个 → ${handoffDir}`);
         return ok({
           files: written,
@@ -1079,6 +1141,101 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           note:
             '把这些文件搬到主 agent 所在的机器，然后在那边调 lecture_import_handoff 导入' +
             '（或直接说"导入讲义进度"，主 agent 会自动扫 handoffDir）。',
+        });
+      },
+    }),
+  );
+
+  // ============================================================
+  // 读笔记内容（"课堂讲了什么"）
+  //
+  // 真机踩过：用户在主 agent 里问"课堂讲了什么"，agent 手上只有
+  // status / export / import 三个工具，没有一个能读笔记正文，
+  // 于是它开始 glob 搜 `**/*.json`、`**/lecture*`，翻了七八次才摸到文件。
+  //
+  // 这个工具就是干这件事的：一句话拿到某一讲的 markdown 原文。
+  // ============================================================
+  ctx.tools.register(
+    defineTool({
+      name: 'lecture_read',
+      description:
+        '读某一讲的课堂笔记正文（markdown，公式是 $…$ 形式）。' +
+        '用来回答"课堂讲了什么""这一节的笔记是什么"这类问题 —— ' +
+        '不要靠 glob 去文件系统里找。' +
+        '两个参数都可以省略：省略 course_id 用最近有记录的课程，省略 unit_id 用该课最近一讲。' +
+        '不确定有哪些课时先调 lecture_status。',
+      parameters: {
+        course_id: {
+          type: 'string',
+          
+          description: '课程标识；省略 = 最近有记录的课程。用 lecture_status 可查。',
+        },
+        unit_id: {
+          type: 'string',
+          
+          description: '单元 id（如 u01）；省略 = 该课程最近一讲。',
+        },
+      },
+      output: { schema: { type: 'json' }, render: renderJson },
+      execute: async (args: { course_id?: string; unit_id?: string }) => {
+        const known = store.listCourses();
+        if (!known.length) {
+          return fail('磁盘上还没有任何课堂记录', { active: false, available: [] });
+        }
+
+        // 选课程：给了就用，没给就取最近修改的那门
+        const pickCourse = (): string => {
+          if (args.course_id) return args.course_id;
+          return known[known.length - 1]!;
+        };
+        const cid = pickCourse();
+        if (!known.includes(cid)) {
+          return fail(`没有课程 "${cid}"。可用的 course_id：${known.join('、')}`, {
+            active: false,
+            available: known,
+          });
+        }
+
+        const index = store.readIndex(cid);
+        if (!index || !index.units.length) {
+          return fail(`课程 "${cid}" 还没有任何单元`, { active: false, available: known });
+        }
+
+        // 选单元：给了就用；没给就取**最后一讲有内容的**。
+        //
+        // 真机场景：刚开课时会建出一个空单元（00 chunks）。如果直接取"最后一讲"，
+        // 用户问"课堂讲了什么"会得到"读不到"——而上一讲其实有内容。
+        const unitIdArg = args.unit_id;
+        let unit = unitIdArg ? index.units.find((u) => u.id === unitIdArg) : undefined;
+        if (!unit && !unitIdArg) {
+          const reversed = [...index.units].reverse();
+          unit = reversed.find((u) => store.readUnitMarkdown(cid, u)) ?? reversed[0];
+        }
+        if (!unit) {
+          return fail(
+            `课程 "${cid}" 没有单元 "${unitIdArg}"。可用的 unit_id：${index.units.map((u) => u.id).join('、')}`,
+            { active: false, available: known },
+          );
+        }
+
+        const md = store.readUnitMarkdown(cid, unit);
+        if (!md) {
+          return fail(`单元 ${cid}/${unit.id} 的笔记文件读不到（可能还没记录内容）`, {
+            active: false,
+            available: known,
+          });
+        }
+
+        return ok({
+          course_id: cid,
+          course_title: index.title,
+          unit_id: unit.id,
+          date: unit.date,
+          title: unit.title,
+          reviewed: unit.reviewed,
+          // 原文交给模型去回答"讲了什么"—— 不做摘要，避免二次丢失细节
+          markdown: md,
+          units: index.units.map((u) => ({ unit_id: u.id, date: u.date, title: u.title })),
         });
       },
     }),
