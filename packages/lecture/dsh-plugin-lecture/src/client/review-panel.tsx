@@ -144,7 +144,15 @@ export function ReviewPanel(props: {
   const nextFromRepair = async (): Promise<void> => {
     setBusy(true);
     setErr('');
-    const r = await postJson<{ ok: boolean; error?: string; candidates?: unknown; step?: Step }>({
+    const r = await postJson<{
+      ok: boolean;
+      error?: string;
+      candidates?: unknown;
+      step?: Step;
+      question?: string | null;
+      note?: string;
+      warning?: string;
+    }>({
       action: 'review',
       op: 'next',
       course_id: courseId,
@@ -153,6 +161,19 @@ export function ReviewPanel(props: {
     setBusy(false);
     if (!r?.ok) {
       setErr(r?.error ?? t('lecture.review.err.candidatesFailed'));
+      return;
+    }
+    // 这个按钮在第 2 步（开始补漏）和第 3 步（结束补漏）都用。
+    // 后端说还在 repair 且给了问题 → 那是"开始补漏"的第一个问题，
+    // 要留在第 3 步显示它，不能跳去候选。
+    if (r.step === 'repair') {
+      if (r.question) {
+        setQuestion(r.question);
+        setStep('repair');
+      } else {
+        // 生成失败或 D12 拦截：留在原地，把原因说清楚（别让人以为点坏了）
+        setErr(r.warning ?? r.note ?? t('lecture.review.err.candidatesFailed'));
+      }
       return;
     }
     setStep('commit');

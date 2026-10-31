@@ -16,7 +16,25 @@ import { parseShorthand, textsOfKind, type ShorthandLine } from './types.js';
 import { INSTITUTIONAL_NOTATION } from './symbol-data.js';
 
 /** LLM 通道：返回文本或 null（失败/无 key）。实现方负责超时与错误吞掉。 */
-export type AskLlm = (prompt: string, opts: { maxTokens: number; purpose: string }) => Promise<string | null>;
+/**
+ * 调用 LLM。
+ *
+ * `json` 决定是否要求结构化 JSON 输出（`response_format: json_object`）。
+ *
+ * ⚠️ **默认 false**，需要 JSON 的调用必须显式声明。
+ *
+ * 早先的实现对所有调用都硬塞 `response_format: json_object`，于是：
+ *   DeepSeek 返回 400 —— "Prompt must contain the word 'json' in some form
+ *   to use 'response_format' of type 'json_object'"。
+ * 而「补漏」这一步要的是**一句自然语言的追问**，prompt 里本来就不该有 json 字样，
+ * 结果第 3 步的每次调用都失败、输出恒为空。
+ *
+ * 默认 false 是刻意的：将来新增纯文本 prompt 时不会再撞上同一个坑。
+ */
+export type AskLlm = (
+  prompt: string,
+  opts: { maxTokens: number; purpose: string; json?: boolean },
+) => Promise<string | null>;
 
 /**
  * 记号约定段 —— **从 INSTITUTIONAL_NOTATION 生成**，不手写字面量。
@@ -137,6 +155,7 @@ export async function transcribeChunk(raw: string, askLlm: AskLlm, maxTokens = 2
   const out = await askLlm(`${TRANSCRIBER_PROMPT}\n\n${buildTranscribePrompt(lines)}`, {
     maxTokens,
     purpose: 'lecture-transcribe',
+    json: true, // 转录员输出结构化 JSON
   });
   return parseTranscribeOutput(out);
 }

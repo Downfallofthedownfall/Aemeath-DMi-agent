@@ -246,21 +246,71 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
       return null;
     }
     try {
+      const body: Record<string, unknown> = {
+        model: llm.model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: opts.maxTokens,
+        temperature: 0.2,
+      };
+      // 只有明确要求 JSON 才加 —— 否则 DeepSeek 会 400
+      // （"Prompt must contain the word 'json' …"）。
+      if (opts.json) body.response_format = { type: 'json_object' };
+
       const resp = await fetch(`${llm.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: llm.model,
-          messages: [{ role: 'user', content: prompt }],
-          response_format: { type: 'json_object' },
-          max_tokens: opts.maxTokens,
-          temperature: 0.2,
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       });
-      if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
-      const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
-      return data.choices?.[0]?.message?.content ?? null;
+
+      if (!resp.ok) {
+        // ⚠️ 必须把响应体带出来。
+        // 早先只抛 `HTTP ${status}`，于是真实原因（缺 json 字样、余额不足、
+        // 上下文超长）全被丢掉，日志里只剩一个 400，根本查不下去。
+        let detail = '';
+        try {
+          const raw = await resp.text();
+          // 尽量抽 error.message，抽不到就给原文前 300 字
+          try {
+            const j = JSON.parse(raw) as { error?: { message?: string } };
+            detail = j.error?.message ?? raw.slice(0, 300);
+          } catch {
+            detail = raw.slice(0, 300);
+          }
+        } catch {
+          /* 响应体读不出来就算了，至少还有状态码 */
+        }
+        throw new Error(`HTTP ${resp.status}${detail ? `: ${detail}` : ''}`);
+      }
+
+      const data = (await resp.json()) as {
+        choices?: {
+          finish_reason?: string;
+          message?: { content?: string | null; reasoning_content?: string | null };
+        }[];
+        usage?: { completion_tokens?: number; prompt_tokens?: number };
+      };
+      const choice = data.choices?.[0];
+      const content = choice?.message?.content ?? '';
+      const finish = choice?.finish_reason ?? '(未知)';
+      const reasoningLen = (choice?.message?.reasoning_content ?? '').length;
+
+      if (!content.trim()) {
+        // 空输出几乎总是下面两种之一，把线索一次打全，别让人猜。
+        warn(
+          `LLM 输出为空（${opts.purpose}）finish_reason=${finish} ` +
+            `completion_tokens=${data.usage?.completion_tokens ?? '?'} ` +
+            `reasoning_chars=${reasoningLen} max_tokens=${opts.maxTokens}` +
+            (finish === 'length' ? ' ← 撞到 max_tokens 上限（思考 token 也算在内）' : ''),
+        );
+        return null;
+      }
+      if (finish === 'length') {
+        // 截断的 JSON 解析出来一定是坏的，不如明确失败，让调用方走降级。
+        warn(`LLM 输出被截断（${opts.purpose}）finish_reason=length，已丢弃`);
+        return null;
+      }
+      return content;
     } catch (e) {
       warn(`LLM 调用失败（${opts.purpose}）: ${(e as Error).message}`);
       return null;
@@ -706,7 +756,11 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           m.submitRecall(text);
           const chunks = loadChunksFromFile(sid, m.current.unit_id);
           const prompt = m.buildComparePrompt(m.current.recall_text, chunks);
-          const out = await askLlm(prompt, { maxTokens: 1500, purpose: 'lecture-compare' });
+          const out = await askLlm(prompt, {
+            maxTokens: 1500,
+            purpose: 'lecture-compare',
+            json: true, // 对照结果是结构化 JSON
+          });
           const comp = ReviewMachine.parseComparison(out);
           if (!comp) {
             persistReview(sid, m);
@@ -726,7 +780,11 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           const lastQ = m.current.repair_turns.filter((t) => t.answer === '').at(-1)?.question ?? m.current.repair_turns.at(-1)?.question ?? '(未记录的上一问)';
           m.addRepairTurn(lastQ, text);
           persistReview(sid, m);
-          const out = await askLlm(m.buildRepairPrompt(), { maxTokens: 500, purpose: 'lecture-repair' });
+          const out = await askLlm(m.buildRepairPrompt(), {
+              maxTokens: 800,
+              purpose: 'lecture-repair',
+              // 纯文本追问，不要 json
+            });
           if (!out) return ok({ step: 'repair', question: null, note: tr('追问生成失败（LLM 不可用）', 'Follow-up generation failed (LLM unavailable)') });
           const q = out.trim();
           // D12 护栏：引导者不得直接给答案（启发式，见 review.ts）
@@ -770,7 +828,11 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           const chunks = loadChunksFromFile(sid, m.current.unit_id);
           const unitId = m.current.unit_id;
           const processing = store.readProcessing(cid, unitId);
-          const out = await askLlm(m.buildCandidatesPrompt(chunks, processing), { maxTokens: 2500, purpose: 'lecture-candidates' });
+          const out = await askLlm(m.buildCandidatesPrompt(chunks, processing), {
+            maxTokens: 2500,
+            purpose: 'lecture-candidates',
+            json: true, // 候选条目是结构化 JSON
+          });
           const cand = ReviewMachine.parseCandidates(out, unitId, uiLang());
           if (!cand) {
             persistReview(sid, m);
@@ -1376,6 +1438,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             const out = await askLlm(m.buildComparePrompt(m.current.recall_text, chunks), {
               maxTokens: 1500,
               purpose: 'lecture-compare',
+              json: true, // 对照结果是结构化 JSON
             });
             const comp = ReviewMachine.parseComparison(out);
             if (!comp) {
@@ -1394,7 +1457,11 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             const lastQ = m.current.repair_turns.filter((t) => t.answer === '').at(-1)?.question ?? tr('(追问)', '(follow-up)');
             m.addRepairTurn(lastQ, text);
             save();
-            const out = await askLlm(m.buildRepairPrompt(), { maxTokens: 500, purpose: 'lecture-repair' });
+            const out = await askLlm(m.buildRepairPrompt(), {
+              maxTokens: 800,
+              purpose: 'lecture-repair',
+              // 纯文本追问，不要 json
+            });
             if (!out) return { step: 'repair', question: null, note: tr('追问生成失败（LLM 不可用）', 'Follow-up generation failed (LLM unavailable)') };
             const q = out.trim();
             // D12 护栏：引导者不得直接给答案
@@ -1408,19 +1475,54 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           }
 
           if (op === 'next') {
-            if (m.step === 'compare') {
-              // 用户点"开始补漏"：comparison 已在 recall 步骤写入并带入 repair，
-              // 这里只生成第一个问题（setComparison 已完成 compare→repair 转换）。
+            // ⚠️ 这里曾经有个**死分支**导致整个补漏步骤被跳过。
+            //
+            // 原代码：`if (m.step === 'compare') { 生成第一个问题 }`，
+            // 但 `setComparison()` 在 recall 那一步就把 step 从 compare 推到了
+            // repair（见 review.ts）—— 所以前端在"对照"页点「开始补漏」时，
+            // 后端看到的已经是 repair，直接走 finishRepair() 去生成候选。
+            //
+            // 结果：第 3 步定点补漏**一次都没跑过**，而 D12（只引导、不给答案）
+            // 正是整个复盘的核心。
+            //
+            // 现在按"有没有问过问题"区分：还没问过 = 开始补漏；
+            // 问过了 = 结束补漏。
+            if (m.step === 'repair' && m.current.repair_turns.length === 0) {
               if (!m.current.comparison) {
                 return { step: 'compare', error: tr('还没有对照结果，请先完成第 1 步', 'No comparison yet — complete step 1 first') };
               }
-              const out = await askLlm(m.buildRepairPrompt(), { maxTokens: 500, purpose: 'lecture-repair' });
-              const q = out && !looksLikeDirectAnswer(out) ? out.trim() : null;
-              if (q) {
-                m.addRepairTurn(q, '');
-                save();
+              const out = await askLlm(m.buildRepairPrompt(), {
+                maxTokens: 800,
+                purpose: 'lecture-repair',
+                // 注意：**不传 json** —— 补漏要的是一句自然语言追问
+              });
+              if (!out) {
+                return {
+                  step: 'repair',
+                  question: null,
+                  note: tr('追问生成失败（LLM 未返回内容），可再试一次', 'Follow-up generation failed (LLM returned nothing) — try again'),
+                };
               }
+              const q = out.trim();
+              if (looksLikeDirectAnswer(q)) {
+                warn('引导输出疑似直接给答案（D12），已拦截');
+                return {
+                  step: 'repair',
+                  question: null,
+                  warning: tr('模型输出疑似直接给答案，已拦截。换个角度再答一次。', 'The model tried to give the answer directly, so it was blocked. Try a different angle.'),
+                };
+              }
+              m.addRepairTurn(q, '');
+              save();
               return { step: 'repair', question: q };
+            }
+            // 兼容旧状态（历史数据里可能存着 compare）
+            if (m.step === 'compare') {
+              return {
+                step: 'repair',
+                question: null,
+                note: tr('请重新提交一次「你先说」以生成对照结果', 'Resubmit your recall so the comparison can be generated'),
+              };
             }
             if (m.step === 'repair') {
               m.finishRepair();
@@ -1429,6 +1531,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               const out = await askLlm(m.buildCandidatesPrompt(chunks, processing), {
                 maxTokens: 2500,
                 purpose: 'lecture-candidates',
+              json: true, // 候选条目是结构化 JSON
               });
               const cand = ReviewMachine.parseCandidates(out, unitId, uiLang());
               if (!cand) {

@@ -1185,4 +1185,82 @@ t('光标在公式内部就插裸 LaTeX（不再套 $）', () => {
   assert.match(seg[0], /!alreadyInMath/, '在公式内时不包 $');
 });
 
+t('只有需要 JSON 的调用才设 response_format', () => {
+  // 真机反馈："复盘几次之后就会开始复盘和查漏时模型输出为空"。
+  //
+  // 真凶不是 token 上限，是这一条：
+  //   askLlm 对所有调用都硬塞 `response_format: {type:'json_object'}`，
+  //   而 DeepSeek 要求 **prompt 里必须出现 json 字样**，否则直接 400：
+  //     "Prompt must contain the word 'json' in some form to use
+  //      'response_format' of type 'json_object'."
+  //   「补漏」那一步要的是一句自然语言追问，prompt 里本来就没有 json
+  //   → 第 3 步每次调用都失败、输出恒为空。
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  const tr = readFileSync(join(root, 'src/transcriber.ts'), 'utf-8');
+
+  // 类型上必须有可选的 json 开关
+  assert.match(tr, /json\?: boolean/, 'AskLlm 应有 json 选项');
+  // 核心：不能无条件加 response_format
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,2400}/);
+  assert.ok(ask, '找不到 askLlm 实现');
+  assert.match(ask[0], /if \(opts\.json\)/, 'response_format 应受 json 开关控制');
+
+  // 逐个 purpose 核对开关
+  const hasJson = (purpose) => {
+    const re = new RegExp(`purpose: '${purpose}'([\\s\\S]{0,160})`);
+    const m = idx.match(re);
+    if (!m) return null;
+    return /json: true/.test(m[1].split('});')[0] ?? '');
+  };
+  assert.equal(hasJson('lecture-compare'), true, 'compare 是结构化 JSON，要开 json');
+  assert.equal(hasJson('lecture-candidates'), true, 'candidates 是结构化 JSON，要开 json');
+  assert.equal(hasJson('lecture-repair'), false, '**补漏是纯文本追问，不能开 json**');
+});
+
+t('LLM 出错要带出响应体（否则只剩一个 400，查不下去）', () => {
+  // 早先只抛 `LLM HTTP ${status}`，真实原因全丢 —— 上面那个 400 就是这样
+  // 藏了很久都没人看出来。
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,2400}/);
+  assert.ok(ask, '找不到 askLlm');
+  assert.match(ask[0], /await resp\.text\(\)/, '应读出错误响应体');
+  assert.match(ask[0], /error\?\.message/, '应尽量抽出 error.message');
+});
+
+t('LLM 空输出/截断要能诊断（不能静默返回空）', () => {
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,2400}/);
+  assert.ok(ask, '找不到 askLlm');
+  assert.match(ask[0], /finish_reason/, '应记录 finish_reason');
+  assert.match(ask[0], /LLM 输出为空/, '空输出要有明确日志');
+  assert.match(ask[0], /completion_tokens/, '应记录 token 用量（好判断是不是撞上限）');
+  // 截断的 JSON 解析出来一定是坏的，明确失败比假装成功强
+  assert.match(ask[0], /finish === 'length'/, '撞 max_tokens 应判定失败');
+});
+
+t('「开始补漏」必须真的生成第一个问题（原来整步被跳过）', () => {
+  // 第二个真凶：`setComparison()` 在 recall 那步就把 step 从 compare 推到 repair，
+  // 于是 `op='next'` 里 `if (m.step === 'compare')` 是**死分支** ——
+  // 前端在"对照"页点「开始补漏」，后端直接 finishRepair() 去生成候选，
+  // 定点补漏（D12 的核心）一次都没跑过。
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  assert.match(
+    idx,
+    /m\.step === 'repair' && m\.current\.repair_turns\.length === 0/,
+    '应按"有没有问过问题"区分开始/结束补漏',
+  );
+  const seg = idx.match(/if \(m\.step === 'repair' && m\.current\.repair_turns\.length === 0\)[\s\S]{0,1600}/);
+  assert.ok(seg, '找不到「开始补漏」分支');
+  assert.match(seg[0], /buildRepairPrompt\(\)/, '应生成第一个问题');
+  assert.match(seg[0], /addRepairTurn/, '应记录这一问');
+  assert.match(seg[0], /question: q/, '应把问题返回给前端');
+
+  // 前端要尊重返回的 step，不能一律跳 commit
+  const panel = readFileSync(join(root, 'src/client/review-panel.tsx'), 'utf-8');
+  const fn = panel.match(/const nextFromRepair = async[\s\S]{0,1800}/);
+  assert.ok(fn, '找不到 nextFromRepair');
+  assert.match(fn[0], /r\.step === 'repair'/, '应判断后端是否还在 repair');
+  assert.match(fn[0], /setQuestion\(r\.question\)/, '应显示第一个问题');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);
