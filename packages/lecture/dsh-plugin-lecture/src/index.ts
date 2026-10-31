@@ -775,11 +775,37 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           } catch (e) {
             warn(`列出课程失败：${(e as Error).message}`);
           }
+          // 顺带报出"记忆里有多少课堂来源的记录" —— 这是 lecture_status 唯一能
+          // 主动提示"导入的内容在别处"的地方。没有它，agent 看到课程列表是空的
+          // 就会以为什么都没导入（真机就是这样）。
+          let imported: { total: number; byCourse: Record<string, number> } | null = null;
+          try {
+            const gk = await buildGatekeeper();
+            if (gk) {
+              const mem = gk.listMemories().filter((m) => m.sourceMode.startsWith('lecture'));
+              const byCourse: Record<string, number> = {};
+              for (const m of mem) {
+                const src = m.sourceMode.slice('lecture'.length).replace(/^@/, '');
+                const course = src.split('/')[0] || '(未知)';
+                byCourse[course] = (byCourse[course] ?? 0) + 1;
+              }
+              imported = { total: mem.length, byCourse };
+            }
+          } catch {
+            /* 拿不到记忆就不报，别让状态查询本身失败 */
+          }
+
           return ok({
             active: false,
             courses,
+            imported_memories: imported,
             hint: courses.length
-              ? '当前没有正在记的课堂。上面是已有的课程；要看某一讲讲了什么，用它所在的课程目录下的 markdown（讲座目录见 lecture_export_handoff 的 handoff_dir）。'
+              ? '当前没有正在记的课堂。上面是已有的课程。' +
+                '要读某一讲的笔记正文用 lecture_read；' +
+                '要读**复盘后导入到记忆**的短板/知识点用 lecture_imported（那是另一个存储，本工具看不到）。' +
+                (imported?.total
+                  ? `记忆里现有 ${imported.total} 条课堂来源的记录（课程：${Object.keys(imported.byCourse).join('、')}）。`
+                  : '')
               : '当前没有进行中的课堂，磁盘上也还没有任何课程记录。',
           });
         }
@@ -1342,6 +1368,18 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               sourceSession: string;
               status?: string;
             }): Promise<string>;
+            /** 全部未删除记忆（memory 的 list()）—— 只读，用于把课堂产出捞回来。 */
+            list(): Array<{
+              rec: {
+                content?: string;
+                category?: string;
+                scope?: string;
+                preset?: string;
+                importance?: number;
+                source_mode?: string;
+                created_at?: number;
+              };
+            }>;
           }
         | undefined;
       if (!memory) {
@@ -1379,6 +1417,23 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             sourceSession: input.sourceSession,
             status: 'pending',
           }),
+        // 只读：把记忆里课堂来源的记录捞出来（跨 preset）
+        listMemories: () => {
+          try {
+            return memory.list().map(({ rec }) => ({
+              content: rec.content ?? '',
+              category: rec.category ?? '',
+              scope: rec.scope ?? '',
+              preset: rec.preset ?? '',
+              importance: rec.importance ?? 0,
+              sourceMode: rec.source_mode ?? '',
+              createdAt: rec.created_at ?? 0,
+            }));
+          } catch (e) {
+            warn(`读取记忆失败：${(e as Error).message}`);
+            return [];
+          }
+        },
         log,
         warn,
       };
@@ -1387,6 +1442,104 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
       return null;
     }
   };
+
+  // ============================================================
+  // 读回"导入到记忆里的课堂内容"
+  //
+  // 真机反馈："它说会进记忆，但是新开对话要求汇报的时候会调用
+  //           lecture_status 然后找不到 handoff 导入的"
+  //
+  // 原因不是导入失败，是**三个存储/过滤错位**：
+  //   · 导入写 memory，lecture_status 读的是课堂笔记目录 —— 两个地方；
+  //   · 记忆的自动召回按 `rec.preset === 当前会话 preset` 过滤，
+  //     导入默认进 physicist 馆，而主 profile 默认人格是 aemeath
+  //     → 142 条课堂记忆在 aemeath 会话里一条都召不回来；
+  //   · memory 插件不注册检索工具，agent 没有别的手段主动查。
+  //
+  // 这个工具补上第三条：跨 preset 把课堂来源的记忆捞出来。
+  // ============================================================
+  ctx.tools.register(
+    defineTool({
+      name: 'lecture_imported',
+      description:
+        '查"从课堂复盘导入到记忆里的内容"（学习短板、知识点、学习状态）。' +
+        '回答"课堂讲了什么/我哪块弱"时用它 —— **不要**用 lecture_status 找导入内容，' +
+        '那个读的是课堂笔记文件，不是记忆库。' +
+        '支持按课程/单元过滤，也支持关键词。所有参数都可以省略（省略 = 全部课堂来源记录）。',
+      parameters: {
+        course_id: { type: 'string', description: '只看这门课；省略 = 所有课程' },
+        unit_id: { type: 'string', description: '只看这一讲（如 u01）；省略 = 所有讲' },
+        query: { type: 'string', description: '关键词过滤（对内容做包含匹配）' },
+        limit: { type: 'number', description: '最多返回多少条（默认 50）' },
+      },
+      output: { schema: { type: 'json' }, render: renderJson },
+      execute: async (args: { course_id?: string; unit_id?: string; query?: string; limit?: number }) => {
+        const gk = await buildGatekeeper();
+        if (!gk) {
+          return fail(
+            tr(
+              `当前会话拿不到 memory 服务，读不了导入的记忆。\n查找记录：${lastMemoryTrace.join(' / ') || '(未执行)'}\n` +
+                '换到装了 memory 的 profile（主 agent）再试；或先用 lecture_read 读课堂笔记原文。',
+              `No memory service in this session, so imported memories cannot be read.\nLookup trace: ${lastMemoryTrace.join(' / ') || '(none)'}\n` +
+                'Use the main agent profile, or lecture_read to read the notes instead.',
+            ),
+            { reason: 'no-memory-service', memory_lookup: lastMemoryTrace },
+          );
+        }
+
+        const all = gk.listMemories();
+        // 只认课堂来源：source_mode 形如 `lecture@<course>/<unit>`
+        const lectureOnly = all.filter((m) => m.sourceMode.startsWith('lecture'));
+        const wantCourse = args.course_id?.trim();
+        const wantUnit = args.unit_id?.trim();
+        const q = args.query?.trim().toLowerCase();
+
+        const matched = lectureOnly.filter((m) => {
+          // source_mode: lecture@course/unit （可能没有 @ 部分）
+          const src = m.sourceMode.slice('lecture'.length).replace(/^@/, '');
+          const [course, unit] = src.split('/');
+          if (wantCourse && course !== wantCourse) return false;
+          if (wantUnit && unit !== wantUnit) return false;
+          if (q && !m.content.toLowerCase().includes(q)) return false;
+          return true;
+        });
+
+        const limit = Math.max(1, Math.min(Number(args.limit) || 50, 500));
+        const rows = matched
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .slice(0, limit)
+          .map((m) => ({
+            content: m.content,
+            category: m.category,
+            preset: m.preset,
+            importance: m.importance,
+            source: m.sourceMode,
+          }));
+
+        if (!rows.length) {
+          return ok({
+            total: 0,
+            lecture_total: lectureOnly.length,
+            rows: [],
+            note: lectureOnly.length
+              ? `记忆里有 ${lectureOnly.length} 条课堂来源记录，但没有匹配当前过滤条件的。`
+              : '记忆里还没有任何课堂来源的记录 —— 说明还没导入过，或导入时被守门员全部丢弃。',
+          });
+        }
+
+        return ok({
+          total: rows.length,
+          matched: matched.length,
+          lecture_total: lectureOnly.length,
+          presets: [...new Set(matched.map((m) => m.preset))],
+          rows,
+          note:
+            '这些是复盘后导入主记忆的内容。注意它们可能属于**别的 preset**（导入默认进 physicist），' +
+            '所以人格是 aemeath 时的自动召回不会带上它们 —— 用本工具可以跨 preset 读到。',
+        });
+      },
+    }),
+  );
 
   ctx.tools.register(
     defineTool({

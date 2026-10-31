@@ -1421,7 +1421,7 @@ t('「课堂讲了什么」要有路可走（status 能列课、read 能读笔�
   assert.match(status[0], /course_id: c\.course_id|course_id/, '列表里要有 course_id');
   assert.match(status[0], /hint/, '应告诉模型接下来能怎么用');
   // 不能只有一句 active:false 就完事 —— `if (!cur)` 块里必须返回 ok + 课程列表
-  const noActive = status[0].match(/if \(!cur\) \{[\s\S]{0,1400}/);
+  const noActive = status[0].match(/if \(!cur\) \{[\s\S]{0,3000}/);
   assert.ok(noActive, '找不到 `if (!cur)` 分支');
   assert.ok(
     !/return fail\(/.test(noActive[0].split('return ok(')[0] ?? ''),
@@ -1465,6 +1465,44 @@ t('工具返回类型要容得下结构化数据（courses / units 数组）', (
   assert.match(idx, /function fail\(error: string, extra: Record<string, JsonValue>/, 'fail 应用 JsonValue');
   // 可选参数的写法：省略 required（类型只接受 required: true 或省略）
   assert.ok(!/required: false/.test(idx), '可选参数不能写 required: false（类型不接受）');
+});
+
+t('导入到记忆的内容要能被读回来（跨 preset）', () => {
+  // 真机反馈："它说会进记忆，但是新开对话要求汇报的时候会调用
+  //           lecture_status 然后找不到 handoff 导入的"
+  //
+  // 三个错位叠在一起：
+  //   1. 导入写 memory，lecture_status 读课堂笔记目录 —— 两个存储；
+  //   2. 记忆自动召回按 `rec.preset === 当前会话 preset` 过滤，
+  //      导入默认进 physicist 馆，主 profile 默认人格却是 aemeath
+  //      → 课堂记忆在 aemeath 会话里一条都召不回来；
+  //   3. memory 插件不注册检索工具，agent 没有别的手段主动查。
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+
+  // 必须有读回工具
+  const tool = idx.match(/name: 'lecture_imported'[\s\S]{0,2800}/);
+  assert.ok(tool, '应有 lecture_imported（读回导入的记忆）');
+  assert.match(tool[0], /listMemories/, '应通过 gatekeeper 读记忆');
+  // 跨 preset：不能按 preset 过滤
+  assert.ok(
+    !/preset\s*===\s*|filter\([^)]*preset/.test(tool[0]),
+    '读回时不该再按 preset 过滤（导入进 physicist，会话可能是 aemeath）',
+  );
+  // 只认课堂来源
+  assert.match(tool[0], /startsWith\('lecture'\)/, '应只取课堂来源的记录');
+
+  // gatekeeper 必须暴露只读的 list
+  const ih = readFileSync(join(root, 'src/import-handoff.ts'), 'utf-8');
+  assert.match(ih, /listMemories\(\)/, 'HandoffGatekeeper 应有 listMemories');
+  assert.match(idx, /listMemories: \(\) =>/, 'buildGatekeeper 应实现 listMemories');
+
+  // lecture_status 要主动报出"记忆里有多少条课堂记录"
+  const status = idx.match(/name: 'lecture_status'[\s\S]{0,3000}/);
+  assert.ok(status, '找不到 lecture_status');
+  assert.match(status[0], /imported_memories/, '状态里应报出课堂记忆条数');
+  assert.match(status[0], /lecture_imported/, 'hint 应指明用 lecture_imported 读导入内容');
+  // 记忆不可用时不能把状态查询本身弄挂
+  assert.match(status[0], /catch \{\s*\n\s*\/\* 拿不到记忆就不报/, '取记忆失败要静默降级');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

@@ -94,6 +94,31 @@ export interface HandoffGatekeeper {
   }): Promise<string>;
   /** 知识层直达（对应 memory 的 handleKnowledgeDirect / knowledgeAdd）。 */
   knowledgeAdd(input: { preset: string; content: string; topic: string; sourceSession: string }): Promise<string>;
+  /**
+   * 列出记忆里**课堂来源**的记录（只读）。
+   *
+   * 为什么需要（真机反馈："它说会进记忆，但新开对话要求汇报时
+   * 会调用 lecture_status 然后找不到 handoff 导入的"）：
+   *
+   *   · 导入写的是 **memory**，而 `lecture_status` 读的是课堂笔记目录 ——
+   *     两个存储，`lecture_status` 当然看不到记忆里的东西。
+   *   · 记忆的**自动召回**按 `rec.preset === 当前会话 preset` 过滤，
+   *     而导入默认落到 `physicist` 馆。主 profile 的默认人格是 `aemeath`，
+   *     于是 142 条课堂记忆在 aemeath 会话里**一条都召不回来**。
+   *   · memory 插件不注册任何检索工具，agent 也没有别的手段主动去查。
+   *
+   * 有了这个只读入口，lecture 可以**跨 preset** 把自己的产出捞回来。
+   */
+  listMemories(): Array<{
+    content: string;
+    category: string;
+    scope: string;
+    preset: string;
+    importance: number;
+    /** 形如 `lecture@physik1/u01`；空串表示不是课堂来源。 */
+    sourceMode: string;
+    createdAt: number;
+  }>;
   log(msg: string): void;
   warn(msg: string): void;
 }
