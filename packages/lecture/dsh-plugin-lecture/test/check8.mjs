@@ -1347,4 +1347,59 @@ t('不设 max_tokens，改用 reasoning_effort（思考 token 也计入 max_toke
   assert.ok(!/maxTokens:\s*\d+/.test(tc[0]), '转录也不该写死 maxTokens');
 });
 
+t('补漏不许超纲（相对论还没学）', () => {
+  // 用户原话："过于细致入微和强迫症了……只要能看出我懂了需要懂得就行了，
+  //           不要追着我一直问什么牛顿定律什么条件下不适配，tmd 相对论还没学呢"
+  //
+  // 旧提示词只有"不要给答案"和"一次一个问题"，既没有范围约束也没有停止条件，
+  // 于是模型为了"深挖"引用了后续课程的内容（经典力学问相对论边界）——
+  // 学生根本没学过，怎么答都是"不会"。
+  const rv = readFileSync(join(root, 'src/review.ts'), 'utf-8');
+  const fn = rv.match(/buildRepairPrompt\(\)[\s\S]{0,2200}/);
+  assert.ok(fn, '找不到 buildRepairPrompt');
+  assert.match(fn[0], /只问本课讲过的东西/, '必须限定在本课范围');
+  assert.match(fn[0], /不要引入这门课后面才会讲的内容/, '必须明确禁止超纲');
+  assert.match(fn[0], /牛顿定律在什么条件下失效/, '应给出超纲的反例（正是用户的遭遇）');
+});
+
+t('说到点子上就算过（不抠字眼）', () => {
+  const rv = readFileSync(join(root, 'src/review.ts'), 'utf-8');
+  const fn = rv.match(/buildRepairPrompt\(\)[\s\S]{0,2200}/);
+  assert.ok(fn, '找不到 buildRepairPrompt');
+  assert.match(fn[0], /说到点子上就算过/, '应明确"懂了就放行"');
+  assert.match(fn[0], /不要换个说法把同一个问题再问一遍/, '应禁止换说法重复问');
+  assert.match(fn[0], /同一个点最多追问 2 轮/, '应限制单点追问轮数');
+});
+
+t('问完了要能收尾（DONE + 轮数兜底）', () => {
+  // 光靠提示词不够：模型可能永远不说 DONE，所以服务端也要有硬上限。
+  const rv = readFileSync(join(root, 'src/review.ts'), 'utf-8');
+  assert.match(rv, /isRepairDone/, '应能识别 DONE');
+  assert.match(rv, /MAX_REPAIR_TURNS/, '应有轮数硬上限');
+  // 只看"常量存在"不够 —— 设成 999 等于没有兜底（反例验过会被漏掉）
+  const cap = rv.match(/MAX_REPAIR_TURNS\s*=\s*(\d+)/);
+  assert.ok(cap, '找不到 MAX_REPAIR_TURNS 的数值');
+  const n = Number(cap[1]);
+  assert.ok(n >= 2 && n <= 10, `轮数上限应在 2~10 之间（现在是 ${n}）—— 太大等于没兜底`);
+  assert.match(rv, /repairExhausted/, '应能判断是否问够了');
+  const done = rv.match(/static isRepairDone[\s\S]{0,400}/);
+  assert.ok(done, '找不到 isRepairDone');
+  assert.match(done[0], /DONE/, '识别 DONE 标记');
+
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  assert.match(idx, /m\.repairExhausted/, '补漏路径应检查轮数上限');
+  assert.match(idx, /isRepairDone\(/, '补漏路径应检查 DONE');
+});
+
+t('对照要产出「能被追问的句子」，不是元评论', () => {
+  // 真机踩过：对照把 missed/vague 写成"记录中没有，无法核对"，
+  // 补漏那一步拿着这种条目根本不知道问什么，于是直接 DONE，一个都没问。
+  const rv = readFileSync(join(root, 'src/review.ts'), 'utf-8');
+  const fn = rv.match(/buildComparePrompt\([\s\S]{0,1600}/);
+  assert.ok(fn, '找不到 buildComparePrompt');
+  assert.match(fn[0], /写成一句可以被追问的话/, '要求写成可追问的句子');
+  assert.match(fn[0], /无法核对/, '应明确禁止元评论');
+  assert.match(fn[0], /没跟上|记不清/, '应把学生自认不懂的点算进 wrong_or_vague');
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

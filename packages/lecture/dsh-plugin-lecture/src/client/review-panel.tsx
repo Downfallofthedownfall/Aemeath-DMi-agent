@@ -318,7 +318,13 @@ export function ReviewPanel(props: {
               disabled={busy}
               onClick={async () => {
                 setBusy(true);
-                const r = await postJson<{ ok: boolean; question?: string | null; warning?: string }>({
+                const r = await postJson<{
+                  ok: boolean;
+                  question?: string | null;
+                  warning?: string;
+                  note?: string;
+                  done?: boolean;
+                }>({
                   action: 'review',
                   op: 'repair_answer',
                   course_id: courseId,
@@ -329,6 +335,12 @@ export function ReviewPanel(props: {
                 setText('');
                 if (r?.question) setQuestion(r.question);
                 else if (r?.warning) setErr(r.warning);
+                else if (r?.done) {
+                  // 后端说问够了（模型 DONE 或轮数到上限）——
+                  // 清掉当前问题并提示可以收尾，别再让用户等着下一个问题
+                  setQuestion(null);
+                  setErr(r.note ?? t('lecture.review.repair.done'));
+                } else if (r?.note) setErr(r.note);
               }}
             >
               {busy ? t('lecture.review.repair.busy') : t('lecture.review.repair.answer')}

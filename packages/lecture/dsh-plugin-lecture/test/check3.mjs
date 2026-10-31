@@ -208,7 +208,9 @@ t('D12：repair prompt 明确禁止给答案', () => {
   m.setComparison({ remembered: [], missed: ['转动惯量'], wrong_or_vague: ['角动量方向'] });
   const p = m.buildRepairPrompt();
   assert.match(p, /不要给出答案/);
-  assert.match(p, /引导者/);
+  // 注：早期这里断言的是"引导者"三个字。后来提示词重写（用户嫌追问太强迫症），
+  // 那句话换成了"确认学生听懂了这节课该懂的"—— 语义仍然是不给答案、只提问。
+  assert.match(p, /确认学生听懂了/);
   assert.match(p, /转动惯量/); // 只针对漏/错
   assert.match(p, /角动量方向/);
 });

@@ -847,11 +847,21 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           const lastQ = m.current.repair_turns.filter((t) => t.answer === '').at(-1)?.question ?? m.current.repair_turns.at(-1)?.question ?? '(未记录的上一问)';
           m.addRepairTurn(lastQ, text);
           persistReview(sid, m);
+
+          // 问够了就收尾（用户："不要追着我一直问"）。
+          // 两种结束条件：轮数到上限，或模型说 DONE。
+          if (m.repairExhausted) {
+            return ok({ step: 'repair', question: null, done: true, note: tr('补漏到此为止（已经问得够多了），可以进入下一步。', 'Enough repair questions — you can move on.') });
+          }
+
           const out = await askLlm(m.buildRepairPrompt(), {
               purpose: 'lecture-repair',
               // 纯文本追问，不要 json
             });
           if (!out) return ok({ step: 'repair', question: null, note: tr('追问生成失败（LLM 不可用）', 'Follow-up generation failed (LLM unavailable)') });
+          if (ReviewMachine.isRepairDone(out)) {
+            return ok({ step: 'repair', question: null, done: true, note: tr('模型认为该确认的都确认了，可以进入下一步。', 'The model thinks everything needed has been confirmed — you can move on.') });
+          }
           const q = out.trim();
           // D12 护栏：引导者不得直接给答案（启发式，见 review.ts）
           if (looksLikeDirectAnswer(q)) {
@@ -914,6 +924,11 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           if (!out) {
             persistReview(sid, m);
             return ok({ step: 'repair', question: null, note: `第一个问题生成失败：${lastLlmFailure || '模型没有返回内容'}` });
+          }
+          // 学生全都记住了 → 模型直接说 DONE，不用硬造问题
+          if (ReviewMachine.isRepairDone(out)) {
+            persistReview(sid, m);
+            return ok({ step: 'repair', question: null, done: true, note: tr('没有需要补漏的点，可以直接进入下一步。', 'Nothing to repair — you can move on.') });
           }
           const firstQ = out.trim();
           if (looksLikeDirectAnswer(firstQ)) {
@@ -1562,11 +1577,31 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             const lastQ = m.current.repair_turns.filter((t) => t.answer === '').at(-1)?.question ?? tr('(追问)', '(follow-up)');
             m.addRepairTurn(lastQ, text);
             save();
+
+            // 问够了就收尾（用户："不要追着我一直问"）。
+            // 两种结束条件：轮数到上限，或模型说 DONE。
+            if (m.repairExhausted) {
+              return {
+                step: 'repair',
+                question: null,
+                done: true,
+                note: tr('补漏到此为止（已经问得够多了），可以进入下一步。', 'Enough repair questions — you can move on.'),
+              };
+            }
+
             const out = await askLlm(m.buildRepairPrompt(), {
               purpose: 'lecture-repair',
               // 纯文本追问，不要 json
             });
             if (!out) return { step: 'repair', question: null, note: tr('追问生成失败（LLM 不可用）', 'Follow-up generation failed (LLM unavailable)') };
+            if (ReviewMachine.isRepairDone(out)) {
+              return {
+                step: 'repair',
+                question: null,
+                done: true,
+                note: tr('模型认为该确认的都确认了，可以进入下一步。', 'The model thinks everything needed has been confirmed — you can move on.'),
+              };
+            }
             const q = out.trim();
             // D12 护栏：引导者不得直接给答案
             if (looksLikeDirectAnswer(q)) {
@@ -1634,6 +1669,10 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
                   question: null,
                   note: tr('追问生成失败（LLM 未返回内容），可再试一次', 'Follow-up generation failed (LLM returned nothing) — try again'),
                 };
+              }
+              // 没有需要补漏的点 → 模型直接 DONE，别硬造问题
+              if (ReviewMachine.isRepairDone(out)) {
+                return { step: 'repair', question: null, done: true, note: tr('没有需要补漏的点，可以直接进入下一步。', 'Nothing to repair — you can move on.') };
               }
               const q = out.trim();
               if (looksLikeDirectAnswer(q)) {
