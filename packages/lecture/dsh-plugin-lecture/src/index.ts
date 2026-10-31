@@ -239,9 +239,21 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     }
   };
 
+  /**
+   * 最近一次 LLM 失败的原因（空串 = 没有失败）。
+   *
+   * 为什么要有它：`AskLlm` 的返回类型是 `string | null`，null 把
+   * "没 key / HTTP 500 / 输出被截断 / 模型返回空" 全压成同一个值，
+   * 调用方只能回一句"LLM 不可用" —— 用户和我们都无从判断。
+   * 现在失败原因记在这里，调用方取一次拼进提示里。
+   */
+  let lastLlmFailure = '';
+
   const askLlm: AskLlm = async (prompt, opts) => {
+    lastLlmFailure = '';
     const apiKey = await resolveLlmKey();
     if (!apiKey) {
+      lastLlmFailure = '没有可用的 API key（检查凭据 DEEPSEEK_API_KEY）';
       warn(`LLM 无 apiKey，跳过（${opts.purpose}）`);
       return null;
     }
@@ -303,16 +315,28 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             `reasoning_chars=${reasoningLen} max_tokens=${opts.maxTokens}` +
             (finish === 'length' ? ' ← 撞到 max_tokens 上限（思考 token 也算在内）' : ''),
         );
+        lastLlmFailure =
+          finish === 'length'
+            ? `输出被 max_tokens(${opts.maxTokens}) 截断（思考 token 也算在内）`
+            : finish === '(未知)'
+              ? '模型返回空内容'
+              : `模型返回空内容（finish_reason=${finish}）`;
         return null;
       }
       if (finish === 'length') {
         // 截断的 JSON 解析出来一定是坏的，不如明确失败，让调用方走降级。
         warn(`LLM 输出被截断（${opts.purpose}）finish_reason=length，已丢弃`);
+        lastLlmFailure = `输出被 max_tokens(${opts.maxTokens}) 截断`;
         return null;
       }
       return content;
     } catch (e) {
-      warn(`LLM 调用失败（${opts.purpose}）: ${(e as Error).message}`);
+      // `fetch failed` 本身没有信息量 —— 真正的原因（ECONNREFUSED、
+      // 证书错误、超时）在 cause 里，一并带出来。
+      const err = e as Error & { cause?: { code?: string; message?: string } };
+      const cause = err.cause?.code ?? err.cause?.message ?? '';
+      lastLlmFailure = cause ? `${err.message}（${cause}）` : err.message;
+      warn(`LLM 调用失败（${opts.purpose}）: ${lastLlmFailure}`);
       return null;
     }
   };
@@ -320,6 +344,40 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   // ---- 会话内状态（key = dsh sessionId） ----
   const active = new Map<string, ActiveLecture>();
   const machines = new Map<string, ReviewMachine>();
+
+  /**
+   * 跑一次「对照」，把结果写进状态机。
+   *
+   * 抽成函数是因为它要在**两个地方**用到：
+   *   · 提交「你先说」之后（正常路径）
+   *   · 在"对照"页点「开始补漏」但还没有对照结果时（**重试**）
+   *
+   * 后者很关键：对照失败时 `submitRecall` 已经把 step 推到了 compare，
+   * 前端又没有退回"你先说"的入口 —— 不给重试就是死路一条。
+   */
+  const runCompare = async (
+    m: ReviewMachine,
+    sessionKey: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+    const chunks = loadChunksFromFile(sessionKey, m.current.unit_id);
+    const out = await askLlm(m.buildComparePrompt(m.current.recall_text, chunks), {
+      // 2500：对照要输出三栏 JSON，而推理模型的思考 token 也计入这个预算。
+      // 早先给 1500，笔记多一点就可能被截断（截断的 JSON 必然解析失败）。
+      maxTokens: 2500,
+      purpose: 'lecture-compare',
+      json: true, // 对照结果是结构化 JSON
+    });
+    if (!out) return { ok: false, reason: lastLlmFailure || '模型没有返回内容' };
+    const comp = ReviewMachine.parseComparison(out);
+    if (!comp) {
+      return {
+        ok: false,
+        reason: `模型返回的内容不是预期的三栏 JSON（前 80 字：${out.trim().slice(0, 80)}）`,
+      };
+    }
+    m.setComparison(comp);
+    return { ok: true };
+  };
 
   /**
    * 写摘要（D4 的唯一出口）。
@@ -754,23 +812,24 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         // 第 1 步 → 第 2 步（对照）
         if (m.step === 'recall') {
           m.submitRecall(text);
-          const chunks = loadChunksFromFile(sid, m.current.unit_id);
-          const prompt = m.buildComparePrompt(m.current.recall_text, chunks);
-          const out = await askLlm(prompt, {
-            maxTokens: 1500,
-            purpose: 'lecture-compare',
-            json: true, // 对照结果是结构化 JSON
-          });
-          const comp = ReviewMachine.parseComparison(out);
-          if (!comp) {
+          const cmp = await runCompare(m, sid);
+          if (!cmp.ok) {
             persistReview(sid, m);
-            return ok({ step: 'compare', comparison: null, note: tr('对照生成失败（LLM 不可用或输出不可解析），可手动填写三栏后继续', 'Comparison failed (LLM unavailable or output unparseable); you can fill the three columns manually and continue') });
+            // 把**具体原因**返回，而不是笼统的"LLM 不可用"
+            return ok({
+              step: 'compare',
+              comparison: null,
+              note: `${tr('对照生成失败', 'Comparison failed')}：${cmp.reason}`,
+              retry: tr(
+                '可以再调一次 lecture_review_next 重试对照（不用重新说一遍）',
+                'Call lecture_review_next again to retry the comparison — no need to repeat your recall',
+              ),
+            });
           }
-          m.setComparison(comp);
           persistReview(sid, m);
           return ok({
             step: m.step,
-            comparison: JSON.stringify(comp),
+            comparison: JSON.stringify(m.current.comparison),
             instruction: '这是对照结果。接下来做定点补漏：只针对"漏了/记错"的点。',
           });
         }
@@ -822,6 +881,48 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         const m = machines.get(sid);
         if (!m) return fail('尚未开始复盘');
         const cid = courseIdOf(sid);
+
+        if (m.step === 'compare') {
+          // 对照失败后停在 compare：就地重试，不让用户重说一遍。
+          if (!m.current.recall_text) return fail('还没有「你先说」的内容');
+          const retry = await runCompare(m, sid);
+          persistReview(sid, m);
+          if (!retry.ok) return ok({ step: 'compare', comparison: null, note: `对照重试失败：${retry.reason}` });
+          return ok({
+            step: m.step,
+            comparison: JSON.stringify(m.current.comparison),
+            instruction: '对照已补上。再调用一次 lecture_review_next 开始定点补漏。',
+          });
+        }
+
+        // ⚠️ 和 HTTP 路径同一个坑：这里原来直接 finishRepair()，
+        //    于是"第一个补漏问题"从来没生成过 —— agent 只能自己编，
+        //    或者补漏整个被跳过（D12 失效）。
+        //    按"有没有问过问题"区分：没问过 = 生成第一个；问过了 = 结束补漏。
+        if (m.step === 'repair' && m.current.repair_turns.length === 0) {
+          const out = await askLlm(m.buildRepairPrompt(), {
+            maxTokens: 800,
+            purpose: 'lecture-repair',
+            // 纯文本追问，不要 json
+          });
+          if (!out) {
+            persistReview(sid, m);
+            return ok({ step: 'repair', question: null, note: `第一个问题生成失败：${lastLlmFailure || '模型没有返回内容'}` });
+          }
+          const firstQ = out.trim();
+          if (looksLikeDirectAnswer(firstQ)) {
+            warn('引导输出疑似直接给答案（D12 护栏触发），已拦截');
+            persistReview(sid, m);
+            return ok({
+              step: 'repair',
+              question: null,
+              warning: tr('LLM 输出疑似直接给答案，已拦截。换个角度再试一次。', 'The LLM output looked like a direct answer, so it was blocked. Try a different angle.'),
+            });
+          }
+          m.addRepairTurn(firstQ, '');
+          persistReview(sid, m);
+          return ok({ step: 'repair', question: firstQ, instruction: '让学生先回答，不要替他答。' });
+        }
 
         if (m.step === 'repair') {
           m.finishRepair();
@@ -1434,20 +1535,19 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             const text = String(payload.text ?? '').trim();
             if (!text) return { error: tr('内容为空', 'Content is empty') };
             m.submitRecall(text);
-            const chunks = loadChunksFromFile(`web:${courseId}`, unitId);
-            const out = await askLlm(m.buildComparePrompt(m.current.recall_text, chunks), {
-              maxTokens: 1500,
-              purpose: 'lecture-compare',
-              json: true, // 对照结果是结构化 JSON
-            });
-            const comp = ReviewMachine.parseComparison(out);
-            if (!comp) {
+            const cmp = await runCompare(m, `web:${courseId}`);
+            if (!cmp.ok) {
               save();
-              return { step: 'compare', comparison: null, note: tr('对照生成失败（LLM 不可用）', 'Comparison failed (LLM unavailable)') };
+              // 把具体原因带给前端；此时 step 停在 compare，
+              // 用户点「开始补漏」会**重试对照**（见下面 next 的 compare 分支）
+              return {
+                step: 'compare',
+                comparison: null,
+                note: `${tr('对照生成失败', 'Comparison failed')}：${cmp.reason}`,
+              };
             }
-            m.setComparison(comp);
             save();
-            return { step: 'compare', comparison: comp };
+            return { step: 'compare', comparison: m.current.comparison };
           }
 
           if (op === 'repair_answer') {
@@ -1485,8 +1585,37 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             // 结果：第 3 步定点补漏**一次都没跑过**，而 D12（只引导、不给答案）
             // 正是整个复盘的核心。
             //
-            // 现在按"有没有问过问题"区分：还没问过 = 开始补漏；
-            // 问过了 = 结束补漏。
+            // 现在有两种"还没开始补漏"的入口，分别处理：
+            //   · step=compare 且没有对照结果 → 对照失败了，**重试对照**
+            //   · step=repair 且没问过问题    → 正常开始补漏，生成第一个问题
+
+            // 情形 A：对照失败后停在 compare。
+            // 真机反馈："直接提示我重新提交【你先说】内容，然而根本没法退回那个阶段"
+            // —— 前端确实没有退回入口，所以只能在这里**就地重试**。
+            // recall_text 还在状态里，重试不需要用户再说一遍。
+            if (m.step === 'compare') {
+              if (!m.current.recall_text) {
+                return {
+                  step: 'compare',
+                  comparison: null,
+                  note: tr(
+                    '还没有「你先说」的内容，请先在第 1 步写下你记得的东西。',
+                    'No recall text yet — write down what you remember in step 1 first.',
+                  ),
+                };
+              }
+              const retry = await runCompare(m, `web:${courseId}`);
+              save();
+              if (!retry.ok) {
+                return {
+                  step: 'compare',
+                  comparison: null,
+                  note: `${tr('对照重试失败', 'Comparison retry failed')}：${retry.reason}`,
+                };
+              }
+              // 对照成功，step 已经是 repair —— 落到下面的补漏分支生成第一个问题
+            }
+
             if (m.step === 'repair' && m.current.repair_turns.length === 0) {
               if (!m.current.comparison) {
                 return { step: 'compare', error: tr('还没有对照结果，请先完成第 1 步', 'No comparison yet — complete step 1 first') };
@@ -1515,14 +1644,6 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               m.addRepairTurn(q, '');
               save();
               return { step: 'repair', question: q };
-            }
-            // 兼容旧状态（历史数据里可能存着 compare）
-            if (m.step === 'compare') {
-              return {
-                step: 'repair',
-                question: null,
-                note: tr('请重新提交一次「你先说」以生成对照结果', 'Resubmit your recall so the comparison can be generated'),
-              };
             }
             if (m.step === 'repair') {
               m.finishRepair();

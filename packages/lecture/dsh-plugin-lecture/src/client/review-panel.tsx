@@ -118,7 +118,13 @@ export function ReviewPanel(props: {
     }
     setBusy(true);
     setErr('');
-    const r = await postJson<{ ok: boolean; error?: string; comparison?: unknown; step?: Step }>({
+    const r = await postJson<{
+      ok: boolean;
+      error?: string;
+      comparison?: unknown;
+      step?: Step;
+      note?: string;
+    }>({
       action: 'review',
       op: 'recall',
       course_id: courseId,
@@ -138,6 +144,11 @@ export function ReviewPanel(props: {
       } catch {
         /* 解析失败：显示空三栏 */
       }
+    } else if (r.note) {
+      // ⚠️ 对照失败时后端会带回**具体原因**（HTTP 401 / 响应被截断 /
+      //    输出不是三栏 JSON…）。早先这里只看 comparison，note 被丢弃 ——
+      //    用户看到的是三个空栏，完全不知道发生了什么（"一开始就空输出"）。
+      setErr(r.note);
     }
   };
 
@@ -262,10 +273,18 @@ export function ReviewPanel(props: {
       {step === 'compare' ? (
         <div>
           <ComparisonGrid comparison={state?.comparison ?? null} />
-          <div className="lec-notice">{t('lecture.review.compare.notice')}</div>
+          {state?.comparison ? (
+            <div className="lec-notice">{t('lecture.review.compare.notice')}</div>
+          ) : (
+            // 对照失败：这里必须明说"可以重试"，否则用户会以为要退回第 1 步
+            // —— 而界面上根本没有那个入口。
+            <div className="lec-warn">{t('lecture.review.compare.failed')}</div>
+          )}
           <div className="lec-actions">
             <button type="button" className="lec-btn" disabled={busy} onClick={() => void nextFromRepair()}>
-              {t('lecture.review.compare.start')}
+              {state?.comparison
+                ? t('lecture.review.compare.start')
+                : t('lecture.review.compare.retry')}
             </button>
           </div>
         </div>

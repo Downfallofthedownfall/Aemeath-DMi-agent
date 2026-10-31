@@ -1201,7 +1201,7 @@ t('只有需要 JSON 的调用才设 response_format', () => {
   // 类型上必须有可选的 json 开关
   assert.match(tr, /json\?: boolean/, 'AskLlm 应有 json 选项');
   // 核心：不能无条件加 response_format
-  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,2400}/);
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,3600}/);
   assert.ok(ask, '找不到 askLlm 实现');
   assert.match(ask[0], /if \(opts\.json\)/, 'response_format 应受 json 开关控制');
 
@@ -1221,7 +1221,7 @@ t('LLM 出错要带出响应体（否则只剩一个 400，查不下去）', () 
   // 早先只抛 `LLM HTTP ${status}`，真实原因全丢 —— 上面那个 400 就是这样
   // 藏了很久都没人看出来。
   const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
-  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,2400}/);
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,3600}/);
   assert.ok(ask, '找不到 askLlm');
   assert.match(ask[0], /await resp\.text\(\)/, '应读出错误响应体');
   assert.match(ask[0], /error\?\.message/, '应尽量抽出 error.message');
@@ -1229,7 +1229,7 @@ t('LLM 出错要带出响应体（否则只剩一个 400，查不下去）', () 
 
 t('LLM 空输出/截断要能诊断（不能静默返回空）', () => {
   const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
-  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,2400}/);
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,3600}/);
   assert.ok(ask, '找不到 askLlm');
   assert.match(ask[0], /finish_reason/, '应记录 finish_reason');
   assert.match(ask[0], /LLM 输出为空/, '空输出要有明确日志');
@@ -1253,7 +1253,8 @@ t('「开始补漏」必须真的生成第一个问题（原来整步被跳过�
   assert.ok(seg, '找不到「开始补漏」分支');
   assert.match(seg[0], /buildRepairPrompt\(\)/, '应生成第一个问题');
   assert.match(seg[0], /addRepairTurn/, '应记录这一问');
-  assert.match(seg[0], /question: q/, '应把问题返回给前端');
+  // 两条路径的局部变量名不同（q / firstQ），两种都算
+  assert.match(seg[0], /question: (q|firstQ)/, '应把问题返回给前端');
 
   // 前端要尊重返回的 step，不能一律跳 commit
   const panel = readFileSync(join(root, 'src/client/review-panel.tsx'), 'utf-8');
@@ -1261,6 +1262,64 @@ t('「开始补漏」必须真的生成第一个问题（原来整步被跳过�
   assert.ok(fn, '找不到 nextFromRepair');
   assert.match(fn[0], /r\.step === 'repair'/, '应判断后端是否还在 repair');
   assert.match(fn[0], /setQuestion\(r\.question\)/, '应显示第一个问题');
+});
+
+t('对照失败不能变成死路（必须能就地重试）', () => {
+  // 真机反馈："这下一开始就会空输出，直接就提示我重新提交【你先说】内容，
+  //           然鹅根本没法退回那个阶段"
+  //
+  // 缘起：`submitRecall()` 会把 step 推到 compare，如果对照失败就停在那儿
+  // （comparison=null）。而前端**没有**退回 `recall` 的入口，
+  // 于是任何"请重新提交你先说"的提示都是死路。
+  //
+  // 正确做法：在 compare 状态点「开始补漏」时**重试对照**
+  // （recall_text 还在状态里，不需要用户重说）。
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+
+  // 对照逻辑必须抽成可复用的一处，两条路径（提交后 / 重试）都用它
+  assert.match(idx, /const runCompare = async/, '应把对照抽成 runCompare');
+  assert.match(idx, /await runCompare\(m,/, '重试要复用同一份对照逻辑');
+
+  // next 在 compare 时必须重试，而不是要求用户重提交
+  const nextBlock = idx.match(/if \(op === 'next'\)[\s\S]{0,1800}/);
+  assert.ok(nextBlock, '找不到 next 分支');
+  assert.match(nextBlock[0], /if \(m\.step === 'compare'\)/, '应处理 compare 状态');
+  assert.match(nextBlock[0], /runCompare/, '应重试对照');
+  assert.ok(
+    !/重新提交一次/.test(nextBlock[0]),
+    '不该再叫用户"重新提交你先说"（前端没有退回入口）',
+  );
+});
+
+t('对照失败的原因要能看见（不能只留三个空栏）', () => {
+  // 后端：把 lastLlmFailure 拼进 note
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  assert.match(idx, /let lastLlmFailure/, '应有失败原因记录');
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,3600}/);
+  assert.ok(ask, '找不到 askLlm');
+  assert.match(ask[0], /lastLlmFailure = /, '失败时应记录原因');
+  // `fetch failed` 本身没信息量，cause 才是真因
+  assert.match(ask[0], /err\.cause/, '应带出 cause（ECONNREFUSED 等）');
+
+  // 前端：submitRecall 必须把 note 显示出来
+  const panel = readFileSync(join(root, 'src/client/review-panel.tsx'), 'utf-8');
+  const recall = panel.match(/const submitRecall = async[\s\S]{0,1500}/);
+  assert.ok(recall, '找不到 submitRecall');
+  assert.match(recall[0], /r\.note/, 'submitRecall 应读 note');
+  assert.match(recall[0], /setErr\(r\.note\)/, '对照失败应把原因显式展示');
+  // 失败时按钮文案要变成"重试"
+  assert.match(panel, /compare\.retry/, '失败时按钮应提示重试');
+});
+
+t('对照的 token 预算要够（推理模型思考也算在内）', () => {
+  // 上一轮把「截断即失败」加上之后，1500 的对照预算变成了新的故障点：
+  // 笔记多一点、思考长一点就会截断，而截断的 JSON 必然解析失败。
+  const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
+  const cmp = idx.match(/const runCompare = async[\s\S]{0,900}/);
+  assert.ok(cmp, '找不到 runCompare');
+  const mt = cmp[0].match(/maxTokens:\s*(\d+)/);
+  assert.ok(mt, 'runCompare 应设 maxTokens');
+  assert.ok(Number(mt[1]) >= 2500, `对照预算至少 2500（现在是 ${mt[1]}）`);
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);
