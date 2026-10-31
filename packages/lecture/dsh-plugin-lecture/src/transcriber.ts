@@ -30,10 +30,18 @@ import { INSTITUTIONAL_NOTATION } from './symbol-data.js';
  * 结果第 3 步的每次调用都失败、输出恒为空。
  *
  * 默认 false 是刻意的：将来新增纯文本 prompt 时不会再撞上同一个坑。
+ *
+ * `maxTokens` **一般不要传**。
+ *
+ * 推理模型的思考 token 也计入 `max_tokens`，而思考能占到六成以上
+ * （实测某次 candidates：completion 2404 里 1571 是思考）。
+ * 定一个"看起来够大"的数只会把截断点往后挪一点，笔记本就是会撞上。
+ * 不传时由 API 用默认上限（实测 18000+ token 仍能正常 `stop`），
+ * 配合 `reasoning_effort: 'high'` 让模型自己决定想多久。
  */
 export type AskLlm = (
   prompt: string,
-  opts: { maxTokens: number; purpose: string; json?: boolean },
+  opts: { purpose: string; json?: boolean; maxTokens?: number },
 ) => Promise<string | null>;
 
 /**
@@ -149,13 +157,13 @@ export function parseTranscribeOutput(raw: string | null): TranscribeResult | nu
  *
  * @returns 成功返回 TranscribeResult；LLM 不可用/输出不可解析 → null（调用方保留原文，优雅降级）
  */
-export async function transcribeChunk(raw: string, askLlm: AskLlm, maxTokens = 2000): Promise<TranscribeResult | null> {
+export async function transcribeChunk(raw: string, askLlm: AskLlm): Promise<TranscribeResult | null> {
   const lines = parseShorthand(raw);
   if (!lines.some((l) => l.text)) return null;
   const out = await askLlm(`${TRANSCRIBER_PROMPT}\n\n${buildTranscribePrompt(lines)}`, {
-    maxTokens,
     purpose: 'lecture-transcribe',
     json: true, // 转录员输出结构化 JSON
+    // 不传 maxTokens：思考 token 也算在内，设死了会截断
   });
   return parseTranscribeOutput(out);
 }

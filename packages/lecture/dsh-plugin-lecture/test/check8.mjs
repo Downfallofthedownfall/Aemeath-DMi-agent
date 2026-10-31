@@ -1201,7 +1201,7 @@ t('只有需要 JSON 的调用才设 response_format', () => {
   // 类型上必须有可选的 json 开关
   assert.match(tr, /json\?: boolean/, 'AskLlm 应有 json 选项');
   // 核心：不能无条件加 response_format
-  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,3600}/);
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,5000}/);
   assert.ok(ask, '找不到 askLlm 实现');
   assert.match(ask[0], /if \(opts\.json\)/, 'response_format 应受 json 开关控制');
 
@@ -1221,7 +1221,7 @@ t('LLM 出错要带出响应体（否则只剩一个 400，查不下去）', () 
   // 早先只抛 `LLM HTTP ${status}`，真实原因全丢 —— 上面那个 400 就是这样
   // 藏了很久都没人看出来。
   const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
-  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,3600}/);
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,5000}/);
   assert.ok(ask, '找不到 askLlm');
   assert.match(ask[0], /await resp\.text\(\)/, '应读出错误响应体');
   assert.match(ask[0], /error\?\.message/, '应尽量抽出 error.message');
@@ -1229,7 +1229,7 @@ t('LLM 出错要带出响应体（否则只剩一个 400，查不下去）', () 
 
 t('LLM 空输出/截断要能诊断（不能静默返回空）', () => {
   const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
-  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,3600}/);
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,5000}/);
   assert.ok(ask, '找不到 askLlm');
   assert.match(ask[0], /finish_reason/, '应记录 finish_reason');
   assert.match(ask[0], /LLM 输出为空/, '空输出要有明确日志');
@@ -1295,7 +1295,7 @@ t('对照失败的原因要能看见（不能只留三个空栏）', () => {
   // 后端：把 lastLlmFailure 拼进 note
   const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
   assert.match(idx, /let lastLlmFailure/, '应有失败原因记录');
-  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,3600}/);
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,5000}/);
   assert.ok(ask, '找不到 askLlm');
   assert.match(ask[0], /lastLlmFailure = /, '失败时应记录原因');
   // `fetch failed` 本身没信息量，cause 才是真因
@@ -1311,15 +1311,40 @@ t('对照失败的原因要能看见（不能只留三个空栏）', () => {
   assert.match(panel, /compare\.retry/, '失败时按钮应提示重试');
 });
 
-t('对照的 token 预算要够（推理模型思考也算在内）', () => {
-  // 上一轮把「截断即失败」加上之后，1500 的对照预算变成了新的故障点：
-  // 笔记多一点、思考长一点就会截断，而截断的 JSON 必然解析失败。
+t('不设 max_tokens，改用 reasoning_effort（思考 token 也计入 max_tokens）', () => {
+  // 演进：1500（截断）→ 2500（仍会截断）→ 干脆不设。
+  //
+  // 实测某次 candidates：completion 2404 里 **1571 是思考** —— 定一个
+  // "看起来够大"的数只是把截断点往后挪，笔记本就会撞上，撞上就是截断的 JSON。
+  // 不传 max_tokens 时由 API 用默认上限（实测输出 18000+ token 仍能 stop）。
+  //
+  // 但**不能只去掉 max_tokens**：实测那样模型几乎不思考
+  // （reasoning_tokens=0）。必须配合 reasoning_effort: 'high'。
   const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
-  const cmp = idx.match(/const runCompare = async[\s\S]{0,900}/);
-  assert.ok(cmp, '找不到 runCompare');
-  const mt = cmp[0].match(/maxTokens:\s*(\d+)/);
-  assert.ok(mt, 'runCompare 应设 maxTokens');
-  assert.ok(Number(mt[1]) >= 2500, `对照预算至少 2500（现在是 ${mt[1]}）`);
+  const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,5000}/);
+  assert.ok(ask, '找不到 askLlm');
+
+  assert.match(ask[0], /reasoning_effort:\s*'high'/, '应设 reasoning_effort=high');
+  // max_tokens 不能无条件写进 body
+  assert.match(
+    ask[0],
+    /if \(typeof opts\.maxTokens === 'number'\)/,
+    'max_tokens 应只在显式传入时才加',
+  );
+
+  // 所有调用点都不该再写死具体数字 —— 那是之前两次截断的来源
+  const calls = [...idx.matchAll(/purpose: 'lecture-[a-z]+'([\s\S]{0,200})/g)];
+  assert.ok(calls.length >= 6, `应找到至少 6 个调用点（实际 ${calls.length}）`);
+  for (const c of calls) {
+    const head = c[1].split('});')[0] ?? '';
+    assert.ok(!/maxTokens:\s*\d+/.test(head), '调用点不该再写死 maxTokens');
+  }
+
+  // 转录入口同样不传
+  const tr = readFileSync(join(root, 'src/transcriber.ts'), 'utf-8');
+  const tc = tr.match(/export async function transcribeChunk[\s\S]{0,800}/);
+  assert.ok(tc, '找不到 transcribeChunk');
+  assert.ok(!/maxTokens:\s*\d+/.test(tc[0]), '转录也不该写死 maxTokens');
 });
 
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

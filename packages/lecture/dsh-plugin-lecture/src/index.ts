@@ -261,12 +261,20 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
       const body: Record<string, unknown> = {
         model: llm.model,
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: opts.maxTokens,
         temperature: 0.2,
+        // 让模型自己决定思考多久。
+        //
+        // 为什么不用 max_tokens 控制长度：推理模型的**思考 token 也计入
+        // max_tokens**，实测某次 candidates 的 completion 2404 里 1571 是思考
+        // —— 定死一个数只是把截断点往后挪，笔记本就会撞上，撞上就是截断的 JSON。
+        reasoning_effort: 'high',
       };
       // 只有明确要求 JSON 才加 —— 否则 DeepSeek 会 400
       // （"Prompt must contain the word 'json' …"）。
       if (opts.json) body.response_format = { type: 'json_object' };
+      // 默认**不传** max_tokens（由 API 用默认上限，实测 18000+ token 仍能 stop）。
+      // 只有显式传了才带上，留给将来真的需要封顶的场景。
+      if (typeof opts.maxTokens === 'number') body.max_tokens = opts.maxTokens;
 
       const resp = await fetch(`${llm.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -312,12 +320,13 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         warn(
           `LLM 输出为空（${opts.purpose}）finish_reason=${finish} ` +
             `completion_tokens=${data.usage?.completion_tokens ?? '?'} ` +
-            `reasoning_chars=${reasoningLen} max_tokens=${opts.maxTokens}` +
+            `reasoning_chars=${reasoningLen} ` +
+            `max_tokens=${opts.maxTokens ?? '不限制'}` +
             (finish === 'length' ? ' ← 撞到 max_tokens 上限（思考 token 也算在内）' : ''),
         );
         lastLlmFailure =
           finish === 'length'
-            ? `输出被 max_tokens(${opts.maxTokens}) 截断（思考 token 也算在内）`
+            ? `输出被截断（思考 token 也算在内，max_tokens=${opts.maxTokens ?? '默认'}）`
             : finish === '(未知)'
               ? '模型返回空内容'
               : `模型返回空内容（finish_reason=${finish}）`;
@@ -326,7 +335,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
       if (finish === 'length') {
         // 截断的 JSON 解析出来一定是坏的，不如明确失败，让调用方走降级。
         warn(`LLM 输出被截断（${opts.purpose}）finish_reason=length，已丢弃`);
-        lastLlmFailure = `输出被 max_tokens(${opts.maxTokens}) 截断`;
+        lastLlmFailure = `输出被截断（max_tokens=${opts.maxTokens ?? '默认'}）`;
         return null;
       }
       return content;
@@ -363,7 +372,6 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     const out = await askLlm(m.buildComparePrompt(m.current.recall_text, chunks), {
       // 2500：对照要输出三栏 JSON，而推理模型的思考 token 也计入这个预算。
       // 早先给 1500，笔记多一点就可能被截断（截断的 JSON 必然解析失败）。
-      maxTokens: 2500,
       purpose: 'lecture-compare',
       json: true, // 对照结果是结构化 JSON
     });
@@ -840,7 +848,6 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           m.addRepairTurn(lastQ, text);
           persistReview(sid, m);
           const out = await askLlm(m.buildRepairPrompt(), {
-              maxTokens: 800,
               purpose: 'lecture-repair',
               // 纯文本追问，不要 json
             });
@@ -901,7 +908,6 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         //    按"有没有问过问题"区分：没问过 = 生成第一个；问过了 = 结束补漏。
         if (m.step === 'repair' && m.current.repair_turns.length === 0) {
           const out = await askLlm(m.buildRepairPrompt(), {
-            maxTokens: 800,
             purpose: 'lecture-repair',
             // 纯文本追问，不要 json
           });
@@ -930,7 +936,6 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           const unitId = m.current.unit_id;
           const processing = store.readProcessing(cid, unitId);
           const out = await askLlm(m.buildCandidatesPrompt(chunks, processing), {
-            maxTokens: 2500,
             purpose: 'lecture-candidates',
             json: true, // 候选条目是结构化 JSON
           });
@@ -1558,7 +1563,6 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             m.addRepairTurn(lastQ, text);
             save();
             const out = await askLlm(m.buildRepairPrompt(), {
-              maxTokens: 800,
               purpose: 'lecture-repair',
               // 纯文本追问，不要 json
             });
@@ -1621,7 +1625,6 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
                 return { step: 'compare', error: tr('还没有对照结果，请先完成第 1 步', 'No comparison yet — complete step 1 first') };
               }
               const out = await askLlm(m.buildRepairPrompt(), {
-                maxTokens: 800,
                 purpose: 'lecture-repair',
                 // 注意：**不传 json** —— 补漏要的是一句自然语言追问
               });
@@ -1650,7 +1653,6 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               const chunks = loadChunksFromFile(`web:${courseId}`, unitId);
               const processing = store.readProcessing(courseId, unitId);
               const out = await askLlm(m.buildCandidatesPrompt(chunks, processing), {
-                maxTokens: 2500,
                 purpose: 'lecture-candidates',
               json: true, // 候选条目是结构化 JSON
               });
