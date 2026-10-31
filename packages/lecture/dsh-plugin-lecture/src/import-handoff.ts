@@ -132,6 +132,60 @@ export interface ImportOptions {
 // ============================================================
 
 /**
+ * 把 `decide()` 的结果规整成"确实可以写入的东西"。
+ *
+ * ⚠️ 为什么必须有这一步（真机事故）：
+ *   `decide()` 有四种 kind，只有 `save` 和 `knowledge_direct` 带 `content`。
+ *   `pending` 的返回是 `{ kind: 'pending', reason: '待 L1 采集' }` ——
+ *   **没有 content、没有 category、没有 importance**。
+ *
+ *   早先这里只排除了 `skip` / `blocked`，于是 `pending` 一路走到
+ *   `gk.save({ content: undefined, category: undefined })`，把 undefined
+ *   写进了 memories 表。后果不是"少存一条"，而是**整个记忆域打不开**：
+ *     DomainError: stored record ... does not match its schema
+ *   记忆插件 apply 直接失败 → 服务不存在 → 之后所有导入都静默降级成试运行。
+ *   （真机表现："传 dry_run:false 仍然原地退回 dry_run:true"。）
+ *
+ * 现在的语义：
+ *   · skip / blocked   → null（不写）
+ *   · pending          → 用**调用方手上的原文**兜底写入。
+ *     pending 的含义是"交给 L1/LLM 判断要不要存"，而导入场景没有那条链路，
+ *     直接丢掉又会让用户的短板凭空消失，所以用原句 + study_log 落库。
+ *   · save / knowledge_direct → 用 decide 给的 content 和 category。
+ *
+ * @returns null 表示不写；否则给出非空 content 与合法 category
+ */
+// memory 接受的记忆分类（与 GateDecision 的 category 一致）
+type WriteCategory = 'user_fact' | 'study_log' | 'preference' | 'relationship' | 'session_summary';
+const WRITE_CATEGORIES: readonly WriteCategory[] = [
+  'user_fact',
+  'study_log',
+  'preference',
+  'relationship',
+  'session_summary',
+];
+
+function resolveWritable(
+  decision: GateDecision,
+  fallbackContent: string,
+  fallbackCategory: WriteCategory = 'study_log',
+): { content: string; category: WriteCategory; importance: number } | null {
+  if (decision.kind === 'skip' || decision.kind === 'blocked') return null;
+
+  const content = (decision.content ?? '').trim() || fallbackContent.trim();
+  // 兜底文本也是空 → 宁可丢，也不写空记录（空记录会再次毒化存储）
+  if (!content) return null;
+
+  // pending 没有 category；非法值也兜底，否则会写进 schema 不认的分类
+  const raw = decision.category;
+  const category: WriteCategory =
+    raw && WRITE_CATEGORIES.includes(raw as WriteCategory) ? (raw as WriteCategory) : fallbackCategory;
+  // importance 缺失时给中位值；undefined 传下去 memory 会当成 NaN/0
+  const importance = typeof decision.importance === 'number' ? decision.importance : 50;
+  return { content, category, importance };
+}
+
+/**
  * 导入一个 handoff 包。
  *
  * 写入策略（**保守**）：
@@ -179,7 +233,10 @@ export async function importHandoff(
     const decision = gk.decide(statement, '');
     const query = statement; // writeGate 与 decide 用同一段文本，保持判定一致
 
-    if (decision.kind === 'skip' || decision.kind === 'blocked') {
+    // 关键：pending 没有 content/category —— 必须在这里兜底，
+    // 否则 undefined 会被写进存储（见 resolveWritable 的注释）。
+    const writable = resolveWritable(decision, statement, 'study_log');
+    if (!writable) {
       out.dropped++;
       out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr(`守门员判定 ${decision.kind}`, `Gatekeeper decision: ${decision.kind}`) });
       continue;
@@ -187,9 +244,9 @@ export async function importHandoff(
 
     // user_fact 走写门（短板极少是 user_fact，但保持与 memory 一致的纪律）
     let confidence = 0.7;
-    let importance = decision.importance;
-    if (decision.category === 'user_fact') {
-      const wg = gk.writeGate(query, decision.content);
+    let importance = writable.importance;
+    if (writable.category === 'user_fact') {
+      const wg = gk.writeGate(query, writable.content);
       if (wg.action === 'drop') {
         out.dropped++;
         out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr(`写门拦截：${wg.reason}`, `Write gate blocked: ${wg.reason}`) });
@@ -202,7 +259,7 @@ export async function importHandoff(
     }
 
     if (dryRun) {
-      out.details.push({ kind: 'weak_point', content: decision.content, reason: tr(`[试运行] 将写入（${decision.category}）`, `[dry run] would write (${decision.category})`) });
+      out.details.push({ kind: 'weak_point', content: writable.content, reason: tr(`[试运行] 将写入（${writable.category}）`, `[dry run] would write (${writable.category})`) });
       out.memoriesWritten++;
       continue;
     }
@@ -210,8 +267,8 @@ export async function importHandoff(
     try {
       await gk.save({
         preset,
-        content: decision.content,
-        category: decision.category,
+        content: writable.content,
+        category: writable.category,
         importance,
         confidence,
         // 学习短板是"角色相关"（跟具体课程绑定）→ mode
@@ -220,8 +277,8 @@ export async function importHandoff(
         sourceLecture: { course: handoff.course.id, unit: wp.unit, date: '' },
       });
       out.memoriesWritten++;
-      out.details.push({ kind: 'weak_point', content: decision.content, reason: tr(`已写入（${decision.category}）`, `Written (${decision.category})`) });
-      gk.log(`握手导入：短板「${wp.topic}」→ 记忆（${decision.category}）`);
+      out.details.push({ kind: 'weak_point', content: writable.content, reason: tr(`已写入（${writable.category}）`, `Written (${writable.category})`) });
+      gk.log(`握手导入：短板「${wp.topic}」→ 记忆（${writable.category}）`);
     } catch (e) {
       out.dropped++;
       out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr(`写入失败：${(e as Error).message}`, `Write failed: ${(e as Error).message}`) });
@@ -258,16 +315,18 @@ export async function importHandoff(
     // 同样过守门员（与 weak_points 一致 —— 接收侧不绕过规则层）。
     // query 位放待判文本、reply 传空串（见接口注释）。
     const decision = gk.decide(content, '');
-    if (decision.kind === 'skip' || decision.kind === 'blocked') {
+    // 同一套兜底（见 resolveWritable）：claims 常被判成 pending
+    const writable = resolveWritable(decision, content, 'study_log');
+    if (!writable) {
       out.dropped++;
       out.details.push({ kind: 'claim', content, reason: tr(`守门员判定 ${decision.kind}`, `Gatekeeper decision: ${decision.kind}`) });
       continue;
     }
 
     let confidence = 0.75;
-    let importance = decision.importance;
-    if (decision.category === 'user_fact') {
-      const wg = gk.writeGate(content, decision.content);
+    let importance = writable.importance;
+    if (writable.category === 'user_fact') {
+      const wg = gk.writeGate(content, writable.content);
       if (wg.action === 'drop') {
         out.dropped++;
         out.details.push({ kind: 'claim', content, reason: tr(`写门拦截：${wg.reason}`, `Write gate blocked: ${wg.reason}`) });
@@ -293,8 +352,8 @@ export async function importHandoff(
     if (dryRun) {
       out.details.push({
         kind: 'claim',
-        content: decision.content,
-        reason: tr(`[试运行] 将写入（${decision.category}，含 ${entityClaims.length} 条断言）`, `[dry run] would write (${decision.category}, ${entityClaims.length} claims)`),
+        content: writable.content,
+        reason: tr(`[试运行] 将写入（${writable.category}，含 ${entityClaims.length} 条断言）`, `[dry run] would write (${writable.category}, ${entityClaims.length} claims)`),
       });
       out.memoriesWritten++;
       continue;
@@ -303,8 +362,8 @@ export async function importHandoff(
     try {
       await gk.save({
         preset,
-        content: decision.content,
-        category: decision.category,
+        content: writable.content,
+        category: writable.category,
         importance,
         confidence,
         scope: 'mode',
@@ -316,8 +375,8 @@ export async function importHandoff(
       out.claimsWritten += entityClaims.length;
       out.details.push({
         kind: 'claim',
-        content: decision.content,
-        reason: tr(`已写入（${decision.category}，含 ${entityClaims.length} 条断言）`, `Written (${decision.category}, ${entityClaims.length} claims)`),
+        content: writable.content,
+        reason: tr(`已写入（${writable.category}，含 ${entityClaims.length} 条断言）`, `Written (${decision.category}, ${entityClaims.length} claims)`),
       });
       gk.log(`握手导入：${unitId} 学习状态 → 记忆（${entityClaims.length} 条断言）`);
     } catch (e) {

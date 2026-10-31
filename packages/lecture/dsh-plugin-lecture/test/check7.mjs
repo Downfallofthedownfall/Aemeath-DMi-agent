@@ -45,6 +45,9 @@ function makeGk(opts = {}) {
     calls,
     decide(q, r) {
       calls.decide.push({ q, r });
+      // decideRaw：完全照抄真实 decide 的某个分支（可以**缺字段**）。
+      // 用来复现 pending 那种 `{kind:'pending'}` 没有 content/category 的返回。
+      if (opts.decideRaw) return opts.decideRaw;
       if (opts.decideKind) return { kind: opts.decideKind, content: `判定：${q}`, category: 'study_log', importance: 50 };
       return { kind: 'save', content: `判定：${q}`, category: 'study_log', importance: 60 };
     },
@@ -348,6 +351,62 @@ t('loadHandoffFile 能读回', () => {
 t('loadHandoffFile 畸形 → null', () => {
   writeFileSync(join(tmp, 'broken-handoff.json'), '{ 不是 json');
   assert.equal(loadHandoffFile(join(tmp, 'broken-handoff.json')), null);
+});
+
+/**
+ * ⚠️ 真机事故回归：pending 的判词不能把 undefined 写进存储。
+ *
+ * 真实的 `decide()` 有四种 kind，只有 `save` / `knowledge_direct` 带 content。
+ * `pending` 的返回是 `{ kind: 'pending', reason: '待 L1 采集' }` ——
+ * content、category、importance **三个字段全没有**。
+ *
+ * 旧代码只排除了 skip/blocked，于是 pending 一路走到
+ * `save({ content: undefined, category: undefined })`，把 undefined 写进
+ * memories 表。后果不是丢一条，而是**整个记忆域打不开**：
+ *     DomainError: stored record '…' does not match its schema
+ *   → memory 插件 apply 失败 → 服务不存在
+ *   → 之后每次导入都静默降级成 dry_run（用户："传 dry_run:false 仍然原地退回"）。
+ *
+ * 这条断言检查：无论 decide 怎么返回，落到 save 的字段必须合法。
+ */
+await ta('pending 判词也写出合法记录（不能写 undefined）', async () => {
+  // 完全照抄 pending 分支：三个字段都缺
+  const gk = makeGk({ decideRaw: { kind: 'pending', reason: '待 L1 采集（滚动捕获）' } });
+  await importHandoff(mkHandoff(), gk, {});
+  assert.ok(gk.calls.save.length > 0, '应仍然写入（用调用方手上的原文兜底）');
+  for (const s of gk.calls.save) {
+    assert.equal(typeof s.content, 'string', 'content 必须是字符串');
+    assert.ok(s.content.trim().length > 0, 'content 不能是空串');
+    assert.equal(typeof s.category, 'string', 'category 必须是字符串');
+    assert.ok(
+      ['user_fact', 'study_log', 'preference', 'relationship', 'session_summary'].includes(s.category),
+      `category 必须是 schema 认的值，实际 ${s.category}`,
+    );
+    assert.equal(typeof s.importance, 'number', 'importance 必须是数字');
+    assert.ok(!Number.isNaN(s.importance), 'importance 不能是 NaN');
+  }
+});
+
+await ta('任何 decide 返回都不该让 save 收到 undefined', async () => {
+  // 四种 kind 全扫一遍（save / knowledge_direct / pending / skip / blocked）
+  const kinds = [
+    { kind: 'save', content: 'c', category: 'study_log', importance: 60 },
+    { kind: 'knowledge_direct', content: 'k', topic: 't' },
+    { kind: 'pending', reason: 'r' },
+    { kind: 'skip', reason: 'r' },
+    { kind: 'blocked', reason: 'r' },
+  ];
+  for (const raw of kinds) {
+    const gk = makeGk({ decideRaw: raw });
+    await importHandoff(mkHandoff(), gk, {});
+    for (const s of gk.calls.save) {
+      assert.ok(
+        typeof s.content === 'string' && s.content.trim(),
+        `kind=${raw.kind} 时 content 非法：${String(s.content)}`,
+      );
+      assert.ok(typeof s.category === 'string' && s.category, `kind=${raw.kind} 时 category 非法`);
+    }
+  }
 });
 
 rmSync(tmp, { recursive: true, force: true });

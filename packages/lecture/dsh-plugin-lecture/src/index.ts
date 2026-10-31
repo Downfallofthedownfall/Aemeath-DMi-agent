@@ -1251,6 +1251,60 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   // 主 agent 侧需提供 HandoffGatekeeper（三函数）。取不到时（比如在
   // lecture 自己的 profile 里）优雅降级：工具可读文件但不写入。
   // ============================================================
+  /**
+   * 取 memory 服务，并**留下诊断痕迹**。
+   *
+   * 为什么不是一行 `ctx.reflect.get('memory')`：
+   *   cordis 的 `reflect.get(name, strict = true)` **默认只返回
+   *   "提供者 fiber 当前活跃"的服务**。于是"插件根本没装"和
+   *   "装了但 fiber 没就绪"会得到**同一个 undefined** ——
+   *   排查时这两者的修法完全不同（换 profile vs 查加载顺序），
+   *   却无法区分。
+   *
+   * 这里把三条路都试一遍并记录结果，最后把 trace 一起返回给调用方：
+   *   1. `ctx.get('memory')`   —— 和 aemeath-ui 同一个入口（受 inject 约束）
+   *   2. `reflect.get('memory')`        —— 严格模式
+   *   3. `reflect.get('memory', false)` —— 非严格，能看到"未激活"的实现
+   */
+  const readMemoryService = (): { value: unknown; trace: string[] } => {
+    const trace: string[] = [];
+    const anyCtx = ctx as unknown as {
+      get?: (n: string) => unknown;
+      reflect?: { get?: (n: string, strict?: boolean) => unknown };
+    };
+
+    // 1) 标准服务访问（aemeath-ui 用的就是这条）
+    try {
+      const v = anyCtx.get?.('memory');
+      trace.push(`ctx.get=${v ? 'ok' : 'undefined'}`);
+      if (v) return { value: v, trace };
+    } catch (e) {
+      trace.push(`ctx.get=throw(${(e as Error).message.slice(0, 60)})`);
+    }
+
+    // 2) 反射严格模式
+    try {
+      const v = anyCtx.reflect?.get?.('memory');
+      trace.push(`reflect.get(strict)=${v ? 'ok' : 'undefined'}`);
+      if (v) return { value: v, trace };
+    } catch (e) {
+      trace.push(`reflect.get(strict)=throw(${(e as Error).message.slice(0, 60)})`);
+    }
+
+    // 3) 反射非严格：能拿到"装了但 fiber 不活跃"的实现
+    try {
+      const v = anyCtx.reflect?.get?.('memory', false);
+      trace.push(`reflect.get(loose)=${v ? 'ok' : 'undefined'}`);
+      if (v) return { value: v, trace };
+    } catch (e) {
+      trace.push(`reflect.get(loose)=throw(${(e as Error).message.slice(0, 60)})`);
+    }
+
+    return { value: undefined, trace };
+  };
+  /** 最近一次解析 memory 的诊断痕迹（供失败信息展示）。 */
+  let lastMemoryTrace: string[] = [];
+
   const buildGatekeeper = async (): Promise<HandoffGatekeeper | null> => {
     // memory 插件的 gatekeeper 是模块内部函数，不在 service 上；
     // 因此这里走**动态 import** 其包（peer 依赖），拿 decide/writeGate。
@@ -1260,7 +1314,9 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         decide: (q: string, r: string) => GateDecision;
         writeGate: (q: string, c: string) => WriteGateResult;
       };
-      const memory = (ctx as unknown as { reflect?: { get(n: string): unknown } }).reflect?.get('memory') as
+      const looked = readMemoryService();
+      lastMemoryTrace = looked.trace;
+      const memory = looked.value as
         | {
             save(input: {
               content: string;
@@ -1289,7 +1345,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           }
         | undefined;
       if (!memory) {
-        log('未检测到 memory 服务——握手接收侧降级为只读（试运行）');
+        log(`未检测到 memory 服务——握手接收侧降级为只读（试运行）。查找记录：${looked.trace.join(' / ')}`);
         return null;
       }
       return {
@@ -1359,18 +1415,56 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         const gk = await buildGatekeeper();
         const dryRun = args.dry_run ?? true; // 缺省试运行（安全默认）
         if (!gk) {
-          // 降级：能读能描述，但不写
           const previews: string[] = [];
           for (const f of files) {
             const h = loadHandoffFile(f);
             if (h) previews.push(describeHandoff(h));
           }
-          return ok({
-            dry_run: true,
-            degraded: true,
-            note: tr('memory 服务不可用（当前可能是 lecture 独立 profile）——只读出预览，未写入。', 'Memory service unavailable (likely the standalone lecture profile) — read-only preview, nothing was written.'),
-            previews,
-          });
+          // 用户本来就要试运行 → 给预览就好，这不算失败
+          if (dryRun) {
+            return ok({
+              dry_run: true,
+              degraded: true,
+              previews,
+              note: tr(
+                '当前没有 memory 服务，所以这只是只读预览（你本来也没要求写入）。',
+                'No memory service here, so this is a read-only preview (you did not ask to write anyway).',
+              ),
+            });
+          }
+          // ⚠️ 用户**明确要求写入**却写不了 —— 必须报错。
+          //
+          // 早先这里无条件 `return ok({ dry_run: true, degraded: true })`：
+          // 传 dry_run:false 会**悄悄**退回试运行，调用方看到 ok:true
+          // 很容易当成"导入成功"。真机就是这样：
+          //   "我给 handoff2 传 dry_run: false 仍然原地退回。"
+          // 这和"前端说写入了主记忆其实没写"是同一类静默失败。
+          return fail(
+            tr(
+              '导入失败：当前会话拿不到 memory 服务，写不进去 —— 这**不是**握手文件的问题。\n' +
+                `查找记录：${lastMemoryTrace.join(' / ') || '(未执行)'}\n` +
+                '怎么判断：\n' +
+                '  · 三条都是 undefined → 这个 profile 没装 memory 插件，换到**主 agent 会话**执行（那边装了）。\n' +
+                '  · strict 为 undefined 但 loose 为 ok → 装了但 memory 的 fiber 未激活（加载/依赖问题），不是配置缺插件。\n' +
+                '  · ctx.get 抛 inject 错但 reflect 有值 → 本插件 inject 里没有 memory，属于已知限制。\n' +
+                '下面附只读预览，可以先确认文件内容对不对：',
+              'Import failed: no memory service in this session, so nothing can be written — this is NOT a problem with the handoff file.\n' +
+                `Lookup trace: ${lastMemoryTrace.join(' / ') || '(none)'}\n` +
+                'How to read it:\n' +
+                '  - all three undefined -> this profile does not load the memory plugin; use the main agent session instead.\n' +
+                '  - strict undefined but loose ok -> the plugin is installed but its fiber is inactive, so this is a load order problem, not a missing plugin.\n' +
+                '  - ctx.get throws an inject error but reflect has a value -> memory is simply not in this plugin\'s inject list.\n' +
+                'Read-only preview follows, so you can check the file contents:',
+            ),
+            {
+              degraded: true,
+              dry_run_forced: true,
+              // 结构化标记，方便调用方判断"是环境问题不是数据问题"
+              reason: 'no-memory-service',
+              memory_lookup: lastMemoryTrace,
+              previews,
+            },
+          );
         }
         const outcomes: string[] = [];
         let totalMem = 0;
