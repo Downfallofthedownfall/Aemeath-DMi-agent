@@ -6,19 +6,19 @@
 // 注册位：conversation.input.dock（composer 卡上方的整行）——卡片浮在 composer 上方。
 // 宿主契约：模块级 composerBus（pushCard/settleCard/settleRun/settleSession/
 //   clearComposerCards）+ useComposerCards() hook，供宿主代码/其他插件推卡。
-// 真实信号（feature #6）：解题计划确认卡——只读 host GET /aemeath/api/memory 的
-//   plans（workflow.plan scratch，host 侧已解析），非空且未确认过即推"计划确认"卡。
+// 真实信号（feature #6）：解题计划确认卡——只读 plan-feed.ts 的共享轮询
+//   （workflow.plan scratch，host 侧已解析），非空且未确认过即推"计划确认"卡。
 //   动作 Approve/Rerun/Dismiss 只结算/隐藏卡（无宿主动作可触发，见现状说明）。
 // 结算清除（Cyrene 式）：① 按钮动作 → settleCard(id)；② 本会话新一轮运行开始
 //   （running false→true）→ settleSession(sessionId)；③ 切换会话 → clearComposerCards()。
 // ============================================================
-import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
+import { useEffect, useRef, useSyncExternalStore, type CSSProperties } from 'react';
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import { t, useLocale } from './i18n.ts';
+import { usePlanSteps } from './plan-feed.ts';
 
-const POLL_MS = 5000;
 const MAX_BODY_STEPS = 6;
 
 // —— 卡片类型与宿主契约 ——
@@ -140,7 +140,7 @@ const lastShownPlan = new Map<string, string>();
 const actedPlan = new Map<string, string>();
 
 /** 计划步骤 JSON 的内容 hash（作为 run 路由键/去重键；步骤变化 → 新 hash）。 */
-function hashPlan(steps: string[]): string {
+function hashPlan(steps: readonly string[]): string {
   let h = 0;
   for (const s of steps) {
     for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -158,25 +158,6 @@ function planConfirmActions(): ComposerCardAction[] {
     { id: 'rerun', labelKey: 'composercards.plan.rerun', kind: 'default' },
     { id: 'dismiss', labelKey: 'composercards.plan.dismiss', kind: 'ghost' },
   ];
-}
-
-interface PlanPayload {
-  ok?: boolean;
-  plans?: Record<string, string[]>;
-}
-
-/** 拉取当前会话的解题计划步骤（host 已解析 scratch workflow.plan；无 → 空数组）。 */
-async function fetchPlan(sessionId: string): Promise<string[]> {
-  if (!sessionId) return [];
-  try {
-    const res = await fetch('/aemeath/api/memory', { signal: AbortSignal.timeout(8000) });
-    const d = (await res.json()) as PlanPayload;
-    if (!res.ok || !d.ok || !d.plans) return [];
-    const steps = d.plans[sessionId];
-    return Array.isArray(steps) ? steps.filter((s): s is string => typeof s === 'string').map((s) => s.trim()).filter(Boolean) : [];
-  } catch {
-    return [];
-  }
 }
 
 // —— 渲染：一张交互卡 ——
@@ -267,26 +248,8 @@ function ComposerCardHostInner({ session }: { session: SessionSnapshot }): JSX.E
     prevRunningRef.current = running;
   }, [running, sessionId]);
 
-  // —— 计划确认卡数据源：只读 host plans（workflow.plan scratch）——
-  const [planSteps, setPlanSteps] = useState<string[]>([]);
-  useEffect(() => {
-    if (!sessionId) {
-      setPlanSteps([]);
-      return;
-    }
-    let alive = true;
-    const load = (): void => {
-      void fetchPlan(sessionId).then((steps) => {
-        if (alive) setPlanSteps(steps);
-      });
-    };
-    void load();
-    const timer = window.setInterval(load, POLL_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, [sessionId]);
+  // —— 计划确认卡数据源：只读 host plans（workflow.plan scratch；与计划浮卡共用轮询）——
+  const planSteps = usePlanSteps(sessionId);
 
   // 把当前计划同步为"计划确认"卡（去重 + 结算旧卡，防 zombie / 重复弹）。
   useEffect(() => {

@@ -22,7 +22,7 @@ import z from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/cordis-plugin-loader';
-import { buildMemoryOverview, buildTimelineView, buildGraphView, type MemoryServiceFace } from './memory-view.js';
+import { buildMemoryOverview, buildTimelineView, buildGraphView, buildPlanView, type MemoryServiceFace } from './memory-view.js';
 
 export const name = 'aemeath-ui';
 // ⚠️ memory **不能**放在 inject 里当硬依赖。
@@ -693,6 +693,10 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
         }
         if (action === 'graph') {
           json(res, 200, buildGraphView(face));
+          return;
+        }
+        if (action === 'plan') {
+          json(res, 200, buildPlanView(face, (url.searchParams.get('session') ?? '').slice(0, 200)));
           return;
         }
         json(res, 200, buildMemoryOverview(face));

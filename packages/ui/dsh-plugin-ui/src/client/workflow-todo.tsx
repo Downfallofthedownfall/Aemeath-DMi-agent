@@ -4,8 +4,8 @@
 //   进度条 + 可勾选条目），只用其"结构/交互"（指针拖动、折叠、进度 %），
 //   用 Aemeath 自己的 t()/主题 token 实现；不复制其代码，也无 mascot 图片
 //   （保持轻量、无 emoji）。
-// 数据源：host GET /aemeath/api/memory 的 plans 字段——当前会话 workflow.plan
-//   scratch 已解析好的步骤字符串数组（host 侧解析、未截断；见 index.ts）。
+// 数据源：plan-feed.ts 的共享轮询（host GET /aemeath/api/memory?action=plan，
+//   当前会话 workflow.plan scratch 已解析好的步骤字符串数组；与计划确认卡共用）。
 // 完成度：plan scratch 只存步骤字符串（无"完成"状态），故勾选是本地 UX 状态
 //   （localStorage 按 sessionId 持久化）；进度 = 已勾选 / 总数。
 // 持久化：卡片位置 + 折叠 + 隐藏状态均在 localStorage（UI 便捷，不写设置）。
@@ -18,21 +18,16 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import { t, useLocale } from './i18n.ts';
+import { usePlanSteps } from './plan-feed.ts';
 
 const CARD_WIDTH = 256;
 const MIN_VISIBLE_HEIGHT = 52;
-const POLL_MS = 4000;
 
 // —— localStorage 持久化 key（UI 便捷；不掺入 settings）——
 const POS_KEY = 'aemeath.todo.pos';
 const COLLAPSED_KEY = 'aemeath.todo.collapsed';
 const HIDDEN_KEY = 'aemeath.todo.hidden';
 const DONE_KEY = 'aemeath.todo.done';
-
-interface PlanPayload {
-  ok?: boolean;
-  plans?: Record<string, string[]>;
-}
 
 function readBool(key: string, def: boolean): boolean {
   try {
@@ -104,20 +99,6 @@ function clampPos(p: { x: number; y: number }): { x: number; y: number } {
   };
 }
 
-/** 拉取当前会话的解题计划步骤（host 已解析 scratch workflow.plan；无 → 空数组）。 */
-async function fetchPlan(sessionId: string): Promise<string[]> {
-  if (!sessionId) return [];
-  try {
-    const res = await fetch('/aemeath/api/memory', { signal: AbortSignal.timeout(8000) });
-    const d = (await res.json()) as PlanPayload;
-    if (!res.ok || !d.ok || !d.plans) return [];
-    const steps = d.plans[sessionId];
-    return Array.isArray(steps) ? steps.filter((s): s is string => typeof s === 'string').map((s) => s.trim()).filter(Boolean) : [];
-  } catch {
-    return [];
-  }
-}
-
 /** 浮卡主体（hooks 全在此；由外层零 hooks 组件保证 useSession 已提供）。 */
 function WorkflowTodoCard({
   useSession,
@@ -127,7 +108,8 @@ function WorkflowTodoCard({
   useLocale(); // locale 切换时刷新文案
   const sessionId = String(useSession((s) => s.sessionId ?? '') ?? '');
 
-  const [steps, setSteps] = useState<string[]>([]);
+  // 当前会话计划（共享轮询；plan_step 工具落 scratch 是渐进式的）
+  const steps = usePlanSteps(sessionId);
   const [done, setDone] = useState<Set<number>>(() => readDone(sessionId));
   const [collapsed, setCollapsed] = useState<boolean>(() => readBool(COLLAPSED_KEY, false));
   const [hidden, setHidden] = useState<boolean>(() => readBool(HIDDEN_KEY, false));
@@ -145,22 +127,6 @@ function WorkflowTodoCard({
   // sessionId 变化时重置本地勾选态（按会话隔离）
   useEffect(() => {
     setDone(readDone(sessionId));
-  }, [sessionId]);
-
-  // 拉取当前会话计划：挂载即时一次 + 每 POLL_MS 轮询（plan_step 工具落 scratch 是渐进式的）
-  useEffect(() => {
-    let alive = true;
-    const load = (): void => {
-      void fetchPlan(sessionId).then((s) => {
-        if (alive) setSteps(s);
-      });
-    };
-    void load();
-    const timer = window.setInterval(load, POLL_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
   }, [sessionId]);
 
   // 拖动：pointerdown 于标题栏开始，window pointermove/up 驱动移动 + 落位持久化。

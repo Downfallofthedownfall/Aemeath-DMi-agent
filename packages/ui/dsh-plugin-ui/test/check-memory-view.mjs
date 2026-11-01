@@ -5,7 +5,7 @@
 // 注：不起 HTTP 服务——这些函数就是 HTTP 处理器的全部业务逻辑（处理器只剩参数解析 + json）。
 // ============================================================
 import assert from 'node:assert/strict';
-import { buildMemoryList, buildMemoryOverview, buildTimelineView, buildGraphView } from '../lib/memory-view.js';
+import { buildMemoryList, buildMemoryOverview, buildTimelineView, buildGraphView, buildPlanView } from '../lib/memory-view.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -127,6 +127,30 @@ t('buildMemoryOverview：坏 plan JSON → 整会话跳过（不毒化其它会�
     fakeService({ allScratch: () => ({ s1: { 'workflow.plan': '{坏' }, s2: { 'workflow.plan': '["ok"]' } }) }),
   );
   assert.deepEqual(view.plans, { s2: ['ok'] });
+});
+
+t('buildPlanView：只读单会话 scratch（优先 getScratch，回退 allScratch）', () => {
+  const reads = [];
+  const svc = fakeService({
+    getScratch: (sid, key) => {
+      reads.push(`${sid}/${key}`);
+      return sid === 's1' ? '[" 读题 ","","列式"]' : undefined;
+    },
+    allScratch: () => {
+      throw new Error('有 getScratch 时不应读整份 scratch');
+    },
+  });
+  assert.deepEqual(buildPlanView(svc, 's1'), { ok: true, steps: ['读题', '列式'] });
+  assert.deepEqual(buildPlanView(svc, 'nope'), { ok: true, steps: [] });
+  assert.deepEqual(reads, ['s1/workflow.plan', 'nope/workflow.plan']);
+  // 旧服务无 getScratch → 回退 allScratch
+  assert.deepEqual(buildPlanView(fakeService(), 's1'), { ok: true, steps: ['读题', '列式'] });
+});
+
+t('buildPlanView：空会话 id / 坏 JSON / 非数组 → 空步骤不抛', () => {
+  assert.deepEqual(buildPlanView(fakeService(), ''), { ok: true, steps: [] });
+  assert.deepEqual(buildPlanView(fakeService({ getScratch: () => '{坏' }), 's1'), { ok: true, steps: [] });
+  assert.deepEqual(buildPlanView(fakeService({ getScratch: () => '{"a":1}' }), 's1'), { ok: true, steps: [] });
 });
 
 t('buildTimelineView：遍历 knownAttributes 只保留有断言的属性（时间轴分组）', () => {

@@ -22,6 +22,33 @@ export interface MemoryServiceFace {
   /** T3 洞察。 */
   currentInsights?(): unknown;
   dreamNow?(): Promise<unknown>;
+  /** 会话 scratch（解题计划落在 `workflow.plan`）。 */
+  getScratch?(sessionId: string, key: string): string | undefined;
+  allScratch?(): Record<string, Record<string, string>>;
+}
+
+/** 解析 scratch 里的 `workflow.plan`（JSON 字符串数组）；缺失或坏 JSON → null。 */
+function parsePlan(raw: string | undefined): string[] | null {
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw) as unknown;
+    return Array.isArray(p) ? p.map((s) => String(s).trim()).filter(Boolean) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 单会话计划视图（GET ?action=plan&session=…）。
+ * 计划浮卡 / 计划确认卡每几秒轮询一次，只需要这一个会话的步骤 ——
+ * 不要为它序列化整份记忆总览（全部 L2/L3 + L1 缓冲，几十 KB）。
+ */
+export function buildPlanView(memory: MemoryServiceFace, sessionId: string): { ok: true; steps: string[] } {
+  if (!sessionId) return { ok: true, steps: [] };
+  const raw = memory.getScratch
+    ? memory.getScratch(sessionId, 'workflow.plan')
+    : memory.allScratch?.()[sessionId]?.['workflow.plan'];
+  return { ok: true, steps: parsePlan(raw) ?? [] };
 }
 
 /** 时间轴视图里每个属性的断言序列。 */
@@ -85,20 +112,15 @@ export function buildMemoryOverview(memory: MemoryServiceFace): {
   const items = buildMemoryList(memory);
   const stats = memory.stats();
   const profile = memory.profileFacts?.() ?? [];
-  const scratch = (memory as unknown as { allScratch?: () => Record<string, Record<string, string>> }).allScratch?.() ?? {};
+  const scratch = memory.allScratch?.() ?? {};
   const l1 = Object.entries(scratch)
     .map(([sid, slot]) => ({ sessionId: sid, items: Object.entries(slot).map(([k, v]) => ({ key: k, content: String(v).slice(0, 200) })) }))
     .filter((s) => s.items.length > 0);
   const plans: Record<string, string[]> = {};
   for (const [sid, slot] of Object.entries(scratch)) {
-    const raw = slot['workflow.plan'];
-    if (!raw) continue;
-    try {
-      const p = JSON.parse(raw) as unknown;
-      if (Array.isArray(p)) plans[sid] = p.map((s) => String(s)).map((s) => s.trim()).filter(Boolean);
-    } catch {
-      /* 坏 JSON：整会话跳过（前端显示空/off） */
-    }
+    // 坏 JSON：整会话跳过（前端显示空/off）
+    const steps = parsePlan(slot['workflow.plan']);
+    if (steps) plans[sid] = steps;
   }
   const l1Buffer = (memory.l1Sessions?.() ?? [])
     .map((sid) => ({
