@@ -19,6 +19,34 @@ import type { EntityClaim } from './timeline.js';
 import { EMPTY_INSIGHTS, type Insights } from './types.js';
 import type { MemoryRecord, AuditRecord, KnowledgeRecord, UserProfile, RelationshipRecord, Category, L1Turn } from './types.js';
 
+/** 按 id 前缀定位记录的最短长度 —— 与 `/memory list` 显示的 8 位一致。 */
+export const MIN_ID_PREFIX = 8;
+
+/** id 前缀太短或命中多条：拒绝操作。`status` 供 HTTP 层直接作响应码。 */
+export class MemoryIdError extends Error {
+  readonly status = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = 'MemoryIdError';
+  }
+}
+
+/**
+ * 把用户给的 id 前缀解析成**唯一**一条记录；没命中返回 undefined。
+ * 太短 / 命中多条 → 抛 MemoryIdError（附候选 id），绝不批量处理。
+ */
+export function resolveByPrefix<T>(rows: ReadonlyArray<{ key: string; rec: T }>, idPrefix: string): { key: string; rec: T } | undefined {
+  const prefix = idPrefix.trim();
+  if (prefix.length < MIN_ID_PREFIX) {
+    throw new MemoryIdError(`id 至少要 ${MIN_ID_PREFIX} 位（/memory list 显示的就是 8 位）：${prefix || '（空）'}`);
+  }
+  const hits = rows.filter(({ key }) => key.startsWith(prefix));
+  if (hits.length > 1) {
+    throw new MemoryIdError(`id ${prefix} 命中 ${hits.length} 条，未执行；请给更长的 id：${hits.map(({ key }) => key).join(', ')}`);
+  }
+  return hits[0];
+}
+
 export interface MemoryServiceDeps {
   memories: KvTable<string, MemoryRecord>;
   audit: KvTable<string, AuditRecord>;
@@ -160,17 +188,19 @@ export class MemoryService extends Service {
   }
 
   /**
-   * 软删（可撤销；审计留痕）。C17：前缀可能碰撞（id 前 8 位相同）——
-   * 删除所有匹配该前缀的记忆，返回删除条数（避免只删第一条命中导致删错行）。
+   * 软删一条（可撤销；审计留痕）。id 前缀必须唯一命中（见 resolveByPrefix）。
+   *
+   * ⚠️ C17 曾改成"删除所有匹配该前缀的记忆"来规避前 8 位碰撞 —— 结果前缀
+   *   不设下限，`/memory delete a` 会一次软删约 1/16 的记忆，回复还只说"已软删 a"。
+   *   现在：前缀太短 / 命中多条 → 抛 MemoryIdError 并列出候选，让人给更长的 id。
+   * @returns 删除条数（0 或 1）
    */
   async softDelete(idPrefix: string): Promise<number> {
-    const matches = this.allActive().filter(({ key }) => key.startsWith(idPrefix));
-    if (!matches.length) return 0;
-    for (const { key, rec } of matches) {
-      await this.deps.memories.put(key, { ...rec, deleted: true });
-      await this.deps.auditWrite('soft_delete', key, '用户删除');
-    }
-    return matches.length;
+    const hit = resolveByPrefix(this.allActive(), idPrefix);
+    if (!hit) return 0;
+    await this.deps.memories.put(hit.key, { ...hit.rec, deleted: true });
+    await this.deps.auditWrite('soft_delete', hit.key, '用户删除');
+    return 1;
   }
 
   /** 用户画像事实（L0 身份/偏好，全局 userProfile），供记忆面板「画像」只读展示。 */
@@ -262,8 +292,9 @@ export class MemoryService extends Service {
     return id;
   }
 
+  /** 评审一条知识；id 前缀同样必须唯一命中（原先取第一条命中 = 可能评审错条目）。 */
   async knowledgeSetStatus(idPrefix: string, status: 'accepted' | 'rejected'): Promise<boolean> {
-    const found = this.knowledgeList().find(({ key }) => key.startsWith(idPrefix));
+    const found = resolveByPrefix(this.knowledgeList(), idPrefix);
     if (!found) return false;
     await this.deps.knowledge.update(found.key, (cur) => ({ ...cur, status }));
     await this.deps.auditWrite(`knowledge_${status}`, found.key, `评审：${status}`);

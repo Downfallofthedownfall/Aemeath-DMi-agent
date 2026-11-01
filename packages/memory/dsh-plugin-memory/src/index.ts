@@ -39,7 +39,7 @@ import { search as bm25Search, overlapScore } from './bm25.js';
 import { selectEviction, suggestProfileFacts, computeActivation, classifyActivation, activationOf, afterRecallActivation, shouldPersistRecall, ACTIVATION_DEFAULT, ACTIVATION_ACTIVE_THRESHOLD } from './engine.js';
 import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, sanitizeCandidateClaims, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
 import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, relationshipRecordSchema, insightsSchema, EMPTY_INSIGHTS, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn, type RelationshipRecord, type Insights } from './types.js';
-import { MemoryService } from './service.js';
+import { MemoryService, MemoryIdError } from './service.js';
 import { classifyMoodStable, majorityLabel, pushMoodWindow, relationshipSignalOf, nextCareCueOf, moodClassifierPrompt, MOOD_WINDOW_CAP } from './mood.js';
 // T1/T2（借 ripples-of-aion）：事实时间轴 + 演进≠矛盾
 import { findClosableClaims, closeClaims, prepareClaims, activeClaimOf, timelineOf, hasClosedTimelineOverlap, type EntityClaim } from './timeline.js';
@@ -1341,12 +1341,21 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       const cmd = args[0] || 'stats';
       const ok = (text: string) => ({ kind: 'success' as const, text });
       const err = (text: string) => ({ kind: 'error' as const, text });
+      // 按 id 操作的子命令：前缀太短 / 命中多条时服务层抛 MemoryIdError —— 原样告诉用户
+      const byId = async (run: () => Promise<string>) => {
+        try {
+          return ok(await run());
+        } catch (e) {
+          if (e instanceof MemoryIdError) return err(e.message);
+          throw e;
+        }
+      };
       if (cmd === 'list') {
         const lines = memoryService.list().map(({ key, rec }) => `- ${key.slice(0, 8)} [${rec.preset}|${rec.scope}|${rec.category}|imp=${rec.importance}|${rec.status}] ${rec.content}`);
         return ok(lines.length ? `记忆列表（${lines.length} 条）:\n${lines.join('\n')}` : '（暂无记忆）');
       }
       if (cmd === 'delete' && args[1]) {
-        return ok((await memoryService.softDelete(args[1])) ? `已软删 ${args[1]}` : `未找到 ${args[1]}`);
+        return byId(async () => ((await memoryService.softDelete(args[1]!)) ? `已软删 1 条：${args[1]}` : `未找到 ${args[1]}`));
       }
       if (cmd === 'profile') {
         const facts = profile.get().facts;
@@ -1371,10 +1380,10 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         const sub = args[1] || 'list';
         const items = memoryService.knowledgeList();
         if (sub === 'accept' && args[2]) {
-          return ok((await memoryService.knowledgeSetStatus(args[2], 'accepted')) ? `已接受 ${args[2]}` : `未找到 ${args[2]}`);
+          return byId(async () => ((await memoryService.knowledgeSetStatus(args[2]!, 'accepted')) ? `已接受 ${args[2]}` : `未找到 ${args[2]}`));
         }
         if (sub === 'reject' && args[2]) {
-          return ok((await memoryService.knowledgeSetStatus(args[2], 'rejected')) ? `已拒绝 ${args[2]}` : `未找到 ${args[2]}`);
+          return byId(async () => ((await memoryService.knowledgeSetStatus(args[2]!, 'rejected')) ? `已拒绝 ${args[2]}` : `未找到 ${args[2]}`));
         }
         const STATUSES = ['pending', 'accepted', 'rejected'];
         const byStatus = STATUSES.includes(sub);

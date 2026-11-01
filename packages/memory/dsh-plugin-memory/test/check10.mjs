@@ -499,6 +499,56 @@ await t('真管线：/memory stats 与 /memory list 正常（既有命令无回�
   assert.match(list.text, /林澈/);
 });
 
+// ⚠️ 真机隐患：softDelete 曾删除"所有匹配前缀"的记忆且前缀不设下限 ——
+// `/memory delete a` 一次软删约 1/16 的记忆，回复只有"已软删 a"。
+await t('真管线：/memory delete 前缀太短 / 命中多条 → 报错且一条不删；唯一命中只删 1 条', async () => {
+  const h = makeHarness();
+  await h.start(baseConfig());
+  await runTurn(h, 's1', '记住，我叫林澈', '好的');
+  const [realKey, rec] = [...h.tables.memories.map.entries()][0];
+  // 造两条前 8 位相同的记录（真实 UUID 也可能碰撞，/memory list 只显示前 8 位）
+  await h.tables.memories.put('abcd1234-0000-4000-8000-000000000001', { ...rec, id: 'abcd1234-0000-4000-8000-000000000001', content: '甲' });
+  await h.tables.memories.put('abcd1234-0000-4000-8000-000000000002', { ...rec, id: 'abcd1234-0000-4000-8000-000000000002', content: '乙' });
+  const cmd = h.registeredCommands[0];
+  const alive = () => h.tables.memories.all().filter((r) => !r.deleted).length;
+
+  const short = await cmd.handler({ rawInput: 'delete a' });
+  assert.equal(short.kind, 'error');
+  assert.match(short.text, /至少要 8 位/);
+  assert.equal(alive(), 3, '前缀太短不能删任何一条');
+
+  const ambiguous = await cmd.handler({ rawInput: 'delete abcd1234' });
+  assert.equal(ambiguous.kind, 'error');
+  assert.match(ambiguous.text, /命中 2 条/);
+  assert.match(ambiguous.text, /abcd1234-0000-4000-8000-000000000001/);
+  assert.equal(alive(), 3, '命中多条不能删');
+
+  const one = await cmd.handler({ rawInput: 'delete abcd1234-0000-4000-8000-000000000002' });
+  assert.equal(one.kind, 'success');
+  assert.match(one.text, /已软删 1 条/);
+  assert.equal(alive(), 2);
+  assert.equal(h.tables.memories.get('abcd1234-0000-4000-8000-000000000002').deleted, true);
+
+  const byListPrefix = await cmd.handler({ rawInput: `delete ${realKey.slice(0, 8)}` });
+  assert.equal(byListPrefix.kind, 'success', '/memory list 给的 8 位前缀唯一时照常可删');
+  assert.equal(alive(), 1);
+});
+
+await t('真管线：/memory knowledge accept 前缀命中多条 → 报错不评审（原先取第一条）', async () => {
+  const h = makeHarness();
+  await h.start(baseConfig());
+  const k = (id, created_at) => ({ id, preset: 'physicist', content: id, topic: 't', source_kind: 'user_query', source_session: 's', status: 'pending', created_at });
+  await h.tables.knowledge.put('feed0000-0000-4000-8000-00000000000a', k('a', 1));
+  await h.tables.knowledge.put('feed0000-0000-4000-8000-00000000000b', k('b', 2));
+  const out = await h.registeredCommands[0].handler({ rawInput: 'knowledge accept feed0000' });
+  assert.equal(out.kind, 'error');
+  assert.ok(h.tables.knowledge.all().every((r) => r.status === 'pending'), '命中多条时不能改任何一条的状态');
+  const ok = await h.registeredCommands[0].handler({ rawInput: 'knowledge accept feed0000-0000-4000-8000-00000000000b' });
+  assert.equal(ok.kind, 'success');
+  assert.equal(h.tables.knowledge.get('feed0000-0000-4000-8000-00000000000b').status, 'accepted');
+  assert.equal(h.tables.knowledge.get('feed0000-0000-4000-8000-00000000000a').status, 'pending');
+});
+
 // ——————————————————————————————————————————————
 // 6) 总结层 claims（LLM 层）：claims 作为第三个输出字段 → 时间轴
 // ——————————————————————————————————————————————
