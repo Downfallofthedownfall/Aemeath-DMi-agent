@@ -97,8 +97,17 @@ export function apply(ctx: ClientContext): void {
 
   // 2.9) 工作区选择器（仅输入框工具行 chip，用户要求：dropdown 只保留对话框的）
   // DSH 0.2.0：ISessions 不再有 open()（导航移交视图所有者），改用 uiWorkspace.openSession。
+  // ⚠️ 真机踩过（"切换工作区显示 workspaces.startSession is not a function"）：
+  //   0.2.x 的 ctx.workspaces（IWorkspaces）只剩数据操作（create/rename/archive…），
+  //   startSession / pickDirectory 都搬到了 ctx.uiWorkspace。原先整个 ctx.workspaces
+  //   以 `as never` 塞进来，类型检查被绕过 —— 点任一工作区、选文件夹都直接抛错。
+  //   这里逐个方法接到真正的提供者上，不再整体强转。
   registerWorkspaceSelector(ctx, {
-    workspaces: ctx.workspaces as never,
+    workspaces: {
+      startSession: (id) => ctx.uiWorkspace.startSession(id as never),
+      pickDirectory: () => ctx.uiWorkspace.pickDirectory(),
+      create: (input) => ctx.workspaces.create(input),
+    },
     openSession: (id: string) => ctx.uiWorkspace.openSession(id as never),
   });
 
