@@ -110,9 +110,44 @@ button[class*="_newSession"]:hover {
 [class*="_settingsArea"] {
   border-radius: var(--fluent-radius-md, 8px) !important;
 }
-/* 注：§7.4（隐藏官方 hero WorkspaceChip）已移除——官方 chip + 官方选择器回归原位，
+/* 注：旧 §7.4（隐藏官方 hero WorkspaceChip）已移除——官方 chip + 官方选择器回归原位，
    作为 inert 态（"选择一个工作区开始"）的原生出口；用户要求工作区 dropdown
    只保留对话框的（我们的 hero chip 已移除，见 workspace-selector.tsx）。 */
+
+/* 7.4 底部入口栏（sidebar.footer.action）：记忆 / 习题 / 课堂 + 快速设置齿轮。
+     真机量过：三个 12.5px 长标签胶囊 + 齿轮 = 273px，栏宽 256px → 齿轮被挤到边缘。
+     现在：入口等分剩余宽度（短标签、色点区分），齿轮固定 30px；按钮之间留 4px。
+     .aem-launcher 的同款规则 lecture / exercise 插件各自也注入一份（它们可单独运行）。 */
+[class*="_footerActions"] {
+  gap: 4px;
+  align-items: center;
+}
+.aem-launcher {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2, transparent);
+  color: var(--dsw-alias-label-primary);
+  font: inherit; font-size: 12px; font-weight: 600; line-height: 1;
+  white-space: nowrap; cursor: pointer;
+}
+.aem-launcher:hover {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: var(--dsw-alias-state-business-tertiary);
+}
+.aem-launcher[data-open] { border-color: var(--dsw-alias-state-business-primary); }
+.aem-launcher__dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.aem-launcher__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.aem-quick-trigger {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 30px; height: 30px; border: none; border-radius: 8px; cursor: pointer;
+  background: transparent; color: var(--dsw-alias-label-secondary);
+}
+.aem-quick-trigger:hover,
+.aem-quick-trigger[aria-expanded="true"] {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
 
 /* ============ §8 hero 残留（配合 hero.tsx 替换） ============ */
 /* hero 工作区触发器在 P3 恢复前保持隐藏（sessions.tsx 空组件 shadow）； */

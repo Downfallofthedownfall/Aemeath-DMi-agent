@@ -48,7 +48,13 @@ const CSS = `
   --aem-ink: var(--dsw-alias-label-primary);
   --aem-ink-soft: var(--dsw-alias-label-secondary);
   --aem-ink-dim: var(--dsw-alias-label-tertiary);
-  --aem-bg: light-dark(linear-gradient(175deg, #fff8fb 0%, #fdeef5 55%, #fbe3ee 100%), var(--dsw-alias-bg-base));
+  /* light-dark() 只接受颜色，不能包整个渐变（否则声明失效、背景透明）——放进色标里 */
+  --aem-bg: linear-gradient(
+    175deg,
+    light-dark(#fff8fb, var(--dsw-alias-bg-base)) 0%,
+    light-dark(#fdeef5, var(--dsw-alias-bg-base)) 55%,
+    light-dark(#fbe3ee, var(--dsw-alias-bg-base)) 100%
+  );
 
   position: fixed;
   inset: 0;
@@ -56,6 +62,8 @@ const CSS = `
   display: flex;
   flex-direction: column;
   background: var(--aem-bg);
+  /* 不透明兜底层：宿主 bg-base 在某些主题下带透明度 */
+  background-color: light-dark(#fdeef5, #1b1b1c);
   color: var(--aem-ink);
   font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
   animation: aem-memws-in 0.16s ease-out;

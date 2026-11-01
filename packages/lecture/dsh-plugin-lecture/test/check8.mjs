@@ -68,12 +68,22 @@ t('--aem-standalone-bg 是不透明实色（不能带 alpha）', () => {
   assert.ok(!/color-mix|rgba\(/.test(m[1]), '不该用 color-mix/rgba（会带透明度）');
 });
 
-t('--aem-bg 的暗色分支是不透明实色', () => {
-  const m = stylesSrc.match(/--aem-bg:\s*light-dark\(([\s\S]*?)\n\s*\);/);
-  assert.ok(m, '找不到 --aem-bg 的 light-dark 定义');
-  const dark = m[1].split(',\n').slice(1).join(','); // 暗色分支（第二段）
-  assert.ok(OPAQUE_HEX.test(dark), `暗色分支应是实色，实际：${dark.trim().slice(0, 80)}`);
+// 第二次改方向（真机实测 Chrome 152 / Electron 43）：light-dark() 只接受**颜色**，
+// 早先的 `light-dark(linear-gradient(...), #1b1b1c)` 整条声明在计算期失效 →
+// 背景退成 transparent，亮暗两种主题下对话都透过面板。现在 light-dark() 放进每个色标。
+t('--aem-bg 是渐变，每个色标的暗色分支都是不透明实色', () => {
+  const m = stylesSrc.match(/--aem-bg:\s*([\s\S]*?);/);
+  assert.ok(m, '找不到 --aem-bg 定义');
+  assert.ok(!/light-dark\(\s*(linear|radial)-gradient/.test(m[1]), 'light-dark() 不能包整个渐变（声明会失效、背景透明）');
+  assert.match(m[1], /^linear-gradient\(/, '--aem-bg 应是 linear-gradient(...)');
+  const stops = [...m[1].matchAll(/light-dark\(([^,]+),\s*([^)]+)\)/g)];
+  assert.ok(stops.length >= 2, '渐变色标应用 light-dark(亮, 暗) 给出');
+  for (const [, , dark] of stops) assert.ok(OPAQUE_HEX.test(dark), `暗色色标应是实色，实际：${dark.trim()}`);
   assert.ok(!/color-mix/.test(m[1]), '不该用 color-mix（宿主变量可能带透明度）');
+});
+
+t('面板根节点有不透明的 background-color 兜底层', () => {
+  assert.match(stylesSrc, /background: var\(--aem-bg\);\s*\n\s*background-color: var\(--aem-standalone-bg\);/);
 });
 
 t('挂载点背景走 --dsw-alias-bg-base', () => {

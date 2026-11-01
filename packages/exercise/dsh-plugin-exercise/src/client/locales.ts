@@ -33,6 +33,7 @@ export const zh = {
   'exercise.launcher.titleOpen': '习题（窗口已打开）',
   'exercise.launcher.title': '习题 Übungen',
   'exercise.launcher.aria': '习题',
+  'exercise.launcher.label': '习题',
 
   // —— 工作台：顶栏 / 左栏 ——
   'exercise.wb.title': '习题',
@@ -352,6 +353,7 @@ export const en: Record<ExerciseKey, string> = {
   'exercise.launcher.titleOpen': 'Exercises (window open)',
   'exercise.launcher.title': 'Exercises Übungen',
   'exercise.launcher.aria': 'Exercises',
+  'exercise.launcher.label': 'Exercises',
 
   // —— workbench: top bar / left column ——
   'exercise.wb.title': 'Exercises',

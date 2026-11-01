@@ -19,7 +19,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis';
 // 引入布局插件的客户端类型声明（声明合并出 'shell.overlay' 等座位名；仅类型，无运行时代码）
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client';
-import { t } from './i18n.ts';
+import { t, useLocale } from './i18n.ts';
 import { injectMemoryWorkspaceStyles, MEMORY_WORKSPACE_CLASS } from './memory-tokens.ts';
 
 // ---------- 类型 ----------
@@ -723,49 +723,25 @@ export function registerMemoryWorkspace(ctx: ClientContext): void {
  * 注册侧边栏启动器按钮（sidebar.footer.action 列表槽，与快速设置的齿轮同排）。
  *
  * 为什么不复用快速设置里的那一行：用户反馈那样"太不显眼"——要先把齿轮点开、再在一堆开关里
- * 找到一行文字，等于藏起来。改成常驻的胶囊按钮（粉点 + 文字），一眼可见、一键打开。
+ * 找到一行文字，等于藏起来。改成常驻的按钮（色点 + 文字），一眼可见、一键打开。
+ *
+ * 外观是三个入口（记忆 / 习题 / 课堂）共用的 `.aem-launcher`（见 styles/de-dsh.ts §7.4）：
+ * 等宽、短标签、色点区分。早先三个都是 12.5px 长标签粉色胶囊，加上齿轮比侧栏宽 17px，
+ * 把快速设置的齿轮挤到边缘、几乎点不到。
  */
 export function registerMemoryLauncher(ctx: ClientContext): void {
   function Launcher(): JSX.Element {
+    useLocale();
     return (
       <button
         type="button"
-        title={t('memws.launcherHint')}
+        className="aem-launcher"
+        title={`${t('memws.launcher')} · ${t('memws.launcherHint')}`}
         aria-label={t('memws.launcher')}
         onClick={() => window.dispatchEvent(new CustomEvent(MEMORY_WORKSPACE_EVENT))}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          height: 30,
-          padding: '0 12px 0 10px',
-          borderRadius: 999,
-          border: '1px solid var(--dsw-alias-brand-primary)',
-          background: 'var(--dsw-alias-state-business-tertiary)',
-          color: 'var(--dsw-alias-brand-text)',
-          fontFamily: 'inherit',
-          fontSize: 12.5,
-          fontWeight: 600,
-          cursor: 'pointer',
-          whiteSpace: 'nowrap',
-          // 侧边栏收起/变窄时不被撕成两行或挤出可视区（宿主底栏是 flex 容器）
-          flex: 'none',
-          minWidth: 0,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}
       >
-        <span
-          aria-hidden="true"
-          style={{
-            width: 7,
-            height: 7,
-            borderRadius: '50%',
-            background: 'linear-gradient(135deg, #ff8cbd, #f25e9e)',
-            boxShadow: '0 0 0 3px var(--dsw-alias-state-business-tertiary)',
-          }}
-        />
-        {t('memws.launcher')}
+        <span className="aem-launcher__dot" aria-hidden="true" style={{ background: '#ff8cbd' }} />
+        <span className="aem-launcher__label">{t('memws.launcher.label')}</span>
       </button>
     );
   }

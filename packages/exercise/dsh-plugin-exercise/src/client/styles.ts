@@ -43,12 +43,18 @@ const CSS = `
      但宿主的 bg-base 在某些主题下带透明度 → color-mix 的结果也半透明 →
      底下的对话内容透出来（真机截图能看到"探索未至之境"穿透面板）。
      所以暗色分支用一个**明确的实色**，并在最外层再兜一层不透明底。
-     （要跟随主题的只有"强调色"，底色必须是实色。） */
-  --aem-bg: light-dark(
-    linear-gradient(175deg, #fff8fb 0%, #fdeef5 55%, #fbe3ee 100%),
-    #1b1b1c
+     （要跟随主题的只有"强调色"，底色必须是实色。）
+     ⚠️ light-dark() 只接受**颜色**：曾写成 light-dark(linear-gradient(...), #1b1b1c)，
+     整条声明在计算期失效 → background 退成 transparent，亮暗两种主题下对话都会透出来
+     （Chrome 152 / Electron 43 实测）。所以 light-dark() 放进每个色标里。 */
+  --aem-bg: linear-gradient(
+    175deg,
+    light-dark(#fff8fb, #1b1b1c) 0%,
+    light-dark(#fdeef5, #1b1b1c) 55%,
+    light-dark(#fbe3ee, #1b1b1c) 100%
   );
-  /* 独立窗口的不透明底色（同样必须是实色，理由见上面的 --aem-bg） */
+  /* 独立窗口的不透明底色（同样必须是实色，理由见上面的 --aem-bg）；
+     也作为面板 background-color 兜底层，渐变万一失效也不透明 */
   --aem-standalone-bg: light-dark(#fdeef5, #1b1b1c);
 
   /* —— 形态：右侧停靠面板（不是全屏层） —— */
@@ -60,6 +66,7 @@ const CSS = `
   display: flex;
   flex-direction: column;
   background: var(--aem-bg);
+  background-color: var(--aem-standalone-bg);
   color: var(--aem-ink);
   font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
   border-left: 1px solid var(--aem-line);
@@ -1110,7 +1117,25 @@ const CSS = `
   font-size: 12px; z-index: 2147483200; box-shadow: var(--aem-shadow-pop); white-space: pre-wrap;
 }
 
-
+/* —— 侧栏入口按钮（不在 .aem-ex 下：它挂在宿主侧栏底部）——
+   与 ui 插件 de-dsh.ts §7.4、lecture 插件的同名规则一字不差：三个入口外观一致，
+   且本插件单独运行（没有 ui 插件）时按钮仍有样式。 */
+.aem-launcher {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2, transparent);
+  color: var(--dsw-alias-label-primary);
+  font: inherit; font-size: 12px; font-weight: 600; line-height: 1;
+  white-space: nowrap; cursor: pointer;
+}
+.aem-launcher:hover {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: var(--dsw-alias-state-business-tertiary);
+}
+.aem-launcher[data-open] { border-color: var(--dsw-alias-state-business-primary); }
+.aem-launcher__dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.aem-launcher__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 `;
 
 /** 注入（幂等：同 id 已存在则跳过）。 */

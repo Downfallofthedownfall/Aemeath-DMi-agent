@@ -252,21 +252,19 @@ function QuickSettingsInner({
         aria-label={t('quick.aria')}
         title={t('quick.title')}
         onClick={toggle}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 30,
-          height: 30,
-          borderRadius: 8,
-          border: 'none',
-          cursor: 'pointer',
-          background: 'transparent',
-          color: 'var(--dsw-alias-label-secondary)',
-          fontSize: 15,
-        }}
+        aria-expanded={open}
+        className="aem-quick-trigger"
       >
-        ⚙
+        {/* SVG 齿轮（原 "⚙" 字形在各字体下大小/基线不一，和旁边的入口按钮对不齐） */}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path
+            d="M6.7 1.8h2.6l.4 1.8c.4.2.8.4 1.1.6l1.8-.6 1.3 2.2-1.4 1.3c.1.4.1.9 0 1.3l1.4 1.3-1.3 2.2-1.8-.6c-.3.3-.7.5-1.1.6l-.4 1.8H6.7l-.4-1.8c-.4-.2-.8-.4-1.1-.6l-1.8.6-1.3-2.2 1.4-1.3a3.4 3.4 0 010-1.3L2.1 5.8l1.3-2.2 1.8.6c.3-.3.7-.5 1.1-.6l.4-1.8z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+          <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
       </button>
       {open && anchor
         ? // ⚠ portal 到 body：Electron 28 下 fixed 弹层挂在侧边栏深树里会被错误偏移

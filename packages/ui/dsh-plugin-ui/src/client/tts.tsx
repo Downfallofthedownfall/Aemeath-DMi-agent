@@ -534,7 +534,6 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
   const [busy, setBusy] = useState(false);
   const scope = props.scopes?.[TTS_NS];
   useLocale(); // locale 切换时刷新开关文案
-  console.log('[aemeath-tts] 开关渲染, enabled=', enabled, 'volume=', volume, 'scope?=', !!scope);
 
   // 同步自动朗读开关状态（关闭时停止播放）
   useEffect(() => {
@@ -611,22 +610,24 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
         </svg>
         {t('tts.speak')}
       </button>
-      {/* 音量滑块（0~100） */}
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={Math.round((volume ?? 1) * 100)}
-        aria-label={t('tts.volume.aria')}
-        title={t('tts.volume.title', { pct: Math.round((volume ?? 1) * 100) })}
-        onChange={(e) => void scope.set('volume', Number(e.target.value) / 100).catch(() => undefined)}
-        style={{
-          width: 64,
-          height: 20,
-          cursor: 'pointer',
-          accentColor: 'var(--dsw-alias-state-business-primary)',
-        }}
-      />
+      {/* 音量滑块（0~100）：只在朗读开着时出现——关着时音量没有意义，常驻只是挤占工具行 */}
+      {enabled ? (
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={Math.round((volume ?? 1) * 100)}
+          aria-label={t('tts.volume.aria')}
+          title={t('tts.volume.title', { pct: Math.round((volume ?? 1) * 100) })}
+          onChange={(e) => void scope.set('volume', Number(e.target.value) / 100).catch(() => undefined)}
+          style={{
+            width: 64,
+            height: 20,
+            cursor: 'pointer',
+            accentColor: 'var(--dsw-alias-state-business-primary)',
+          }}
+        />
+      ) : null}
     </div>
   );
 }

@@ -22,7 +22,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Workbench } from './workbench.tsx';
-import { injectExerciseStyles } from './styles.ts';
+import { injectExerciseStyles, EX_CLASS } from './styles.ts';
 import { installI18n, useT } from './i18n.ts';
 
 export const name = 'aemeath-exercise-client';
@@ -112,6 +112,23 @@ export function apply(ctx: ClientContext): void {
       window.addEventListener(EXERCISE_OPEN_EVENT, onOpen);
       return () => window.removeEventListener(EXERCISE_OPEN_EVENT, onOpen);
     }, []);
+    // Esc 关闭（与记忆工作区一致）。正在输入时第一下 Esc 只让输入框失焦——
+    // 写答案时误按不会把整个面板关掉；导入对话框开着时 Esc 交给对话框。
+    useEffect(() => {
+      if (!open) return undefined;
+      const onKey = (e: KeyboardEvent): void => {
+        if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+        const el = e.target as HTMLElement | null;
+        if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT|MATH-FIELD)$/.test(el.tagName))) {
+          el.blur();
+          return;
+        }
+        if (document.querySelector(`.${EX_CLASS} .lec-modal-mask`)) return;
+        setOpen(false);
+      };
+      document.addEventListener('keydown', onKey);
+      return () => document.removeEventListener('keydown', onKey);
+    }, [open]);
     if (!open) return null;
     return createPortal(<Workbench onClose={() => setOpen(false)} />, document.body);
   }
@@ -147,44 +164,18 @@ function Launcher(): JSX.Element {
     window.dispatchEvent(new CustomEvent(EXERCISE_OPEN_EVENT));
   };
 
+  // 外观：三个侧栏入口共用的 .aem-launcher（规则见 styles.ts 末尾；ui 插件注入同款）
   return (
     <button
       type="button"
+      className="aem-launcher"
+      data-open={open || undefined}
       title={open ? t('exercise.launcher.titleOpen') : t('exercise.launcher.title')}
       aria-label={t('exercise.launcher.aria')}
       onClick={onClick}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        height: 30,
-        padding: '0 12px 0 10px',
-        borderRadius: 999,
-        border: '1px solid var(--dsw-alias-brand-primary)',
-        background: 'var(--dsw-alias-state-business-tertiary)',
-        color: 'var(--dsw-alias-brand-text)',
-        fontFamily: 'inherit',
-        fontSize: 12.5,
-        fontWeight: 600,
-        cursor: 'pointer',
-        whiteSpace: 'nowrap',
-        flex: 'none',
-        minWidth: 0,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-      }}
     >
-      <span
-        aria-hidden="true"
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: '50%',
-          background: 'linear-gradient(135deg, var(--dsw-alias-state-business-primary, #ff8cbd), var(--dsw-alias-brand-text, #c2367b))',
-          flex: 'none',
-        }}
-      />
-      Übungen
+      <span className="aem-launcher__dot" aria-hidden="true" style={{ background: '#b18cff' }} />
+      <span className="aem-launcher__label">{t('exercise.launcher.label')}</span>
     </button>
   );
 }

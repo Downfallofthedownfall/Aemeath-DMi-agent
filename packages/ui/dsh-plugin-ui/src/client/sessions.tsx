@@ -1,10 +1,12 @@
 // ============================================================
-// 爱弥斯会话列表（M5 UI 精简 v2 → UI 改造 P2 升级）
+// 爱弥斯会话列表（M5 UI 精简 v2 → UI 改造 P2 升级 → 时间分组版）
 // 注册进 sidebar.workspaces（single 槽，priority 更低 → shadow 官方 ui-workspace）
-// 内容：品牌头部（⚛ 小爱同学）+ 极简会话列表——只列历史会话（标题/预设徽章）。
+// 内容：品牌头部（⚛ 小爱同学）+ 会话列表——按最近更新时间分组（今天 / 昨天 /
+//   近 7 天 / 更早），每行：标题 + 角色色点 + 时间；回复中的会话带脉冲点。
 //   「新会话」按钮由 dsh sidebar shell 自带（不重复添加）。
 // 数据：useSessions 来自框架注入的标准 kit（SessionStandardProps），
 //       不伪造——v1 的 bug 就是 inject 里塞了恒等函数导致列表恒空。
+// 样式：类名 + 一次性注入的样式表（hover / 激活条 / 删除按钮都是伪类，内联写不了）。
 // ============================================================
 import { memo, useCallback } from 'react';
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
@@ -15,82 +17,80 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client';
 import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client';
 import { BrandMark } from './brand.tsx';
-import { t, useLocale } from './i18n.ts';
+import { t, useLocale, currentActiveLocale } from './i18n.ts';
 import { mainSessionIdOf } from './main-session.ts';
 
-/** 会话列表行（含删除按钮，hover 显示——纯 CSS）。 */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+type GroupKey = 'today' | 'yesterday' | 'week' | 'older';
+
+/** 按本地日历日分组（不是"距今 24 小时"：昨晚 23 点的会话今早看应在「昨天」）。 */
+function groupOf(ts: number, now: number): GroupKey {
+  const startOfToday = new Date(now).setHours(0, 0, 0, 0);
+  if (ts >= startOfToday) return 'today';
+  if (ts >= startOfToday - DAY_MS) return 'yesterday';
+  if (ts >= startOfToday - 6 * DAY_MS) return 'week';
+  return 'older';
+}
+
+/** 行内时间：今天显示时刻，其余显示月日（跨年再带年份）。 */
+function formatTime(ts: number, group: GroupKey, now: number): string {
+  if (!ts) return '';
+  const locale = currentActiveLocale() === 'en' ? 'en-US' : 'zh-CN';
+  const d = new Date(ts);
+  if (group === 'today') return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
+  const sameYear = d.getFullYear() === new Date(now).getFullYear();
+  return d.toLocaleDateString(locale, sameYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+/** 会话列表行（hover 显示删除按钮、隐藏时间——纯 CSS）。 */
 function SessionRow({
   title,
-  subtitle,
+  untitled,
+  role,
+  roleLabel,
+  time,
+  running,
   active,
+  wide,
   onClick,
   onDelete,
 }: {
   title: string;
-  subtitle: string;
+  untitled: boolean;
+  role: string;
+  roleLabel: string;
+  time: string;
+  running: boolean;
   active: boolean;
+  wide: boolean;
   onClick: () => void;
   onDelete: () => void;
 }): JSX.Element {
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 2,
-        borderRadius: 10,
-        background: active ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
-      }}
-      className="aemeath-session-row"
-    >
-      <button
-        type="button"
-        onClick={onClick}
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'flex-start',
-          gap: 2,
-          flex: 1,
-          minWidth: 0,
-          padding: '7px 10px',
-          borderRadius: 10,
-          border: 'none',
-          cursor: 'pointer',
-          textAlign: 'left',
-          background: 'transparent',
-          color: 'var(--dsw-alias-label-primary)',
-        }}
-        aria-label={title}
-      >
-        <span style={{ fontSize: 13, fontWeight: active ? 700 : 500, lineHeight: 1.4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
-          {title}
+    <div className="aem-sl__row" data-active={active || undefined}>
+      <button type="button" className="aem-sl__open" onClick={onClick} aria-label={title} aria-current={active ? 'page' : undefined}>
+        <span className="aem-sl__title" data-untitled={untitled || undefined}>
+          {running ? <span className="aem-sl__running" title={t('sessions.running')} /> : null}
+          <span className="aem-sl__title-text">{title}</span>
         </span>
-        {subtitle ? (
-          <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
-            {subtitle}
+        {wide && (roleLabel || time) ? (
+          <span className="aem-sl__meta">
+            {roleLabel ? (
+              <span className="aem-sl__role" data-role={role}>
+                {roleLabel}
+              </span>
+            ) : null}
+            {time ? <span className="aem-sl__time">{time}</span> : null}
           </span>
         ) : null}
       </button>
       <button
         type="button"
-        data-session-delete
+        className="aem-sl__delete"
         onClick={onDelete}
         title={t('sessions.delete.title')}
         aria-label={t('sessions.delete.aria', { title })}
-        style={{
-          flex: 'none',
-          width: 24,
-          height: 24,
-          marginRight: 4,
-          borderRadius: 6,
-          border: 'none',
-          cursor: 'pointer',
-          background: 'transparent',
-          color: 'var(--dsw-alias-label-tertiary)',
-          opacity: 0,
-          transition: 'opacity 120ms',
-        }}
       >
         <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
           <path d="M3 3.5l8 8M11 3.5l-8 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
@@ -103,40 +103,14 @@ function SessionRow({
 /** 品牌头部（UI 改造 P2）：侧边栏顶部身份位——⚛ 小爱同学 · 物理学习 Copilot。 */
 export function SidebarBrandHeader({ wide }: { wide: boolean }): JSX.Element {
   return (
-    <div
-      data-aemeath-brand-header
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '14px 10px 12px',
-        borderBottom: '1px solid var(--dsw-alias-border-l1)',
-        marginBottom: 6,
-      }}
-    >
-      <span
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 30,
-          height: 30,
-          borderRadius: 9,
-          flex: 'none',
-          background: 'var(--dsw-alias-state-business-tertiary)',
-          color: 'var(--dsw-alias-state-business-primary)',
-        }}
-      >
+    <div data-aemeath-brand-header className="aem-sl__id">
+      <span className="aem-sl__id-mark">
         <BrandMark />
       </span>
       {wide ? (
-        <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.35 }}>
-          <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' }}>
-            {t('brand.sidebar.name')}
-          </span>
-          <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {t('brand.sidebar.subtitle')}
-          </span>
+        <span className="aem-sl__id-text">
+          <span className="aem-sl__id-name">{t('brand.sidebar.name')}</span>
+          <span className="aem-sl__id-sub">{t('brand.sidebar.subtitle')}</span>
         </span>
       ) : null}
     </div>
@@ -170,27 +144,50 @@ function SessionListBody({
   const byId = useSessions((s: unknown) => (s as SessionListState | undefined)?.byId) as Record<string, SessionInfo> | undefined;
   // 归档集合只订阅 archivedSessionIds 切片（数组引用稳定，非每次全量状态变化都触发）
   const archived = useWorkspaces((s: unknown) => (s as WorkspaceSnapshot | undefined)?.archivedSessionIds) as readonly string[] | undefined;
-  useLocale(); // locale 切换时刷新空态/删除 tooltip 等文案
+  useLocale(); // locale 切换时刷新分组标题/空态/删除 tooltip 等文案
 
   // 去重：极端重连/事件累积下 ids 可能出现重复（测试环境 18 次重连后实测每会话 3-4 份）
   const archivedSet = new Set(archived ?? []);
   const ids = Array.from(new Set((idsRaw ?? []).filter((id) => !archivedSet.has(id))));
 
-  const remove = (id: string): void => {
-    archive(id); // 归档成功后 workspaces.archivedSessionIds 更新 → 本列表自动隐藏
-  };
+  // 按更新时间分组：先按 updatedAt 降序（稳定排序，缺时间戳的保持原相对次序沉底），再切组。
+  // blank 行不渲染（与 SessionRowMemo 的过滤一致），否则会留下没有内容的分组标题。
+  const now = Date.now();
+  const visible = ids.filter((id) => byId?.[id] && !byId[id]!.blank);
+  const sorted = visible
+    .map((id, i) => ({ id, i, ts: byId?.[id]?.updatedAt ?? 0 }))
+    .sort((a, b) => b.ts - a.ts || a.i - b.i);
+  const groups: Array<{ key: GroupKey; items: Array<{ id: string; ts: number }> }> = [];
+  for (const row of sorted) {
+    const key = groupOf(row.ts, now);
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) last.items.push(row);
+    else groups.push({ key, items: [row] });
+  }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1, overflowY: 'auto' }}>
+    <div className="aem-sl">
       <SidebarBrandHeader wide={wide} />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 1, padding: '0 8px 8px', minHeight: 0, flex: 1, overflowY: 'auto' }}>
-        {ids.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '12px 10px', textAlign: 'center' }}>
-            {wide ? t('sessions.empty') : '—'}
-          </div>
+      <div className="aem-sl__list">
+        {sorted.length === 0 ? (
+          <div className="aem-sl__empty">{wide ? t('sessions.empty') : '—'}</div>
         ) : (
-          ids.map((id) => (
-            <SessionRowMemo key={id} id={id} s={byId?.[id]} current={current} open={open} archive={remove} />
+          groups.map((g) => (
+            <div key={g.key} className="aem-sl__group" role="group" aria-label={t(`sessions.group.${g.key}`)}>
+              {wide ? <div className="aem-sl__group-title">{t(`sessions.group.${g.key}`)}</div> : null}
+              {g.items.map(({ id, ts }) => (
+                <SessionRowMemo
+                  key={id}
+                  id={id}
+                  s={byId?.[id]}
+                  current={current}
+                  time={formatTime(ts, g.key, now)}
+                  wide={wide}
+                  open={open}
+                  archive={archive}
+                />
+              ))}
+            </div>
           ))
         )}
       </div>
@@ -200,6 +197,8 @@ function SessionListBody({
 
 interface SessionInfo {
   id: string;
+  /** host 投影的持久标题；缺失时 displayTitle 会退回项目目录名（对用户没有信息量）。 */
+  title?: string;
   displayTitle?: string;
   /**
    * 会话的 agent preset。
@@ -214,6 +213,7 @@ interface SessionInfo {
   agentPreset?: string;
   running?: boolean;
   blank?: boolean;
+  updatedAt?: number;
 }
 
 /** 行级 memo：props 稳定时跳过重渲染（第三关：全量 selector 的次级缓解）。 */
@@ -221,12 +221,16 @@ const SessionRowMemo = memo(function SessionRowMemo({
   id,
   s,
   current,
+  time,
+  wide,
   open,
   archive,
 }: {
   id: string;
   s: SessionInfo | undefined;
   current?: string;
+  time: string;
+  wide: boolean;
   open: (id: string) => void;
   archive: (id: string) => void;
 }): JSX.Element | null {
@@ -239,13 +243,21 @@ const SessionRowMemo = memo(function SessionRowMemo({
   if (!s || s.blank) return null;
   // ⚠️ 路径：官方把它挂在 projectionValues 下（见 SessionInfo 的注释）。
   //    兼容读顶层是为了不破坏可能存在的旧结构；两者都没有就不显示标签。
-  const presetId = s.projectionValues?.agentPreset ?? s.agentPreset;
-  const presetLabel = presetId === 'aemeath' ? t('sessions.preset.aemeath') : presetId === 'physicist' ? t('sessions.preset.physicist') : presetId ?? '';
+  const presetId = s.projectionValues?.agentPreset ?? s.agentPreset ?? '';
+  const roleLabel =
+    presetId === 'aemeath' ? t('sessions.preset.short.aemeath') : presetId === 'physicist' ? t('sessions.preset.short.physicist') : presetId;
+  // 没有持久标题时 displayTitle 是项目目录名（列表里一排"Aemeath-DMi-agent"）——改显示"未命名对话"
+  const untitled = !s.title;
   return (
     <SessionRow
-      title={s.displayTitle ?? id.slice(0, 8)}
-      subtitle={presetLabel}
+      title={untitled ? t('sessions.untitled') : s.title!}
+      untitled={untitled}
+      role={presetId}
+      roleLabel={roleLabel}
+      time={time}
+      running={!!s.running}
       active={s.id === current}
+      wide={wide}
       onClick={onClick}
       onDelete={onDelete}
     />
@@ -266,17 +278,86 @@ function AemeathSessionList(props: {
   return <SessionListBody useSessions={useSessions} useWorkspaces={useWorkspaces ?? NOOP_USE_WORKSPACES} wide={!!wide} open={open} archive={archive} />;
 }
 
+const SESSION_LIST_CSS = `
+.aem-sl { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.aem-sl__id {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 10px 10px; margin: 0 4px 2px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+.aem-sl__id-mark {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 30px; height: 30px; border-radius: 9px;
+  background: var(--dsw-alias-state-business-tertiary);
+  color: var(--dsw-alias-state-business-primary);
+}
+.aem-sl__id-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.aem-sl__id-name { font-size: 13.5px; font-weight: 700; color: var(--dsw-alias-label-primary); white-space: nowrap; }
+.aem-sl__id-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.aem-sl__list { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 8px; }
+.aem-sl__empty { font-size: 12px; color: var(--dsw-alias-label-tertiary); padding: 16px 10px; text-align: center; line-height: 1.6; }
+.aem-sl__group { display: flex; flex-direction: column; gap: 1px; }
+/* 不做 sticky：侧栏底色是半透明的（rgba(31,31,31,.8)），吸顶标题下会透出滚过去的行 */
+.aem-sl__group-title {
+  padding: 12px 10px 4px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.aem-sl__row { position: relative; border-radius: 8px; }
+.aem-sl__row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.aem-sl__row[data-active] { background: var(--dsw-alias-state-business-tertiary); }
+.aem-sl__row[data-active]::before {
+  content: ''; position: absolute; left: 0; top: 9px; bottom: 9px; width: 3px; border-radius: 2px;
+  background: var(--dsw-alias-state-business-primary);
+}
+.aem-sl__open {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; min-width: 0;
+  padding: 6px 10px 6px 12px; border: none; border-radius: 8px; background: transparent;
+  color: var(--dsw-alias-label-primary); font: inherit; text-align: left; cursor: pointer;
+}
+.aem-sl__title { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; font-weight: 500; line-height: 1.4; }
+.aem-sl__row[data-active] .aem-sl__title { font-weight: 600; }
+.aem-sl__title[data-untitled] { color: var(--dsw-alias-label-secondary); }
+.aem-sl__title-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aem-sl__running {
+  flex: none; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary);
+  animation: aem-sl-pulse 1.4s ease-in-out infinite;
+}
+@keyframes aem-sl-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+.aem-sl__meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; line-height: 1.3; color: var(--dsw-alias-label-tertiary); }
+.aem-sl__role { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aem-sl__role::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-label-tertiary); }
+.aem-sl__role[data-role="aemeath"]::before { background: #ff8cbd; }
+.aem-sl__role[data-role="physicist"]::before { background: #6aa8ff; }
+.aem-sl__time { margin-left: auto; flex: none; font-variant-numeric: tabular-nums; }
+
+/* 删除：hover/聚焦时出现在行右侧，同时让出时间的位置 */
+.aem-sl__delete {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border: none; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--dsw-alias-label-tertiary);
+  opacity: 0; pointer-events: none; transition: opacity 120ms;
+}
+.aem-sl__row:hover .aem-sl__delete,
+.aem-sl__delete:focus-visible { opacity: 1; pointer-events: auto; }
+.aem-sl__row:hover .aem-sl__time { visibility: hidden; }
+.aem-sl__delete:hover { color: var(--dsw-alias-state-error-primary); background: var(--dsw-alias-interactive-bg-hover); }
+
+@media (prefers-reduced-motion: reduce) { .aem-sl__running { animation: none; opacity: 1; } }
+`;
+
 /** 注册：shadow 官方 sidebar.workspaces（会话列表 + 品牌头部）。 */
 export function registerSessionList(ctx: ClientContext): void {
-  // 注入 hover 显示删除按钮的 CSS
-  if (typeof document !== 'undefined') {
+  if (typeof document !== 'undefined' && !document.querySelector('style[data-plugin-css="@aemeath/dsh-plugin-ui/session-list"]')) {
     const style = document.createElement('style');
     style.setAttribute('data-plugin', 'aemeath-ui');
-    style.setAttribute('data-plugin-css', '@aemeath/dsh-plugin-ui/session-delete');
-    style.textContent = `
-      .aemeath-session-row:hover [data-session-delete] { opacity: 1 !important; }
-      .aemeath-session-row [data-session-delete]:hover { color: var(--dsw-alias-state-error-primary) !important; }
-    `;
+    style.setAttribute('data-plugin-css', '@aemeath/dsh-plugin-ui/session-list');
+    style.textContent = SESSION_LIST_CSS;
     document.head.appendChild(style);
   }
   ctx.slots.inject('sidebar.workspaces', () =>

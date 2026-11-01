@@ -119,7 +119,6 @@ export function apply(ctx: ClientContext): void {
   // 2.9.6) 角色状态 pill（会话顶栏：头像+名字+状态徽章）+ 浮动状态簇（右下角）
   //   状态信号：思考中=useSession.running；朗读中=tts speak；其余=陪伴中（见 status.tsx）
   registerCharacterStatus(ctx, () => ({
-    role: faces.role,
     scopes: Object.fromEntries(faces.scopes),
   }));
 

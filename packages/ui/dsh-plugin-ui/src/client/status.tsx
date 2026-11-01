@@ -1,11 +1,10 @@
 // ============================================================
 // 角色状态 pill + 浮动状态簇（UI 改造 P2 → 角色状态）
-// 借 Cyrene 的 CharacterStatusPill(头像+角色名+状态徽章) 与
-//   StatusFloat(浮动状态指示) 结构思路——只借结构不抄代码，用 Aemeath
-//   自己的 BrandMark / t() / SettingsScope 实现。
-// 1. 会话顶栏 pill：avatar(BrandMark) + 角色名 + 彩色状态徽章（本地化 label），
+// 借 Cyrene 的 CharacterStatusPill 与 StatusFloat(浮动状态指示) 结构思路——
+//   只借结构不抄代码，用 Aemeath 自己的 t() / SettingsScope 实现。
+// 1. 会话顶栏 pill：彩色状态徽章（本地化 label；角色由旁边的分段切换显示），
 //    注册进 conversation.session.header.actions（会话作用域，自带 useSession）。
-// 2. 浮动状态簇：右下角小簇，text-only（无 emoji，TTS 友好），微动画；
+// 2. 浮动状态簇：右下角小簇，只在思考 / 朗读时出现，text-only（无 emoji，TTS 友好）；
 //    由 pill 组件经 createPortal 挂 body（quick-settings 同款 Electron 安全做法）。
 // 3. 信号接线：思考中=useSession 的 running；朗读中=tts speak 标志；
 //    其余=陪伴中。均喂入 status.ts 纯 store。
@@ -18,14 +17,11 @@ import type { FetchScope as SettingsScope, ScopeSnapshot as SettingsScopeSnapsho
 import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
-import type { RoleFace } from './faces.ts';
-import { BrandMark } from './brand.tsx';
 import { t, useLocale } from './i18n.ts';
 import { getSpeaking, subscribeSpeaking } from './tts.tsx';
 import { useCharacterStatus, setStatusRunning, setStatusSpeaking, type CharacterStatusSnapshot } from './status.ts';
 
 export interface CharacterStatusDeps {
-  role?: RoleFace;
   scopes?: Record<string, SettingsScope>;
 }
 
@@ -44,7 +40,6 @@ const EMPTY_SNAPSHOT: SettingsScopeSnapshot = Object.freeze({
 });
 const GET_EMPTY_SNAPSHOT = (): SettingsScopeSnapshot => EMPTY_SNAPSHOT;
 const NOOP_SUBSCRIBE = (): (() => void) => () => undefined;
-const GET_DEFAULT_ROLE = (): string => 'aemeath';
 
 /** 读取「是否显示 pill / float」设置（默认开）。 */
 function useStatusVisibility(scopes?: Record<string, SettingsScope>): { showPill: boolean; showFloat: boolean } {
@@ -68,17 +63,21 @@ function StatusFloat({ status }: { status: CharacterStatusSnapshot }): JSX.Eleme
   );
 }
 
-/** pill 内层（hooks 全在此，无条件调用）。 */
+/**
+ * pill 内层（hooks 全在此，无条件调用）。
+ *
+ * 只显示状态（陪伴中 / 思考中 / 朗读中），不再带头像 + 角色名：紧挨着的分段切换
+ * （mode-switch.tsx）已经高亮了当前角色，顶栏原先把同一个名字并排写了两遍。
+ * 浮动状态簇只在思考 / 朗读时出现——空闲时右下角一直漂着"陪伴中"只是噪音。
+ */
 function CharacterStatusPillInner({
   useSession,
-  role,
   scopes,
 }: {
   useSession?: <S>(sel: (s: SessionSnapshot) => S, eq?: (a: S, b: S) => boolean) => S;
-  role?: RoleFace;
   scopes?: Record<string, SettingsScope>;
 }): JSX.Element | null {
-  useLocale(); // locale 切换时刷新角色名/状态文案
+  useLocale(); // locale 切换时刷新状态文案
 
   // 信号 1：当前会话模型是否正在响应（思考中）——会话作用域框架 kit 提供
   const running = useSession?.((s) => s.running) ?? false;
@@ -96,32 +95,25 @@ function CharacterStatusPillInner({
   const status = useCharacterStatus();
   const { showPill, showFloat } = useStatusVisibility(scopes);
 
-  // 角色名：订阅 role face；role 缺省时回退品牌名（constant getter 保稳定引用）
-  const roleId = useSyncExternalStore(role ? role.subscribe : NOOP_SUBSCRIBE, role ? role.getSnapshot : GET_DEFAULT_ROLE);
-  const roleLabel = role ? (roleId === 'physicist' ? t('hero.role.physicist') : t('hero.role.aemeath')) : t('brand.name');
-
   return (
     <>
       {showPill ? (
-        <span className="aemeath-status-pill" data-aemeath-status-pill data-state={status.state}>
-          <span className="aemeath-status-pill__avatar">
-            <BrandMark />
-          </span>
-          <span className="aemeath-status-pill__name">{roleLabel}</span>
-          <span className="aemeath-status-pill__divider">·</span>
-          <span className="aemeath-status-pill__badge">{t(status.labelKey)}</span>
+        <span className="aemeath-status-pill" data-aemeath-status-pill data-state={status.state} role="status">
+          {t(status.labelKey)}
         </span>
       ) : null}
-      {showFloat && typeof document !== 'undefined' ? createPortal(<StatusFloat status={status} />, document.body) : null}
+      {showFloat && status.state !== 'idle' && typeof document !== 'undefined'
+        ? createPortal(<StatusFloat status={status} />, document.body)
+        : null}
     </>
   );
 }
 
 /** pill 外层（零 hooks）：会话作用域缺 useSession 时返回 null（不渲染）。 */
 export function CharacterStatusPill(props: CharacterStatusDeps & { useSession?: <S>(sel: (s: SessionSnapshot) => S, eq?: (a: S, b: S) => boolean) => S }): JSX.Element | null {
-  const { role, scopes, useSession } = props;
+  const { scopes, useSession } = props;
   if (!useSession) return null;
-  return <CharacterStatusPillInner role={role} scopes={scopes} useSession={useSession} />;
+  return <CharacterStatusPillInner scopes={scopes} useSession={useSession} />;
 }
 
 /** 注入一次样式（幂等）。 */
@@ -132,43 +124,34 @@ function injectStatusStyles(): void {
   style.textContent = `
     @keyframes aemeath-status-pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
     @keyframes aemeath-status-float-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
-    /* —— 顶栏状态 pill —— */
+    /* —— 顶栏状态 pill（只有状态：角色已由旁边的分段切换显示）—— */
     .aemeath-status-pill {
-      display: inline-flex; align-items: center; gap: 7px;
-      height: 26px; padding: 0 10px 0 6px; border-radius: 999px;
-      border: 1px solid var(--dsw-alias-border-l2);
-      background: var(--dsw-alias-bg-layer-1);
-      color: var(--dsw-alias-label-secondary);
-      font-size: 12px; line-height: 1; white-space: nowrap;
-    }
-    .aemeath-status-pill__avatar {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 18px; height: 18px; border-radius: 6px; flex: none;
-      color: var(--dsw-alias-state-business-primary);
-    }
-    .aemeath-status-pill__name { font-weight: 600; color: var(--dsw-alias-label-primary); }
-    .aemeath-status-pill__divider { color: var(--dsw-alias-label-tertiary); }
-    .aemeath-status-pill__badge {
-      display: inline-flex; align-items: center; gap: 5px;
-      padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 24px; padding: 0 10px 0 8px; border-radius: 999px;
       background: var(--dsw-alias-bg-layer-2);
       color: var(--dsw-alias-label-secondary);
+      font-size: 11.5px; font-weight: 600; line-height: 1; white-space: nowrap;
     }
-    .aemeath-status-pill__badge::before {
+    .aemeath-status-pill::before {
       content: ''; width: 6px; height: 6px; border-radius: 50%; flex: none;
       background: var(--dsw-alias-label-tertiary);
-      animation: aemeath-status-pulse 1.8s ease-in-out infinite;
     }
-    .aemeath-status-pill[data-state="thinking"] .aemeath-status-pill__badge {
+    .aemeath-status-pill[data-state="thinking"] {
       background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 14%, transparent);
       color: var(--dsw-alias-state-business-primary);
     }
-    .aemeath-status-pill[data-state="thinking"] .aemeath-status-pill__badge::before { background: var(--dsw-alias-state-business-primary); }
-    .aemeath-status-pill[data-state="speaking"] .aemeath-status-pill__badge {
+    .aemeath-status-pill[data-state="thinking"]::before {
+      background: var(--dsw-alias-state-business-primary);
+      animation: aemeath-status-pulse 1.2s ease-in-out infinite;
+    }
+    .aemeath-status-pill[data-state="speaking"] {
       background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent);
       color: var(--dsw-alias-state-success-primary);
     }
-    .aemeath-status-pill[data-state="speaking"] .aemeath-status-pill__badge::before { background: var(--dsw-alias-state-success-primary); }
+    .aemeath-status-pill[data-state="speaking"]::before {
+      background: var(--dsw-alias-state-success-primary);
+      animation: aemeath-status-pulse 1.2s ease-in-out infinite;
+    }
     /* —— 浮动状态簇 —— */
     .aemeath-status-float {
       position: fixed; right: 18px; bottom: 150px; z-index: 9990;
@@ -188,6 +171,9 @@ function injectStatusStyles(): void {
     }
     .aemeath-status-float[data-state="thinking"] .aemeath-status-float__dot { background: var(--dsw-alias-state-business-primary); }
     .aemeath-status-float[data-state="speaking"] .aemeath-status-float__dot { background: var(--dsw-alias-state-success-primary); }
+    @media (prefers-reduced-motion: reduce) {
+      .aemeath-status-pill::before, .aemeath-status-float, .aemeath-status-float__dot { animation: none !important; }
+    }
   `;
   document.head.appendChild(style);
 }

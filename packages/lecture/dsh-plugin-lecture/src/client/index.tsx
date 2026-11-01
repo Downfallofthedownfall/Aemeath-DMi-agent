@@ -188,6 +188,22 @@ export function apply(ctx: ClientContext): void {
       window.addEventListener(LECTURE_OPEN_EVENT, onOpen);
       return () => window.removeEventListener(LECTURE_OPEN_EVENT, onOpen);
     }, []);
+    // Esc 关闭（与记忆工作区一致）。正在记笔记时第一下 Esc 只让输入框失焦——
+    // 误按不会把整个面板关掉，再按一次才关。
+    useEffect(() => {
+      if (!open) return undefined;
+      const onKey = (e: KeyboardEvent): void => {
+        if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+        const el = e.target as HTMLElement | null;
+        if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT|MATH-FIELD)$/.test(el.tagName))) {
+          el.blur();
+          return;
+        }
+        setOpen(false);
+      };
+      document.addEventListener('keydown', onKey);
+      return () => document.removeEventListener('keydown', onKey);
+    }, [open]);
     if (!open) return null;
     return createPortal(<Workbench onClose={() => setOpen(false)} />, document.body);
   }
@@ -231,44 +247,18 @@ function Launcher(): JSX.Element {
     window.dispatchEvent(new CustomEvent(LECTURE_OPEN_EVENT));
   };
 
+  // 外观：三个侧栏入口共用的 .aem-launcher（规则见 styles.ts 末尾；ui 插件注入同款）
   return (
     <button
       type="button"
+      className="aem-launcher"
+      data-open={open || undefined}
       title={open ? t('lecture.launcher.titleOpen') : t('lecture.launcher.title')}
       aria-label={t('lecture.launcher.aria')}
       onClick={onClick}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        height: 30,
-        padding: '0 12px 0 10px',
-        borderRadius: 999,
-        border: '1px solid var(--dsw-alias-brand-primary)',
-        background: 'var(--dsw-alias-state-business-tertiary)',
-        color: 'var(--dsw-alias-brand-text)',
-        fontFamily: 'inherit',
-        fontSize: 12.5,
-        fontWeight: 600,
-        cursor: 'pointer',
-        whiteSpace: 'nowrap',
-        flex: 'none',
-        minWidth: 0,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-      }}
     >
-      <span
-        aria-hidden="true"
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: '50%',
-          background: 'linear-gradient(135deg, #8ec5ff, #4a90e2)',
-          flex: 'none',
-        }}
-      />
-      {t('lecture.launcher.label')}
+      <span className="aem-launcher__dot" aria-hidden="true" style={{ background: '#6aa8ff' }} />
+      <span className="aem-launcher__label">{t('lecture.launcher.label')}</span>
     </button>
   );
 }

@@ -20,7 +20,7 @@ const ROLE_OPTIONS = [
   { id: 'physicist', hintKey: 'hero.role.physicist.hint', glyph: '⚛' },
 ] as const;
 
-/** 角色卡片（Win11 卡片样式，选中 = 强调边框 + 淡底）。 */
+/** 角色卡片（选中 = 强调边框 + 淡底 + 右上角对勾；样式见 HERO_CSS）。 */
 function RoleCard({
   id,
   label,
@@ -37,35 +37,19 @@ function RoleCard({
   onPick: (id: string) => void;
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      onClick={() => onPick(id)}
-      aria-pressed={active}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'flex-start',
-        gap: 4,
-        padding: '14px 16px',
-        borderRadius: 14,
-        cursor: 'pointer',
-        textAlign: 'left',
-        border: active
-          ? '2px solid var(--dsw-alias-state-business-primary)'
-          : '1px solid var(--dsw-alias-border-l2)',
-        background: active
-          ? 'var(--dsw-alias-state-business-tertiary)'
-          : 'var(--dsw-alias-bg-base)',
-        color: 'var(--dsw-alias-label-primary)',
-        boxShadow: active ? 'var(--fluent-shadow-sm)' : 'none',
-        transition: 'border-color var(--fluent-motion), background var(--fluent-motion), box-shadow var(--fluent-motion)',
-      }}
-    >
-      <span style={{ fontSize: 15, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ color: 'var(--dsw-alias-state-business-primary)' }}>{glyph}</span>
-        {label}
+    <button type="button" className="aem-hero__card" data-role={id} onClick={() => onPick(id)} aria-pressed={active}>
+      <span className="aem-hero__avatar" aria-hidden="true">
+        {glyph}
       </span>
-      <span style={{ fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)' }}>{hint}</span>
+      <span className="aem-hero__card-text">
+        <span className="aem-hero__card-label">{label}</span>
+        <span className="aem-hero__card-hint">{hint}</span>
+      </span>
+      <span className="aem-hero__check" aria-hidden="true">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+          <path d="M2 5.2l2 2 4-4.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
     </button>
   );
 }
@@ -77,43 +61,10 @@ function HeroLoaded({ role }: { role: RoleFace }): JSX.Element {
   const roleLabel = (id: 'aemeath' | 'physicist'): string =>
     id === 'aemeath' ? t('hero.role.aemeath') : t('hero.role.physicist');
   return (
-    <div
-      style={{
-        display: 'flex',
-        flex: 1,
-        width: '100%',
-        minWidth: 0,
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 10,
-        padding: '18px 24px 12px',
-        textAlign: 'center',
-      }}
-    >
-      <div
-        style={{
-          fontSize: 24,
-          fontWeight: 700,
-          color: 'var(--dsw-alias-label-primary)',
-          letterSpacing: 0.3,
-        }}
-      >
-        {t('hero.greeting')}
-      </div>
-      <div style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)', maxWidth: 460, lineHeight: 1.6 }}>
-        {t('hero.subtitle')}
-      </div>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-          gap: 10,
-          width: '100%',
-          maxWidth: 520,
-          marginTop: 10,
-        }}
-      >
+    <div className="aem-hero">
+      <div className="aem-hero__greeting">{t('hero.greeting')}</div>
+      <div className="aem-hero__subtitle">{t('hero.subtitle')}</div>
+      <div className="aem-hero__cards" role="group" aria-label={t('modeswitch.aria')}>
         {ROLE_OPTIONS.map((opt) => (
           <RoleCard
             key={opt.id}
@@ -126,12 +77,56 @@ function HeroLoaded({ role }: { role: RoleFace }): JSX.Element {
           />
         ))}
       </div>
-      <div style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', marginTop: 6 }}>
-        {t('hero.note')}
-      </div>
+      <div className="aem-hero__note">{t('hero.note')}</div>
     </div>
   );
 }
+
+const HERO_CSS = `
+.aem-hero {
+  display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; width: 100%; min-width: 0; padding: 18px 24px 14px; text-align: center;
+}
+.aem-hero__greeting { font-size: 26px; font-weight: 700; letter-spacing: 0.3px; color: var(--dsw-alias-label-primary); }
+.aem-hero__subtitle { max-width: 460px; font-size: 13.5px; line-height: 1.6; color: var(--dsw-alias-label-secondary); }
+.aem-hero__cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px;
+  width: 100%; max-width: 540px; margin-top: 14px;
+}
+.aem-hero__card {
+  position: relative; display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-radius: 14px; cursor: pointer; text-align: left;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base));
+  color: var(--dsw-alias-label-primary); font: inherit;
+  transition: border-color var(--fluent-motion), background var(--fluent-motion), box-shadow var(--fluent-motion), transform var(--fluent-motion);
+}
+.aem-hero__card:hover { border-color: var(--dsw-alias-border-l3); transform: translateY(-1px); box-shadow: var(--fluent-shadow-sm); }
+.aem-hero__card[aria-pressed="true"] {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: var(--dsw-alias-state-business-tertiary);
+  box-shadow: 0 0 0 1px var(--dsw-alias-state-business-primary) inset;
+}
+.aem-hero__avatar {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 38px; height: 38px; border-radius: 50%; font-size: 17px; color: #fff;
+  background: linear-gradient(135deg, #ffa8cd, #f25e9e);
+}
+.aem-hero__card[data-role="physicist"] .aem-hero__avatar { background: linear-gradient(135deg, #8ec5ff, #4a7fe2); }
+.aem-hero__card-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.aem-hero__card-label { font-size: 14.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aem-hero__card-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.aem-hero__check {
+  position: absolute; top: 8px; right: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%; color: #fff;
+  background: var(--dsw-alias-state-business-primary);
+  opacity: 0; transform: scale(0.6); transition: opacity var(--fluent-motion), transform var(--fluent-motion);
+}
+.aem-hero__card[aria-pressed="true"] .aem-hero__check { opacity: 1; transform: none; }
+.aem-hero__note { margin-top: 4px; font-size: 11.5px; color: var(--dsw-alias-label-tertiary); }
+@media (prefers-reduced-motion: reduce) { .aem-hero__card, .aem-hero__check { transition: none; } .aem-hero__card:hover { transform: none; } }
+`;
 
 /** 外层（零 hooks）：role face 未注入时返回 null（React #290 安全模式）。 */
 export function AemeathHero(props: { role?: RoleFace }): JSX.Element | null {
@@ -149,9 +144,13 @@ function injectHeroHideCss(): void {
     /* 隐藏 dsh hero 的 headline 文字与 preview 徽章（结构选择器，避开 hash class） */
     [class*="headline"] [class*="headlineText"] { display: none !important; }
     [class*="headline"] [class*="previewBadge"] { display: none !important; }
+    /* dsh 0.2 把文字容器改名为 titleGroup（headlineText 不再匹配 →「探索未至之境」
+       又露出来，和我们的问候语叠成两行标题）。整行 headline 一起收掉，不留空白。 */
+    [class*="_headline"]:has(> [class*="_titleGroup"]) { display: none !important; }
     /* 注：hero 工作区行已由 workspace-selector.tsx 接管（P3），
        不在此隐藏官方触发器（避免误伤自定义选择器）；
        若官方 EmptyHero 仍有残留按钮，由 de-dsh.ts §8 的 aria-label 规则兜底。 */
+    ${HERO_CSS}
   `;
   document.head.appendChild(style);
 }
