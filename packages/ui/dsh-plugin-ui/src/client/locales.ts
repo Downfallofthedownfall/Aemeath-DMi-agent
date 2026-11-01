@@ -213,6 +213,9 @@ export const zh = {
 
   // —— 分段角色切换（mode-switch.tsx，feat #3）——
   'modeswitch.aria': '切换角色',
+  'modeswitch.title': '新对话使用的角色',
+  'modeswitch.title.session': '这条对话的角色；点另一个角色会用它开一个新对话',
+  'modeswitch.error': '角色切换没有保存成功，请再试一次',
 
   // —— host API 错误（index.ts 返回、前端 toast 显示）——
   'errors.tts.disabled': '语音朗读已关闭（设置 → 语音朗读）',
@@ -508,6 +511,9 @@ export const en: Record<AemeathKey, string> = {
 
   // —— Segmented role switch (mode-switch.tsx, feat #3)——
   'modeswitch.aria': 'Switch role',
+  'modeswitch.title': 'Role for new conversations',
+  'modeswitch.title.session': "This conversation's role; picking the other role starts a new conversation with it",
+  'modeswitch.error': 'The role switch was not saved — please try again',
 
   'errors.tts.disabled': 'Text-to-speech is disabled (Settings → Text-to-speech)',
   'errors.tts.textTooLong': 'Text too long ({n} chars, limit 500)',

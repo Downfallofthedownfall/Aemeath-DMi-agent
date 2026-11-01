@@ -132,8 +132,24 @@ export function apply(ctx: ClientContext): void {
 
   // 2.9.7) 会话顶栏 · 分段角色切换（ModeSwitch 芯片：与 hero/quick-settings 共用 role face，
   //   保持同步，不冲突；点击 → role.set → agent-presets.default，镜像到 localStorage）
+  //   顶栏跟随**当前打开的对话**的角色（翻看历史对话时随之切换）：角色读会话列表投影
+  //   byId[id].projectionValues.agentPreset（与侧栏人格标签同一路径）；
+  //   在历史对话里点另一个角色 = 用那个角色开新对话（uiWorkspace.startSession 的 agentPreset）。
+  //   只构建一次：inject 每次都调 deps()，subscribe 引用变了 useSyncExternalStore 会反复重订阅。
+  const sessionRole = {
+    subscribe: (l: () => void) => ctx.sessions.list.subscribe(l),
+    presetOf: (sessionId: string): string | undefined => {
+      if (!sessionId) return undefined;
+      const summary = ctx.sessions.list.getSnapshot().byId[sessionId as never];
+      if (!summary || summary.blank) return undefined;
+      const preset = (summary.projectionValues as { agentPreset?: unknown } | undefined)?.agentPreset;
+      return typeof preset === 'string' && preset ? preset : undefined;
+    },
+    startWith: (preset: string) => ctx.uiWorkspace.startSession(undefined, { agentPreset: preset }),
+  };
   registerModeSwitch(ctx, () => ({
     role: faces.role,
+    sessionRole,
   }));
 
   // 2.9.8) 记忆工作区（五页全屏层，借 ripples-of-aion 面板的信息架构）：

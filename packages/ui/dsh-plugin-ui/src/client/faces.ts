@@ -29,6 +29,8 @@ export interface SettingsBridge {
 /** 角色模式 face（可订阅：useSyncExternalStore 兼容）。 */
 export interface RoleFace {
   current: string;
+  /** 后端真值是否已读回（refresh 读到值或 set 写成功后为 true；之前 current 只是模块初值）。 */
+  loaded: boolean;
   subscribe(l: () => void): () => void;
   getSnapshot(): string;
   set(role: string): Promise<void>;
@@ -111,6 +113,7 @@ export function createFaces(ctx: ClientContext): Faces {
   type RoleFaceImpl = RoleFace & { listeners: Set<() => void>; notify(): void };
   const roleFace: RoleFaceImpl = {
     current: 'aemeath',
+    loaded: false,
     listeners: new Set<() => void>(),
     subscribe(l: () => void): () => void {
       roleFace.listeners.add(l);
@@ -141,6 +144,7 @@ export function createFaces(ctx: ClientContext): Faces {
         }
         if (val) {
           roleFace.current = val;
+          roleFace.loaded = true;
           roleFace.notify();
         }
       } catch {
@@ -152,6 +156,7 @@ export function createFaces(ctx: ClientContext): Faces {
       //    发 selectedDefault 会被后端校验挡下（400），表现为"点了没反应"。
       await settingsApi.write(AGENT_PRESET_NAMESPACE, { patch: { [AGENT_PRESET_FIELD]: role } });
       roleFace.current = role;
+      roleFace.loaded = true;
       roleFace.notify();
     },
   };
