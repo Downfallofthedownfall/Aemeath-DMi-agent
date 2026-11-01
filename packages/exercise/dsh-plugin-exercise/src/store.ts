@@ -23,7 +23,7 @@
 // 本模块是**纯文件层**：不依赖 dsh，可单测。
 // ============================================================
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { basename, extname, join, isAbsolute } from 'node:path';
 import { pageImageName, pageFromImageName } from './pdf-image.js';
 import { tr } from './locale.js';
@@ -85,6 +85,30 @@ export function problemIdOf(index: number): string {
   return `p${String(index + 1).padStart(2, '0')}`;
 }
 
+/**
+ * 原子写（与 lecture store 的 writeFileAtomicSync 同一份，理由见其注释）：
+ * 先写同目录临时文件再 rename 覆盖，进程中途被杀不会留下半截 JSON；
+ * Windows 上 rename 遇 EPERM/EBUSY（杀软 / OneDrive 同步占句柄）小睡重试。
+ */
+export function writeFileAtomicSync(file: string, data: string): void {
+  const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
+  writeFileSync(tmp, data, 'utf-8');
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(tmp, file);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (attempt < 5 && (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES')) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 * (attempt + 1));
+        continue;
+      }
+      rmSync(tmp, { force: true });
+      throw e;
+    }
+  }
+}
+
 export interface StoreOptions {
   /** 数据根目录（相对仓库根或绝对路径）。 */
   rootDir: string;
@@ -119,8 +143,9 @@ export class ExerciseStore {
     return JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
   }
 
+  /** index.json / sheet.json / 错题本都走这里：原子覆盖。 */
   private writeJson(file: string, value: unknown): void {
-    writeFileSync(file, JSON.stringify(value, null, 2), 'utf-8');
+    writeFileAtomicSync(file, JSON.stringify(value, null, 2));
   }
 
   // ============================================================
@@ -178,6 +203,17 @@ export class ExerciseStore {
         this.writeIndex(next);
       }
       return next;
+    }
+    // ⚠️ readIndex 对「不存在」和「读不出 / schema 不符」都返回 null（同 lecture 的坑）：
+    //   文件在却读不出时绝不能新建空索引覆盖它 —— 那会让整门课的题集列表静默消失。
+    const indexFile = join(this.courseDir(courseId), 'index.json');
+    if (existsSync(indexFile)) {
+      throw new Error(
+        tr(
+          `课程索引无法读取，已停止以免覆盖：${indexFile}（修复或移走该文件后重试）`,
+          `Course index is unreadable; refusing to overwrite it: ${indexFile} (repair or move the file, then retry)`,
+        ),
+      );
     }
     const index = emptyCourseIndex(safeCourseId(courseId), title, semester, moduleCode);
     this.writeIndex(index);
@@ -552,36 +588,75 @@ export class ExerciseStore {
     }
   }
 
-  writeMistakes(list: readonly Mistake[]): void {
+  /**
+   * 写路径用的严格读取。
+   *
+   * ⚠️ 早先 upsert/patch/delete 都用宽松的 readMistakes（读不出 = []、坏条目跳过）
+   *   再整份写回：错题本一旦读不出，autoCollectMistakes 下一次检查失败就把它
+   *   覆盖成 1 条；个别条目不合 schema 时，下一次写入就把它们静默删掉。
+   *   现在：文件在却读不出 / 不是数组 → 抛错、绝不覆盖；不合 schema 的条目
+   *   原样放进 `keep`，写回时一并带上。空文件（旧的半截写入）视为空表。
+   */
+  private loadMistakesForWrite(): { list: Mistake[]; keep: unknown[] } {
+    const file = this.mistakesFile();
+    if (!existsSync(file)) return { list: [], keep: [] };
+    let data: unknown;
+    try {
+      const raw = readFileSync(file, 'utf-8').replace(/^﻿/, '');
+      if (!raw.trim()) return { list: [], keep: [] };
+      data = JSON.parse(raw);
+    } catch (e) {
+      throw new Error(
+        tr(
+          `错题本无法读取，已停止以免覆盖：${file}（${(e as Error).message}）`,
+          `Mistake book is unreadable; refusing to overwrite it: ${file} (${(e as Error).message})`,
+        ),
+      );
+    }
+    if (!Array.isArray(data)) {
+      throw new Error(tr(`错题本不是数组，已停止以免覆盖：${file}`, `Mistake book is not an array; refusing to overwrite it: ${file}`));
+    }
+    const list: Mistake[] = [];
+    const keep: unknown[] = [];
+    for (const item of data) {
+      const parsed = mistakeSchema.safeParse(item);
+      if (parsed.success) list.push(parsed.data);
+      else keep.push(item);
+    }
+    return { list, keep };
+  }
+
+  /** 整份写回错题本；`keep` = 不合 schema、但不能丢的原始条目（见 loadMistakesForWrite）。 */
+  writeMistakes(list: readonly Mistake[], keep: readonly unknown[] = []): void {
     this.ensureDir(this.root);
-    this.writeJson(this.mistakesFile(), list);
+    this.writeJson(this.mistakesFile(), [...list, ...keep]);
   }
 
   /** 新增或按 id 覆盖（重复加入同一题不会产生两条：调用方传同一 id）。 */
   upsertMistake(m: Mistake): Mistake {
-    const list = this.readMistakes();
+    const { list, keep } = this.loadMistakesForWrite();
     const i = list.findIndex((x) => x.id === m.id);
     if (i === -1) list.push(m);
     else list[i] = { ...list[i]!, ...m, created_at: list[i]!.created_at };
     list.sort((a, b) => b.created_at - a.created_at);
-    this.writeMistakes(list);
+    this.writeMistakes(list, keep);
     return m;
   }
 
   patchMistake(id: string, patch: Partial<Mistake>): Mistake | null {
-    const list = this.readMistakes();
+    const { list, keep } = this.loadMistakesForWrite();
     const i = list.findIndex((x) => x.id === id);
     if (i === -1) return null;
     list[i] = { ...list[i]!, ...patch, id: list[i]!.id, updated_at: Date.now() };
-    this.writeMistakes(list);
+    this.writeMistakes(list, keep);
     return list[i]!;
   }
 
   deleteMistake(id: string): boolean {
-    const list = this.readMistakes();
+    const { list, keep } = this.loadMistakesForWrite();
     const next = list.filter((x) => x.id !== id);
     if (next.length === list.length) return false;
-    this.writeMistakes(next);
+    this.writeMistakes(next, keep);
     return true;
   }
 

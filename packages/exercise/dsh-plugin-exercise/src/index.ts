@@ -1658,10 +1658,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (rb.outcome === 'conceded') {
       const m = store.findMistakeFor(input.courseId, input.sheetId, p.id);
       if (m) {
-        m.mastered = true;
-        m.updated_at = now;
-        m.lesson = m.lesson || '答辩后确认：原批改有误，答案本身是对的';
-        store.writeMistakes(store.readMistakes().map((x) => (x.id === m.id ? m : x)));
+        // 走 patchMistake（严格读 + 保留坏条目），不再用宽松读整份写回
+        store.patchMistake(m.id, { mastered: true, lesson: m.lesson || '答辩后确认：原批改有误，答案本身是对的' });
         log(`答辩撤回批改 → 错题 ${m.id} 标为已掌握`);
       }
     }

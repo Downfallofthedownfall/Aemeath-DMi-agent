@@ -3,7 +3,7 @@
 // 用临时目录，不污染仓库。
 // ============================================================
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LectureStore, safeCourseId, safeUnitId, parseUnitMarkdown, allBlanksOk, chunkBlanksOk, chunkCount } from '../lib/store.js';
@@ -287,6 +287,37 @@ t('exportForRetrieval 写 .md 到目标目录', () => {
 
 t('exportForRetrieval 无记录 → null', () => {
   assert.equal(store.exportForRetrieval('physik-1', { id: 'nope', date: 'x', title: 't', file: 'nope.md', reviewed: false, has_summary: false }, tmp), null);
+});
+
+// ⚠️ 真机隐患：readIndex 对「读不出」也返回 null，ensureCourse 早先据此新建空索引
+// 覆盖 —— 半截写入 / schema 升级后，下一次开课就把整门课的单元列表抹掉。
+t('ensureCourse：索引在但读不出 → 抛错，绝不覆盖', () => {
+  const s = new LectureStore({ rootDir: tmp });
+  s.ensureCourse('torn', 'Torn');
+  s.upsertUnit('torn', { id: 'u01', date: 'd', title: 't', file: 'u01.md', reviewed: true, has_summary: false });
+  const file = join(tmp, 'torn', 'index.json');
+  const half = readFileSync(file, 'utf-8').slice(0, 40); // 模拟写到一半被杀
+  writeFileSync(file, half, 'utf-8');
+  assert.throws(() => s.ensureCourse('torn', 'Torn'), /课程索引无法读取|Course index is unreadable/);
+  assert.equal(readFileSync(file, 'utf-8'), half, '坏索引必须原样保留，留给人修');
+});
+
+t('ensureCourse：索引 JSON 合法但 schema 不符 → 同样抛错不覆盖', () => {
+  const s = new LectureStore({ rootDir: tmp });
+  s.ensureCourse('schema', 'Schema');
+  const file = join(tmp, 'schema', 'index.json');
+  const legacy = JSON.stringify({ course_id: 'schema', units: [{ id: 'u01' }] });
+  writeFileSync(file, legacy, 'utf-8');
+  assert.throws(() => s.ensureCourse('schema', 'Schema'), /课程索引无法读取|Course index is unreadable/);
+  assert.equal(readFileSync(file, 'utf-8'), legacy);
+});
+
+t('写入是原子的：不留临时文件，内容完整可读', () => {
+  const s = new LectureStore({ rootDir: tmp });
+  s.ensureCourse('atomic', 'Atomic');
+  for (let i = 0; i < 5; i++) s.upsertUnit('atomic', { id: `u0${i}`, date: 'd', title: 't', file: `u0${i}.md`, reviewed: false, has_summary: false });
+  assert.deepEqual(readdirSync(join(tmp, 'atomic')).filter((f) => f.endsWith('.tmp')), []);
+  assert.equal(s.readIndex('atomic').units.length, 5);
 });
 
 rmSync(tmp, { recursive: true, force: true });

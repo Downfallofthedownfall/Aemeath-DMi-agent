@@ -13,7 +13,7 @@
 // 本模块是**纯文件层**：不依赖 dsh，可直接单测。
 // ============================================================
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import {
   courseIndexSchema,
@@ -74,6 +74,36 @@ export function safeCourseId(id: string): string {
 /** 单元 id 同样净化（用于文件名，必须防穿越）。 */
 export function safeUnitId(id: string): string {
   return sanitizeId(id, 64) || 'unit';
+}
+
+/**
+ * 原子写：先写同目录临时文件，再 rename 覆盖目标。
+ *
+ * 为什么：直接 writeFileSync 时进程若在写到一半被杀（关窗口 / 崩溃 / 断电），
+ * 留下的是半截 JSON —— readIndex 读不出 → 整门课"消失"。rename 覆盖保证
+ * 目标要么是旧内容、要么是新内容。
+ *
+ * Windows 上 rename 覆盖可能因杀软 / OneDrive 同步短暂占用句柄而 EPERM/EBUSY，
+ * 小睡重试几次；仍失败则清掉临时文件并抛出（目标文件保持原样）。
+ * exercise 的 store 里有同一份（两个包的文件层都不依赖 dsh / 公共包）。
+ */
+export function writeFileAtomicSync(file: string, data: string): void {
+  const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
+  writeFileSync(tmp, data, 'utf-8');
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(tmp, file);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (attempt < 5 && (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES')) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 * (attempt + 1));
+        continue;
+      }
+      rmSync(tmp, { force: true });
+      throw e;
+    }
+  }
 }
 
 export interface StoreOptions {
@@ -147,17 +177,34 @@ export class LectureStore {
     }
   }
 
-  /** 写课程索引（原子性由调用方保证顺序；此处直接覆盖）。 */
+  /** 写课程索引（原子覆盖，见 writeFileAtomicSync）。 */
   writeIndex(index: CourseIndex): void {
     const dir = this.courseDir(index.course_id);
     this.ensureDir(dir);
-    writeFileSync(join(dir, 'index.json'), JSON.stringify(index, null, 2), 'utf-8');
+    writeFileAtomicSync(join(dir, 'index.json'), JSON.stringify(index, null, 2));
   }
 
-  /** 新建课程（已存在则原样返回，幂等）。 */
+  /**
+   * 新建课程（已存在则原样返回，幂等）。
+   *
+   * ⚠️ readIndex 对「文件不存在」和「文件在但读不出 / schema 不符」都返回 null。
+   *   早先这里一律当"不存在"新建空索引 —— 半截写入或 schema 升级后，下一次
+   *   开课 / 速记就用 `units: []` 覆盖掉旧索引，整门课的单元列表静默消失
+   *   （.md 还在盘上，但界面和工具都找不到了）。
+   *   现在：文件在却读不出 → 抛错、绝不覆盖，留给人修。
+   */
   ensureCourse(courseId: string, title: string, semester = '', moduleCode = ''): CourseIndex {
     const existing = this.readIndex(courseId);
     if (existing) return existing;
+    const indexFile = join(this.courseDir(courseId), 'index.json');
+    if (existsSync(indexFile)) {
+      throw new Error(
+        tr(
+          `课程索引无法读取，已停止以免覆盖：${indexFile}（修复或移走该文件后重试）`,
+          `Course index is unreadable; refusing to overwrite it: ${indexFile} (repair or move the file, then retry)`,
+        ),
+      );
+    }
     const index: CourseIndex = {
       version: 1,
       course_id: safeCourseId(courseId),
@@ -283,7 +330,7 @@ export class LectureStore {
     const dir = this.courseDir(courseId);
     this.ensureDir(dir);
     const file = this.unitFile(courseId, unit);
-    writeFileSync(file, this.renderUnitMarkdown(fm, chunks), 'utf-8');
+    writeFileAtomicSync(file, this.renderUnitMarkdown(fm, chunks));
     return file;
   }
 
@@ -309,7 +356,7 @@ export class LectureStore {
 
   writeProcessing(courseId: string, rec: ProcessingRecord): void {
     this.ensureDir(this.courseDir(courseId));
-    writeFileSync(this.processingFile(courseId, rec.unit_id), JSON.stringify(rec, null, 2), 'utf-8');
+    writeFileAtomicSync(this.processingFile(courseId, rec.unit_id), JSON.stringify(rec, null, 2));
   }
 
   readProcessing(courseId: string, unitId: string): ProcessingRecord | null {
@@ -341,7 +388,7 @@ export class LectureStore {
 
   writeCandidates(courseId: string, c: Candidates): void {
     this.ensureDir(this.courseDir(courseId));
-    writeFileSync(this.candidatesFile(courseId, c.unit_id), JSON.stringify(c, null, 2), 'utf-8');
+    writeFileAtomicSync(this.candidatesFile(courseId, c.unit_id), JSON.stringify(c, null, 2));
   }
 
   readCandidates(courseId: string, unitId: string): Candidates | null {
@@ -358,7 +405,7 @@ export class LectureStore {
   /** 结构化摘要（复盘第 4 步之后才写，D4）。 */
   writeSummary(courseId: string, unitId: string, summary: { text: string; created_at: number; model: string }): void {
     this.ensureDir(this.courseDir(courseId));
-    writeFileSync(this.summaryFile(courseId, unitId), JSON.stringify(summary, null, 2), 'utf-8');
+    writeFileAtomicSync(this.summaryFile(courseId, unitId), JSON.stringify(summary, null, 2));
   }
 
   hasSummary(courseId: string, unitId: string): boolean {
@@ -389,7 +436,7 @@ export class LectureStore {
   /** 复盘状态机持久化（可中断续做）。 */
   writeReviewState(courseId: string, st: ReviewState): void {
     this.ensureDir(this.courseDir(courseId));
-    writeFileSync(this.reviewFile(courseId, st.unit_id), JSON.stringify(st, null, 2), 'utf-8');
+    writeFileAtomicSync(this.reviewFile(courseId, st.unit_id), JSON.stringify(st, null, 2));
   }
 
   readReviewState(courseId: string, unitId: string): ReviewState | null {

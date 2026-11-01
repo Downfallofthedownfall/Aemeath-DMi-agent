@@ -8,7 +8,7 @@
 //   · 删除（删题集必须连目录一起，索引也要摘）
 // ============================================================
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExerciseStore, safeCourseId, safeSheetId, problemIdOf } from '../lib/store.js';
@@ -254,6 +254,59 @@ t('listCourses：`_` 开头的内部工作区（极简模式 `_scratch`）不进
   assert.ok(ids.length > 0, '正常课程还在');
   assert.ok(!ids.includes('_scratch'), '内部工作区必须被过滤掉');
 });
+
+// ⚠️ 真机隐患：「读不出」被当成「不存在 / 空表」后整份覆盖 —— 索引会丢掉整门课的题集，
+// 错题本（autoCollectMistakes 每次检查失败都写）会被覆盖成 1 条。
+const safety = mkdtempSync(join(tmpdir(), 'ex-store-safety-'));
+const s2 = new ExerciseStore({ rootDir: safety });
+const mistake = (id, over = {}) => ({
+  id, course_id: 'c', course_title: 'C', sheet_id: 's', sheet_title: 'S', sheet_due: '', problem_id: 'p01',
+  problem_label: 'A1', problem_text: '', answer: 'x', verdict: 'wrong', issues: [], tags: [], lesson: '',
+  created_at: 1, updated_at: 1, review_count: 0, mastered: false, in_worldbook: false, source_check_id: 'c1', ...over,
+});
+
+t('ensureCourse：索引在但读不出 → 抛错，绝不覆盖', () => {
+  s2.ensureCourse('torn', 'Torn');
+  const file = join(safety, 'torn', 'index.json');
+  writeFileSync(file, '{"course_id":"torn","sheets":[{"id":', 'utf-8'); // 写到一半被杀
+  assert.throws(() => s2.ensureCourse('torn', 'Torn'), /课程索引无法读取|Course index is unreadable/);
+  assert.equal(readFileSync(file, 'utf-8'), '{"course_id":"torn","sheets":[{"id":');
+});
+
+t('错题本读不出 → upsert/patch/delete 都抛错，文件原样', () => {
+  const file = join(safety, '_mistakes.json');
+  writeFileSync(file, '[{"id":"m1", 半截', 'utf-8');
+  assert.throws(() => s2.upsertMistake(mistake('m2')), /错题本无法读取|Mistake book is unreadable/);
+  assert.throws(() => s2.patchMistake('m1', { mastered: true }), /错题本无法读取|Mistake book is unreadable/);
+  assert.throws(() => s2.deleteMistake('m1'), /错题本无法读取|Mistake book is unreadable/);
+  assert.equal(readFileSync(file, 'utf-8'), '[{"id":"m1", 半截');
+  writeFileSync(file, '{"not":"an array"}', 'utf-8');
+  assert.throws(() => s2.upsertMistake(mistake('m2')), /错题本不是数组|not an array/);
+});
+
+t('错题本：不合 schema 的条目写回时保留，不被静默删掉', () => {
+  const file = join(safety, '_mistakes.json');
+  const legacy = { id: 'old', note: '旧版本格式的错题' };
+  writeFileSync(file, JSON.stringify([mistake('m1'), legacy]), 'utf-8');
+  s2.upsertMistake(mistake('m2', { created_at: 2 }));
+  const raw = JSON.parse(readFileSync(file, 'utf-8'));
+  assert.deepEqual(raw.map((x) => x.id), ['m2', 'm1', 'old']);
+  assert.deepEqual(raw[2], legacy);
+  s2.deleteMistake('m1');
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf-8')).map((x) => x.id), ['m2', 'old']);
+});
+
+t('错题本空文件（旧的半截写入）视为空表，可正常写入', () => {
+  writeFileSync(join(safety, '_mistakes.json'), '', 'utf-8');
+  s2.upsertMistake(mistake('m9'));
+  assert.deepEqual(s2.readMistakes().map((m) => m.id), ['m9']);
+});
+
+t('写入是原子的：不留临时文件', () => {
+  assert.deepEqual(readdirSync(safety).filter((f) => f.endsWith('.tmp')), []);
+  assert.deepEqual(readdirSync(join(safety, 'torn')).filter((f) => f.endsWith('.tmp')), []);
+});
+rmSync(safety, { recursive: true, force: true });
 
 rmSync(root, { recursive: true, force: true });
 
