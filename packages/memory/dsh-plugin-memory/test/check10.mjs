@@ -8,6 +8,9 @@
 // 注：零网络（llm.enabled=false，adminHttp.enabled=false）。
 // ============================================================
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
 import { apply } from '../lib/index.js';
 
@@ -532,6 +535,33 @@ await t('真管线：/memory delete 前缀太短 / 命中多条 → 报错且一
   const byListPrefix = await cmd.handler({ rawInput: `delete ${realKey.slice(0, 8)}` });
   assert.equal(byListPrefix.kind, 'success', '/memory list 给的 8 位前缀唯一时照常可删');
   assert.equal(alive(), 1);
+});
+
+// 日志会被贴进 bug 报告 / 截图：自动生成的管理 token 不能出现在日志里，改写进 DSH_HOME 的文件
+await t('真管线：管理端点自动 token 只写文件、不进日志', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'mem-admin-'));
+  const prevHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+  const logged = [];
+  const origLog = console.log;
+  const origWarn = console.warn;
+  console.log = (...a) => logged.push(a.join(' '));
+  console.warn = (...a) => logged.push(a.join(' '));
+  const h = makeHarness();
+  try {
+    await h.start(baseConfig({ adminHttp: { enabled: true, port: 0 } }));
+  } finally {
+    console.log = origLog;
+    console.warn = origWarn;
+    if (prevHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prevHome;
+  }
+  const token = readFileSync(join(home, 'aemeath-memory-admin.token'), 'utf-8');
+  assert.match(token, /^[0-9a-f-]{36}$/);
+  assert.ok(!logged.some((l) => l.includes(token)), '日志里不能出现 token');
+  assert.ok(logged.some((l) => l.includes('aemeath-memory-admin.token')), '日志应给出 token 文件路径');
+  await h.dispose();
+  rmSync(home, { recursive: true, force: true });
 });
 
 await t('真管线：/memory knowledge accept 前缀命中多条 → 报错不评审（原先取第一条）', async () => {

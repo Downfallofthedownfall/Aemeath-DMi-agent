@@ -22,6 +22,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { randomUUID, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain';
@@ -169,6 +170,11 @@ function warn(msg: string): void {
 }
 
 const LLM_BATCH_SIZE_DEFAULT = 8;
+
+/** 自动生成的管理端点 token 落盘位置：DSH_HOME（scripts/dsh.ps1 固定设置；缺省回退系统临时目录）。 */
+export function adminTokenFile(): string {
+  return join(process.env.DSH_HOME || tmpdir(), 'aemeath-memory-admin.token');
+}
 
 export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   // ---- settings 接线（M5：前端设置界面 → 实时开关） ----
@@ -1554,11 +1560,23 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         })();
       });
       server.listen(adminHttp.port, '127.0.0.1');
+      // 与本仓库的定时器同一习惯：管理端点不该单独吊住进程（宿主退出 / 测试结束时不拖住事件循环）
+      server.unref();
       ctx.effect(() => () => {
         server.close();
       });
-      if (!adminHttp.token) log(`HTTP 管理端点已启动（http://127.0.0.1:${adminHttp.port}/memory/*，仅回环 + token 认证，自动生成 token=${adminToken}）`);
-      else log(`HTTP 管理端点已启动（http://127.0.0.1:${adminHttp.port}/memory/*，仅回环 + token 认证，token 来自配置）`);
+      // ⚠️ 早先自动生成的 token 原样打进启动日志 —— 日志会被贴进 bug 报告 / 截图，
+      //   拿到它就能读、删全部记忆。现在写进 DSH_HOME 下的文件（与记忆库同一目录，
+      //   不额外扩大暴露面），日志只给路径。
+      if (!adminHttp.token) {
+        const tokenFile = adminTokenFile();
+        try {
+          writeFileSync(tokenFile, adminToken, { encoding: 'utf-8', mode: 0o600 });
+          log(`HTTP 管理端点已启动（http://127.0.0.1:${adminHttp.port}/memory/*，仅回环 + token 认证；自动生成的 token 已写入 ${tokenFile}）`);
+        } catch (e) {
+          warn(`HTTP 管理端点已启动，但 token 文件写入失败（${(e as Error).message}）——需要访问时请在配置里显式设置 adminHttp.token`);
+        }
+      } else log(`HTTP 管理端点已启动（http://127.0.0.1:${adminHttp.port}/memory/*，仅回环 + token 认证，token 来自配置）`);
     } catch (e) {
       warn(`HTTP 管理端点启动失败: ${(e as Error).message}`);
     }
