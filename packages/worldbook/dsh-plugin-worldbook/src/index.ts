@@ -16,7 +16,7 @@ import { Service, type Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { resolvePresetCompat, registerVolatileSettings, readSetting } from '@aemeath/dsh-plugin-common';
+import { resolveRole, registerVolatileSettings } from '@aemeath/dsh-plugin-common';
 import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-settings';
 import { matchWorldbook, hitSummary, type WorldbookEntry } from './match.js';
@@ -53,24 +53,6 @@ function log(msg: string): void {
 
 function warn(msg: string): void {
   console.warn(`[aemeath-worldbook] ⚠ ${msg}`);
-}
-
-/** 实时角色：前端选择写入的 preset 默认（与 common 插件 persona 一致）。
- *  DSH 0.2.0：行 id 由 'agent-presets' 改为 'agent-preset-registry'，优先问服务。 */
-function liveRole(ctx: Context): string | undefined {
-  try {
-    const presets = (ctx as unknown as { agentPresets?: { defaultId?: string } }).agentPresets;
-    if (typeof presets?.defaultId === 'string' && presets.defaultId) return presets.defaultId;
-  } catch {
-    /* 服务缺失：落到兼容读 */
-  }
-  try {
-    const ap = readSetting(ctx, 'agent-preset-registry') ?? readSetting(ctx, 'agent-presets');
-    const v = ap?.selectedDefault ?? ap?.default;
-    return typeof v === 'string' ? v : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -221,7 +203,8 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
     // 若每个 step 都注入同一份 catalog，多 step 解题流程上下文会随 step 数线性膨胀。
     if (payload.step !== 1) return decision;
 
-    const preset = liveRole(ctx) ?? resolvePresetCompat(ctx, payload.agent.session) ?? config.defaultPreset;
+    // 会话 → 全局默认 → 配置（全局默认排前面会短路会话级，见 common 的 resolveRole）
+    const preset = resolveRole(ctx, payload.agent.session, config.defaultPreset);
     const lib = preset ? libs.get(preset) : undefined;
     if (!lib || !lib.entries.length) return decision;
 
@@ -254,8 +237,8 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
       },
       execute: async (args: { query: string; library?: string }, exec) => {
-        // 双角色通用：缺省取前端实时角色馆（与 persona/知识注入一致）
-        const libName = args.library || liveRole(ctx) || config.defaultPreset || 'physicist';
+        // 双角色通用：缺省取本会话角色的馆（与 persona/知识注入一致）
+        const libName = args.library || resolveRole(ctx, exec.agent?.session, config.defaultPreset) || 'physicist';
         const entries = libs.get(libName)?.entries ?? [];
         const block = matchWorldbook(args.query, entries, maxTokens);
         return {

@@ -619,6 +619,17 @@ t('人格段与日志用同一个解析函数（避免日志误导）', () => {
   assert.ok(calls >= 2, `人格段与日志都应调用 roleForAgent（实际 ${calls} 处）`);
 });
 
+// 同一个 bug 的第二轮：common 修好后，worldbook / retriever / curriculum 各自复制的
+// liveRole() 仍是「全局默认在前」—— 全局默认切到 aemeath 后，学霸会话里讲义不注入、
+// 课程清单为空、worldbook 注入的是爱弥斯馆。现在统一走 common 的 resolveRole。
+t('worldbook / retriever / curriculum 也按会话解析角色（不各写一份全局优先的 helper）', () => {
+  for (const pkg of ['worldbook/dsh-plugin-worldbook', 'retriever/dsh-plugin-retriever', 'curriculum/dsh-plugin-curriculum']) {
+    const live = stripComments(readFileSync(join(REPO_ROOT, `packages/${pkg}/src/index.ts`), 'utf-8'));
+    assert.match(live, /resolveRole\(ctx, [\w.?]*session/, `${pkg} 应调用 common 的 resolveRole(ctx, <会话>, …)`);
+    assert.ok(!/agentPresets|defaultId|liveRole/.test(live), `${pkg} 不该自己读全局默认（defaultId 会短路会话级）`);
+  }
+});
+
 console.log('\n[persona 必须说明"记住"由系统处理]');
 
 // 真机反馈：用户说"记住它"，agent 去写 md 文件了。

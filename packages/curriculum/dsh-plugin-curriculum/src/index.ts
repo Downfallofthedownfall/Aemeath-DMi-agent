@@ -17,7 +17,7 @@ import { join, isAbsolute } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { readSetting, registerVolatileSettings } from '@aemeath/dsh-plugin-common';
+import { resolveRole, registerVolatileSettings } from '@aemeath/dsh-plugin-common';
 import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-agent';
 import { parseCurriculum, currentSemester, semesterSummary, searchModules, formatModuleDetail, allModules, WINTER, SUMMER, type CurriculumData } from './curriculum.js';
@@ -50,24 +50,6 @@ function log(msg: string): void {
 
 function warn(msg: string): void {
   console.warn(`[aemeath-curriculum] ⚠ ${msg}`);
-}
-
-/** 实时角色：前端选择写入的 preset 默认（与 common 插件 persona 一致）。
- *  DSH 0.2.0：行 id 由 'agent-presets' 改为 'agent-preset-registry'，优先问服务。 */
-function liveRole(ctx: Context): string | undefined {
-  try {
-    const presets = (ctx as unknown as { agentPresets?: { defaultId?: string } }).agentPresets;
-    if (typeof presets?.defaultId === 'string' && presets.defaultId) return presets.defaultId;
-  } catch {
-    /* 服务缺失：落到兼容读 */
-  }
-  try {
-    const ap = readSetting(ctx, 'agent-preset-registry') ?? readSetting(ctx, 'agent-presets');
-    const v = ap?.selectedDefault ?? ap?.default;
-    return typeof v === 'string' ? v : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 export async function apply(ctx: Context, config: CurriculumConfig): Promise<void> {
@@ -109,11 +91,12 @@ export async function apply(ctx: Context, config: CurriculumConfig): Promise<voi
   const summary = semesterSummary(data, semester);
   log(`当前学期判定：${semester}（可配置覆盖）`);
 
-  // ---- 常驻注入（system prompt section；动态跟随实时角色，仅 defaultPreset=physicist 时注入） ----
+  // ---- 常驻注入（system prompt section；动态跟随本会话角色，仅 defaultPreset=physicist 时注入） ----
   const mountContext = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
     if (!runtime.enabled) return;
     const summaryText = (): string => {
-      const role = liveRole(ctx) ?? defaultPreset;
+      // 会话 → 全局默认 → 配置（全局默认排前面会短路会话级，见 common 的 resolveRole）
+      const role = resolveRole(ctx, agent.session, defaultPreset);
       if (role !== defaultPreset) return '';
       return summary.length > injectTokens ? `${summary.slice(0, injectTokens)}\n（课程清单已截断，可用 curriculum_query 查全量）` : summary;
     };

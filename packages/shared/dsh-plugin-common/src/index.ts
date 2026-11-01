@@ -249,6 +249,42 @@ export function readSetting(ctx: unknown, ns: string): Record<string, unknown> |
 }
 
 /**
+ * 全局默认角色：registry 的 defaultId（官方实现 `selectedDefault.get() ?? default`，
+ * 权威且支持热更新）；服务缺失时兼容读 settings（0.2.0 行 id 'agent-preset-registry'，
+ * 0.1.1 为 'agent-presets'）。
+ *
+ * ⚠️ 这是**全局**默认，不是"当前会话的角色" —— 会话内的角色要用 resolveRole()。
+ */
+export function globalDefaultRole(ctx: unknown): string | undefined {
+  try {
+    const presets = (ctx as { agentPresets?: { defaultId?: string } } | undefined)?.agentPresets;
+    if (typeof presets?.defaultId === 'string' && presets.defaultId) return presets.defaultId;
+  } catch {
+    /* 服务缺失：落到兼容读 */
+  }
+  try {
+    const ap = readSetting(ctx, 'agent-preset-registry') ?? readSetting(ctx, 'agent-presets');
+    const v = ap?.selectedDefault ?? ap?.default;
+    return typeof v === 'string' ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 某个会话该用的角色，顺序必须是「会话 → 全局默认 → fallback」。
+ *
+ * ⚠️ 真机踩过两次：全局默认（defaultId）几乎总有值，排在前面就会短路，
+ *   会话里选的 preset 永远轮不到 —— 先是 common 的人格段（见 apply 内
+ *   roleForAgent 的注释），后是 worldbook / retriever / curriculum 各自复制的
+ *   liveRole()：全局默认切到 aemeath 后，学霸会话里讲义不注入、课程清单为空、
+ *   worldbook 注入的是爱弥斯馆。所有插件统一走这一个函数，别再各写一份。
+ */
+export function resolveRole(ctx: unknown, session: unknown, fallback?: string): string | undefined {
+  return resolvePresetCompat(ctx, session) ?? globalDefaultRole(ctx) ?? fallback;
+}
+
+/**
  * 把一组 volatile 配置引用登记为一个命名空间的读取器。
  * 用法（插件 apply 内）：
  *   registerVolatileSettings('aemeath-common', { oocRulesEnabled: config.oocRulesEnabled, ... });
@@ -816,30 +852,8 @@ export function apply(ctx: Context, config: CommonConfig): void {
   const roleForAgent = (session: unknown): string | undefined =>
     resolvePresetCompat(ctx, session) ?? currentRole() ?? config.defaultPreset;
 
-  /**
-   * 全局默认角色：设置页写的 preset 默认值；读不到则回退。
-   * DSH 0.2.0：行 id 由 'agent-presets' 改为 'agent-preset-registry'，其
-   * `selectedDefault` 是 volatile 字段（官方实现：
-   * `get defaultId() { return this.config.selectedDefault.get() ?? this.config.default }`）。
-   * 这里直接问 ctx.agentPresets 服务的 defaultId（权威且支持热更新）。
-   *
-   * ⚠️ 这是**全局**默认，不是"当前会话的角色" —— 会话内的角色要用 roleForAgent()。
-   */
-  const currentRole = (): string | undefined => {
-    try {
-      const presets = (ctx as unknown as { agentPresets?: { defaultId?: string } }).agentPresets;
-      if (typeof presets?.defaultId === 'string' && presets.defaultId) return presets.defaultId;
-    } catch {
-      /* 服务缺失：落到下面的兼容读 */
-    }
-    try {
-      const ap = readSetting(ctx, 'agent-preset-registry') ?? readSetting(ctx, 'agent-presets');
-      const v = ap?.selectedDefault ?? ap?.default;
-      return typeof v === 'string' ? v : undefined;
-    } catch {
-      return undefined;
-    }
-  };
+  /** 全局默认角色（见模块级 globalDefaultRole）。⚠️ 不是"当前会话的角色" —— 那个用 roleForAgent()。 */
+  const currentRole = (): string | undefined => globalDefaultRole(ctx);
 
   /** 按 role+locale 解析人格文本（结果缓存；switch 后新 role 会 cache-miss 重新读文件）。 */
   const personaTextCache = new Map<string, string>();

@@ -4,7 +4,7 @@
 // 注：用 node 直接执行（node:test 的子进程 spawn 在沙箱下不可用）
 // ============================================================
 import assert from 'node:assert/strict';
-import { checkOoc, extractText, runtimeContextDirective, executionDirective, relationshipCueFor } from '../lib/index.js';
+import { checkOoc, extractText, runtimeContextDirective, executionDirective, relationshipCueFor, resolveRole } from '../lib/index.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -123,6 +123,30 @@ t('relationshipCueFor：reflect.get 抛错 → 回退空串（不抛给调用方
   };
   assert.doesNotThrow(() => relationshipCueFor(ctx, 'physicist'));
   assert.equal(relationshipCueFor(ctx, 'physicist'), '');
+});
+
+// 角色解析：会话 → 全局默认 → fallback（全局默认排前面会短路会话级）
+const roleCtx = (defaultId) => ({
+  sessionProjections: { stateOf: (s, k) => (k === 'agentPreset' ? (s.preset ?? null) : null) },
+  agentPresets: { defaultId },
+});
+
+t('resolveRole：会话选了 preset → 用会话的，不被全局默认短路', () => {
+  assert.equal(resolveRole(roleCtx('aemeath'), { preset: 'physicist' }, 'aemeath'), 'physicist');
+  assert.equal(resolveRole(roleCtx('physicist'), { preset: 'aemeath' }, 'physicist'), 'aemeath');
+});
+
+t('resolveRole：projection 为空 → 读 header.agentPreset', () => {
+  assert.equal(resolveRole(roleCtx('aemeath'), { header: { agentPreset: 'physicist' } }), 'physicist');
+});
+
+t('resolveRole：会话没选 → 回退全局默认', () => {
+  assert.equal(resolveRole(roleCtx('aemeath'), { preset: null }, 'physicist'), 'aemeath');
+});
+
+t('resolveRole：没会话也没 registry 服务 → 回退 fallback', () => {
+  assert.equal(resolveRole({}, undefined, 'physicist'), 'physicist');
+  assert.equal(resolveRole(undefined, undefined), undefined);
 });
 
 console.log(`\n[ooc-check] ${passed} 项断言全部通过`);
