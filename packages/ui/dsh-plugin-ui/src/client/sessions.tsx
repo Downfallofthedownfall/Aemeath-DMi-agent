@@ -12,8 +12,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client';
+import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client';
 import { BrandMark } from './brand.tsx';
 import { t, useLocale } from './i18n.ts';
+import { mainSessionIdOf } from './main-session.ts';
 
 /** 会话列表行（含删除按钮，hover 显示——纯 CSS）。 */
 function SessionRow({
@@ -160,11 +163,13 @@ function SessionListBody({
   open: (id: string) => void;
   archive: (id: string) => void;
 }): JSX.Element {
-  const idsRaw = useSessions((s: unknown) => (s as { ids?: string[] })?.ids) as string[] | undefined;
-  const current = useSessions((s: unknown) => (s as { current?: string })?.current) as string | undefined;
-  const byId = useSessions((s: unknown) => (s as { byId?: Record<string, SessionInfo> })?.byId) as Record<string, SessionInfo> | undefined;
+  // 状态按 dsh 的真实快照类型读：字段改名时编译即报错（`current` 就是被手写形状掩盖的）
+  const idsRaw = useSessions((s: unknown) => (s as SessionListState | undefined)?.ids) as string[] | undefined;
+  // 0.2.x 没有 `current` 字段：按官方读法取主视图持有的会话（见 main-session.ts）
+  const current = useSessions((s: unknown) => mainSessionIdOf(s as SessionListState)) as string | undefined;
+  const byId = useSessions((s: unknown) => (s as SessionListState | undefined)?.byId) as Record<string, SessionInfo> | undefined;
   // 归档集合只订阅 archivedSessionIds 切片（数组引用稳定，非每次全量状态变化都触发）
-  const archived = useWorkspaces((s: unknown) => (s as { archivedSessionIds?: readonly string[] })?.archivedSessionIds) as readonly string[] | undefined;
+  const archived = useWorkspaces((s: unknown) => (s as WorkspaceSnapshot | undefined)?.archivedSessionIds) as readonly string[] | undefined;
   useLocale(); // locale 切换时刷新空态/删除 tooltip 等文案
 
   // 去重：极端重连/事件累积下 ids 可能出现重复（测试环境 18 次重连后实测每会话 3-4 份）

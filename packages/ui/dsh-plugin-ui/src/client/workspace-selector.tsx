@@ -20,8 +20,11 @@ import { createPortal } from 'react-dom';
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client';
+import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client';
 import { ensureFallbackChat, fetchFallbackWorkspacePath } from './bootstrap.ts';
 import { t, useLocale } from './i18n.ts';
+import { mainSessionIdOf } from './main-session.ts';
 
 /** 注入面：workspaces 服务 + 会话打开（无工作区切换用）。 */
 export interface WorkspaceSelectorDeps {
@@ -246,10 +249,13 @@ function SelectorLoaded({
     : null;
 
   // 第三关：selector 收窄到所需切片（原 (s) => s 全量选择，任何状态变化都重渲染）
-  const wsItems = useWorkspaces((s) => (s as { items?: Array<{ workspaceId: string; title: string; path: string; sessionIds: string[] }> })?.items) as Array<{ workspaceId: string; title: string; path: string; sessionIds: string[] }> | undefined;
-  const wsArchived = useWorkspaces((s) => (s as { archivedSessionIds?: readonly string[] })?.archivedSessionIds) as readonly string[] | undefined;
-  const sessCurrent = useSessions((s) => (s as { current?: string })?.current) as string | undefined;
-  const sessByBlank = useSessions((s) => (s as { byId?: Record<string, { blank?: boolean }> })?.byId) as Record<string, { blank?: boolean }> | undefined;
+  // 状态按 dsh 的真实快照类型读（WorkspaceSnapshot / SessionListState）：字段改名时编译即报错，
+  // 不再像 `current` / `baselinesReady` 那样被手写形状 + 强转掩盖、运行时静默 undefined
+  const wsItems = useWorkspaces((s) => (s as WorkspaceSnapshot | undefined)?.items) as Array<{ workspaceId: string; title: string; path: string; sessionIds: string[] }> | undefined;
+  const wsArchived = useWorkspaces((s) => (s as WorkspaceSnapshot | undefined)?.archivedSessionIds) as readonly string[] | undefined;
+  // 0.2.x 没有 `current` 字段：按官方读法取主视图持有的会话（见 main-session.ts）
+  const sessCurrent = useSessions((s) => mainSessionIdOf(s as SessionListState)) as string | undefined;
+  const sessByBlank = useSessions((s) => (s as SessionListState | undefined)?.byId) as Record<string, { blank?: boolean }> | undefined;
   const items = wsItems ?? [];
   const resolvedSessionId = sessionId ?? sessCurrent;
   const current = currentWorkspace(items, resolvedSessionId);
@@ -283,6 +289,13 @@ function SelectorLoaded({
       window.removeEventListener('scroll', reclamp, true);
     };
   }, [openMenu]);
+
+  // 错误提示 6 秒后自动消失（早先常驻左上角，直到下次点开菜单才清掉）
+  useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => setError(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
 
   const pick = async (id: string): Promise<void> => {
     setBusy(true);
@@ -398,7 +411,25 @@ function SelectorLoaded({
       ) : null}
       {error ? (
         createPortal(
-          <div style={{ position: 'fixed', top: 48, left: anchorRect?.left ?? 8, zIndex: 9999, fontSize: 11.5, color: 'var(--dsw-alias-state-warn-primary)', background: 'var(--dsw-alias-bg-overlay)', padding: '4px 8px', borderRadius: 6, border: '1px solid var(--dsw-alias-border-l1)', maxWidth: 320 }}>
+          // 贴在输入框卡上方（与菜单同一锚点）；点一下即关，6 秒后自动消失（见上面的 effect）
+          <div
+            role="alert"
+            onClick={() => setError(null)}
+            style={{
+              position: 'fixed',
+              left: Math.max(8, anchorRect?.left ?? 8),
+              ...(anchorRect ? { bottom: vh - anchorRect.top + 6 } : { top: 48 }),
+              zIndex: 9999,
+              fontSize: 11.5,
+              color: 'var(--dsw-alias-state-warn-primary)',
+              background: 'var(--dsw-alias-bg-overlay)',
+              padding: '4px 8px',
+              borderRadius: 6,
+              border: '1px solid var(--dsw-alias-border-l1)',
+              maxWidth: 320,
+              cursor: 'pointer',
+            }}
+          >
             {error}
           </div>,
           document.body,

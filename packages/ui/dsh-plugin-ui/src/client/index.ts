@@ -7,6 +7,9 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
+import type {} from '@deepseek-ai/dsh-api-session-controller/client';
+import type { SessionEvent } from '@deepseek-ai/dsh-session/types';
+import { mainSessionIdOf } from './main-session.ts';
 import { installI18n, reportLocaleToHost, currentActiveLocale } from './i18n.ts';
 import { registerThemes } from './theme.ts';
 import { applyBrand } from './brand.tsx';
@@ -16,7 +19,6 @@ import { registerHero } from './hero.tsx';
 import { registerTts } from './tts.tsx';
 import { registerQuickSettings } from './quick-settings.tsx';
 import { registerWorkspaceSelector } from './workspace-selector.tsx';
-import { registerWorkspaceBootstrap } from './bootstrap.ts';
 import { registerCharacterStatus } from './status.tsx';
 import { registerWorkflowTodo } from './workflow-todo.tsx';
 import { registerComposerCards } from './composer-cards.tsx';
@@ -55,27 +57,28 @@ export function apply(ctx: ClientContext): void {
   registerHero(ctx, { role: () => faces.role });
 
   // 2.7) TTS 朗读按钮（assistant 消息操作区）+ 输入框 TTS 开关（conversation.input.right）
-  //   resolveMessageText：通过 messageId 从会话快照取 assistant 消息文本（可靠，替代 DOM 抓取）
-  const resolveMessageText = (messageId: string): string | undefined => {
+  //   resolveMessageText：按 messageId 从会话事件流取 assistant 消息原文（DOM 抓取只作兜底）。
+  //   ⚠️ 早先读私有的 sessions.manager + 不存在的 list.current + 0.1 的 nodes 结构，
+  //      在 0.2.x 下永远返回 undefined —— 每次都静默退回 DOM 抓取。现在只走公开 API：
+  //      sessions.binding(会话).eventSource 里的 `assistant/message` 事件，message.id 即 messageId。
+  const resolveMessageText = (messageId: string, sessionId?: string): string | undefined => {
     try {
-      const sessions = ctx.get('sessions') as unknown as
-        | {
-            manager?: { get(id: string): { getSnapshot(): { nodes?: Array<{ kind: string; messageId?: string; blocks?: Array<{ kind: string; text?: string }> }> } } };
-            list?: { getSnapshot(): { current?: string } };
-          }
-        | undefined;
-      if (!sessions?.manager) return undefined;
-      const currentId = sessions.list?.getSnapshot?.().current;
-      if (!currentId) return undefined;
-      const snap = sessions.manager.get(currentId).getSnapshot();
-      const node = (snap.nodes ?? []).find((n) => n.kind === 'assistant' && n.messageId === messageId);
-      if (!node) return undefined;
-      const text = (node.blocks ?? [])
-        .filter((b) => b.kind === 'text' && typeof b.text === 'string')
-        .map((b) => b.text as string)
-        .join('\n')
-        .trim();
-      return text || undefined;
+      const sessions = ctx.sessions;
+      const sid = sessionId ?? mainSessionIdOf(sessions.list.getSnapshot());
+      if (!sid) return undefined;
+      const entries = sessions.binding(sid as never)?.eventSource.getSnapshot().entries ?? [];
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i]!;
+        if (entry.type !== 'event' || entry.event.type !== 'assistant/message') continue;
+        const message = (entry.event as SessionEvent<'assistant/message'>).data.message;
+        if (message.id !== messageId) continue;
+        const text = message.content
+          .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+          .join('\n')
+          .trim();
+        return text || undefined;
+      }
+      return undefined;
     } catch {
       return undefined;
     }
@@ -111,8 +114,7 @@ export function apply(ctx: ClientContext): void {
     openSession: (id: string) => ctx.uiWorkspace.openSession(id as never),
   });
 
-  // 2.9.5) 无工作区自动兜底：零工作区时挂项目内空文件夹为工作区，打开即聊
-  registerWorkspaceBootstrap(ctx);
+  // 2.9.5) 零工作区时的默认工作区由 dsh 0.2.1 的 ui-workspace 自己初始化（见 bootstrap.ts 的说明）
 
   // 2.9.6) 角色状态 pill（会话顶栏：头像+名字+状态徽章）+ 浮动状态簇（右下角）
   //   状态信号：思考中=useSession.running；朗读中=tts speak；其余=陪伴中（见 status.tsx）

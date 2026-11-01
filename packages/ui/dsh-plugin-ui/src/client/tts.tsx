@@ -21,14 +21,15 @@ import { t, useLocale } from './i18n.ts';
 export interface TtsDeps {
   scopes: Record<string, SettingsScope>;
   /**
-   * 通过 messageId 从会话快照解析 assistant 消息文本（可靠方案，2026-08-17）。
-   * DOM 向上抓取在 dsh 渲染结构下不可靠（按钮祖先链不含消息文本）。
+   * 通过 messageId 从会话事件流解析 assistant 消息文本（见 index.ts）。
+   * DOM 向上抓取在 dsh 渲染结构下不可靠（按钮祖先链不含消息文本），只作兜底。
+   * @param sessionId 消息所在会话（按钮从 session 作用域 props 拿到）；缺省 = 主视图当前会话
    */
-  resolveMessageText?: (messageId: string) => string | undefined;
+  resolveMessageText?: (messageId: string, sessionId?: string) => string | undefined;
 }
 
 /** 模块级解析器引用（自动朗读观察器与按钮共用）。 */
-let resolveMessageTextFn: ((messageId: string) => string | undefined) | null = null;
+let resolveMessageTextFn: ((messageId: string, sessionId?: string) => string | undefined) | null = null;
 
 const TTS_NS = 'aemeath-tts';
 
@@ -437,7 +438,7 @@ function useTtsVolume(scopes?: Record<string, SettingsScope>): number {
 // ============================================================
 // 朗读按钮（assistant 消息操作区）
 // ============================================================
-export function TtsAction({ scopes, messageId }: TtsDeps & { messageId?: string }): JSX.Element | null {
+export function TtsAction({ scopes, messageId, session }: TtsDeps & { messageId?: string; session?: { sessionId?: string } }): JSX.Element | null {
   const enabled = useTtsEnabled(scopes);
   const [synthesizing, setSynthesizing] = useState(false);
   const busyRef = useRef(false);
@@ -464,8 +465,10 @@ export function TtsAction({ scopes, messageId }: TtsDeps & { messageId?: string 
       stopPlayback();
       return;
     }
-    // 优先按 messageId 从会话快照取文本（可靠）；失败退回 DOM 抓取
-    const text = (messageId && resolveMessageTextFn?.(messageId)) || readMessageText(e.currentTarget);
+    // 优先按 messageId 从本消息所在会话的事件流取原文；失败退回 DOM 抓取
+    const fromSession = messageId ? resolveMessageTextFn?.(messageId, session?.sessionId) : undefined;
+    const text = fromSession || readMessageText(e.currentTarget);
+    console.log('[aemeath-tts] 文本来源:', fromSession ? 'session' : 'dom');
     console.log('[aemeath-tts] 提取文本 len=', text.length, 'text="', text.slice(0, 60), '"');
     if (!text) {
       showToast(t('tts.error.noMessage'));
