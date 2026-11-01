@@ -4,7 +4,8 @@
 // 注：用 node 直接执行（node:test 的子进程 spawn 在沙箱下不可用）
 // ============================================================
 import assert from 'node:assert/strict';
-import { checkOoc, extractText, runtimeContextDirective, executionDirective, relationshipCueFor, resolveRole, rejectUnauthenticated } from '../lib/index.js';
+import { readFileSync } from 'node:fs';
+import { checkOoc, extractText, runtimeContextDirective, executionDirective, relationshipCueFor, resolveRole, rejectUnauthenticated, describeToolArgs } from '../lib/index.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -180,6 +181,28 @@ t('rejectUnauthenticated：取不到 connection 服务 → fail closed（503）'
     assert.equal(rejectUnauthenticated(ctx, req, res), true);
     assert.equal(res.status, 503);
   }
+});
+
+// 键鼠/程序控制审批：参数必须让用户看到（早先只显示工具名 = 盲批）
+t('describeToolArgs：参数原样 JSON 化，超长截断，空参数为空串', () => {
+  assert.equal(describeToolArgs({ program: 'C:\\x\\payload.exe' }), '{"program":"C:\\\\x\\\\payload.exe"}');
+  const long = describeToolArgs({ text: 'a'.repeat(500) });
+  assert.equal(long.length, 201);
+  assert.ok(long.endsWith('…'));
+  assert.equal(describeToolArgs({}), '');
+  assert.equal(describeToolArgs(undefined), '');
+  const circular = {};
+  circular.self = circular;
+  assert.doesNotThrow(() => describeToolArgs(circular));
+});
+
+t('ask-notify.ps1：参数摘要进 toast（XML 转义）与气泡', () => {
+  const ps = readFileSync(new URL('../scripts/ask-notify.ps1', import.meta.url), 'utf-8');
+  assert.match(ps, /\$detail = \$env:AEMEATH_ASK_DETAIL/);
+  assert.match(ps, /\$detailEsc = Esc-Xml \$detail/);
+  assert.match(ps, /<text id="3">\$detailEsc<\/text>/);
+  assert.doesNotMatch(ps, />\$detail</, 'toast 里不能放未转义的 $detail');
+  assert.match(ps, /\$balloon = "\$balloon`n\$detail"/);
 });
 
 console.log(`\n[ooc-check] ${passed} 项断言全部通过`);

@@ -413,7 +413,25 @@ const SYSTEM_ASK_PS_EN = [
   "if ($r -eq 'Yes') { Write-Output 'ALLOW' } else { Write-Output 'DENY' }",
 ].join('; ');
 
-async function systemApproval(toolName: string, reason: string, locale: string): Promise<'allow' | 'deny' | 'unavailable'> {
+/**
+ * 审批弹窗里展示的参数摘要：模型给的参数原样 JSON 化并截断。
+ *
+ * ⚠️ 早先审批只显示工具名 —— 被注入的模型调 `control_open` 启动任意 .exe、
+ *   或 `control_keyboard_type` 敲一串命令时，用户看到的只是"要操作键鼠/启动程序"，
+ *   等于盲批。参数（程序路径 / 要输入的文字 / 坐标）必须摆在用户眼前。
+ */
+export function describeToolArgs(args: unknown, max = 200): string {
+  let text: string;
+  try {
+    text = JSON.stringify(args) ?? '';
+  } catch {
+    text = String(args);
+  }
+  if (!text || text === '{}' || text === 'null') return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+async function systemApproval(toolName: string, reason: string, detail: string, locale: string): Promise<'allow' | 'deny' | 'unavailable'> {
   if (systemAskActive) return 'unavailable';
   systemAskActive = true;
   try {
@@ -424,8 +442,9 @@ async function systemApproval(toolName: string, reason: string, locale: string):
         ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SYSTEM_ASK_NOTIFY_PS, '-TimeoutSec', String(SYSTEM_ASK_TIMEOUT_SEC)],
         {
           timeout: SYSTEM_ASK_TIMEOUT_MS + 10_000,
-          // 参数走环境变量：避免命令行拼接注入（reason 可能含引号/换行）；locale 供脚本双语切换
-          env: { ...process.env, AEMEATH_ASK_TOOL: toolName, AEMEATH_ASK_REASON: reason, AEMEATH_ASK_LOCALE: locale },
+          // 参数走环境变量：避免命令行拼接注入（reason / detail 是模型可控文本，可能含引号/换行）；
+          // locale 供脚本双语切换；detail = 参数摘要（toast 第三行 / 气泡里展示）
+          env: { ...process.env, AEMEATH_ASK_TOOL: toolName, AEMEATH_ASK_REASON: reason, AEMEATH_ASK_DETAIL: detail, AEMEATH_ASK_LOCALE: locale },
           windowsHide: true, // 隐藏 PowerShell 控制台黑框（通知/托盘是 GUI，不受影响）
         },
       );
@@ -763,9 +782,11 @@ export function apply(ctx: Context, config: CommonConfig): void {
     const decision = await next();
     if (decision.kind !== 'allow') return decision;
     if (!exec.name.startsWith('mcp__control__')) return decision;
-    const reason = `${exec.name} 会在用户机器上真实操作键鼠/窗口或启动程序，需要您确认后才会执行。`;
+    // 参数必须让用户看到（见 describeToolArgs）：MessageBox / Web UI 走 reason，toast / 气泡走 detail
+    const detail = describeToolArgs(exec.arguments);
+    const reason = `${exec.name} 会在用户机器上真实操作键鼠/窗口或启动程序，需要您确认后才会执行。${detail ? `\n参数：${detail}` : ''}`;
     if (systemApprovalEnabled) {
-      const verdict = await systemApproval(exec.name, reason, currentLocale(ctx));
+      const verdict = await systemApproval(exec.name, reason, detail, currentLocale(ctx));
       if (verdict === 'allow') {
         log(`[gate] ${exec.name} 用户已批准（系统通知）`);
         return decision;

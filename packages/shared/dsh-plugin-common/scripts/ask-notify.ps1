@@ -45,8 +45,11 @@ Add-Type -AssemblyName System.Drawing
 
 $tool = $env:AEMEATH_ASK_TOOL
 $reason = $env:AEMEATH_ASK_REASON
+# 参数摘要（模型可控文本，已在 TS 侧截断）：必须让用户看到要启动什么 / 输入什么
+$detail = $env:AEMEATH_ASK_DETAIL
 if ([string]::IsNullOrEmpty($tool)) { $tool = '未知工具' }
 if ([string]::IsNullOrEmpty($reason)) { $reason = '' }
+if ([string]::IsNullOrEmpty($detail)) { $detail = '' }
 
 # —— 本地化（AEMEATH_ASK_LOCALE：zh/en，缺省 zh）——
 $locale = $env:AEMEATH_ASK_LOCALE
@@ -101,14 +104,17 @@ function Esc-Xml([string]$s) {
     return [System.Security.SecurityElement]::Escape([string]$s)
 }
 $toolEsc = Esc-Xml $tool
+$detailEsc = Esc-Xml $detail
 $uiTitleEsc = Esc-Xml $uiTitle
 $uiAllowEsc = Esc-Xml $uiAllow
 $uiDenyEsc = Esc-Xml $uiDeny
+# ToastText04 = 标题 + 两行正文：第二行放参数摘要（程序路径 / 要输入的文字）
 $toastXml = @"
 <toast activationType="protocol" launch="aemeath-approval://timeout?n=$nonce">
-  <visual><binding template="ToastText02">
+  <visual><binding template="ToastText04">
     <text id="1">$uiTitleEsc</text>
     <text id="2">$toolEsc — $uiHint</text>
+    <text id="3">$detailEsc</text>
   </binding></visual>
   <actions>
     <action content="$uiAllowEsc" arguments="aemeath-approval://allow?n=$nonce" activationType="protocol"/>
@@ -148,7 +154,11 @@ if (-not $hkAllow -or -not $hkDeny) {
     $hotkeyHint = $uiHotkeyHint
 }
 $ni.BalloonTipTitle = $uiTitle
-$ni.BalloonTipText = "$uiBalloon$hotkeyHint"
+# 气泡正文同样带参数摘要；系统上限约 255 字符，超出截断
+$balloon = "$uiBalloon$hotkeyHint"
+if ($detail) { $balloon = "$balloon`n$detail" }
+if ($balloon.Length -gt 250) { $balloon = $balloon.Substring(0, 249) + '…' }
+$ni.BalloonTipText = $balloon
 $ni.BalloonTipIcon = 'Info'
 
 # —— 决策（任意来源先到先得）——
