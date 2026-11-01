@@ -17,6 +17,7 @@
 // ============================================================
 
 import { readFileSync } from 'node:fs';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join, isAbsolute } from 'node:path';
 import { lookup } from 'node:dns/promises';
 import { execFile } from 'node:child_process';
@@ -282,6 +283,54 @@ export function globalDefaultRole(ctx: unknown): string | undefined {
  */
 export function resolveRole(ctx: unknown, session: unknown, fallback?: string): string | undefined {
   return resolvePresetCompat(ctx, session) ?? globalDefaultRole(ctx) ?? fallback;
+}
+
+// ============================================================
+// /aemeath/api/* 鉴权
+//
+// ⚠️⚠️ 真机踩过：webServer.register 注册的路由**不经过 dsh 的认证**。
+//   dsh 自己的 /api 没 token 回 401，但 /aemeath/api/memory 等无 token 直接 200，
+//   且不校验 Host —— 任何网页经 DNS rebinding（Host: attacker.example:3081）
+//   就能读走全部记忆 / 课堂笔记 / 习题。checkWriteOrigin 只管写、且放行无 Origin。
+//
+// 修法照官方插件（dsh-host-open-in-app / inspector）：每个请求先过
+// `ctx.connection.requestRejection(req)` —— 与 /api 同一道门
+// （Host/Origin 白名单 + 已登录 cookie；Electron 与浏览器加载带 token 的
+// 地址后都持有该 cookie，前端 fetch 同源自动带上）。
+// ============================================================
+
+interface ConnectionLike {
+  requestRejection(request: { headers: IncomingMessage['headers'] }): 401 | 403 | undefined;
+}
+
+function connectionOf(ctx: unknown): ConnectionLike | undefined {
+  try {
+    const c = ctx as { reflect?: { get?: (name: string, strict?: boolean) => unknown } } | undefined;
+    const found = c?.reflect?.get?.('connection', false) ?? Reflect.get(ctx as object, 'connection');
+    return typeof (found as ConnectionLike | undefined)?.requestRejection === 'function' ? (found as ConnectionLike) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 拒绝未认证 / 不受信来源的 HTTP 请求（/aemeath/api/* 的统一门禁）。
+ * connection 服务缺失时 **fail closed**（503）：没有它就无法判定 cookie。
+ * @returns true = 已拒绝且响应已写出，调用方直接 return；false = 放行
+ */
+export function rejectUnauthenticated(ctx: unknown, req: IncomingMessage, res: ServerResponse): boolean {
+  let status: 401 | 403 | 503 | undefined;
+  try {
+    const connection = connectionOf(ctx);
+    status = connection ? connection.requestRejection(req) : 503;
+  } catch {
+    status = 503;
+  }
+  if (status === undefined) return false;
+  const error = status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : 'connection service unavailable';
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify({ ok: false, error }));
+  return true;
 }
 
 /**

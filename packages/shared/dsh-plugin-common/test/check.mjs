@@ -4,7 +4,7 @@
 // 注：用 node 直接执行（node:test 的子进程 spawn 在沙箱下不可用）
 // ============================================================
 import assert from 'node:assert/strict';
-import { checkOoc, extractText, runtimeContextDirective, executionDirective, relationshipCueFor, resolveRole } from '../lib/index.js';
+import { checkOoc, extractText, runtimeContextDirective, executionDirective, relationshipCueFor, resolveRole, rejectUnauthenticated } from '../lib/index.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -147,6 +147,39 @@ t('resolveRole：会话没选 → 回退全局默认', () => {
 t('resolveRole：没会话也没 registry 服务 → 回退 fallback', () => {
   assert.equal(resolveRole({}, undefined, 'physicist'), 'physicist');
   assert.equal(resolveRole(undefined, undefined), undefined);
+});
+
+// /aemeath/api/* 鉴权：复用 dsh connection.requestRejection（与 /api 同一道门）
+const fakeRes = () => {
+  const r = { status: undefined, body: undefined };
+  r.writeHead = (s) => { r.status = s; return r; };
+  r.end = (b) => { r.body = b; };
+  return r;
+};
+const connCtx = (verdict) => ({ reflect: { get: (name) => (name === 'connection' ? { requestRejection: () => verdict } : undefined) } });
+const req = { headers: { host: '127.0.0.1:3081' } };
+
+t('rejectUnauthenticated：已登录 → 放行，不写响应', () => {
+  const res = fakeRes();
+  assert.equal(rejectUnauthenticated(connCtx(undefined), req, res), false);
+  assert.equal(res.status, undefined);
+});
+
+t('rejectUnauthenticated：无 cookie / Host 不受信 → 401 / 403 并结束响应', () => {
+  for (const code of [401, 403]) {
+    const res = fakeRes();
+    assert.equal(rejectUnauthenticated(connCtx(code), req, res), true);
+    assert.equal(res.status, code);
+    assert.equal(JSON.parse(res.body).ok, false);
+  }
+});
+
+t('rejectUnauthenticated：取不到 connection 服务 → fail closed（503）', () => {
+  for (const ctx of [{}, undefined, { reflect: { get: () => { throw new Error('no inject'); } } }]) {
+    const res = fakeRes();
+    assert.equal(rejectUnauthenticated(ctx, req, res), true);
+    assert.equal(res.status, 503);
+  }
 });
 
 console.log(`\n[ooc-check] ${passed} 项断言全部通过`);

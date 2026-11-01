@@ -619,6 +619,24 @@ t('人格段与日志用同一个解析函数（避免日志误导）', () => {
   assert.ok(calls >= 2, `人格段与日志都应调用 roleForAgent（实际 ${calls} 处）`);
 });
 
+// 真机踩过：webServer.register 的路由不经过 dsh 认证 —— /aemeath/api/memory 等无 token 就 200，
+// 且不查 Host（DNS rebinding 可读走全部记忆/笔记/习题）。每个数据路由都要先过
+// common 的 rejectUnauthenticated（= dsh connection.requestRejection，与 /api 同一道门）。
+t('/aemeath/api/* 数据路由都先过 rejectUnauthenticated', () => {
+  const ui = stripComments(readFileSync(join(REPO_ROOT, 'packages/ui/dsh-plugin-ui/src/index.ts'), 'utf-8'));
+  const uiRoutes = ui.match(/webServer\.register\(\{ kind: 'exact', path: '\/aemeath\/api\/[^']*', handler: [^}]*\}/g) || [];
+  assert.ok(uiRoutes.length >= 12, `ui 应注册 12 条 /aemeath/api 路由（实际 ${uiRoutes.length}）`);
+  for (const r of uiRoutes) assert.match(r, /handler: guarded\(/, `未加门禁：${r}`);
+  assert.match(ui, /const guarded = [\s\S]{0,120}rejectUnauthenticated\(ctx, req, res\)/, 'guarded 应调用 rejectUnauthenticated');
+
+  for (const pkg of ['lecture/dsh-plugin-lecture', 'exercise/dsh-plugin-exercise']) {
+    const live = stripComments(readFileSync(join(REPO_ROOT, `packages/${pkg}/src/index.ts`), 'utf-8'));
+    const handler = live.match(/const handler = \([^)]*\)[^{]*\{([\s\S]{0,200})/);
+    assert.ok(handler, `${pkg}：找不到 HTTP handler`);
+    assert.match(handler[1], /^\s*if \(rejectUnauthenticated\(ctx, req, res\)\) return;/, `${pkg}：handler 第一句应是鉴权`);
+  }
+});
+
 // 同一个 bug 的第二轮：common 修好后，worldbook / retriever / curriculum 各自复制的
 // liveRole() 仍是「全局默认在前」—— 全局默认切到 aemeath 后，学霸会话里讲义不注入、
 // 课程清单为空、worldbook 注入的是爱弥斯馆。现在统一走 common 的 resolveRole。

@@ -17,7 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readSetting, registerVolatileSettings } from '@aemeath/dsh-plugin-common';
+import { readSetting, registerVolatileSettings, rejectUnauthenticated } from '@aemeath/dsh-plugin-common';
 import z from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-settings';
@@ -623,19 +623,23 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
   });
 
   // 注册路由（精确路径，含尾部斜杠变体）
+  // 每个 handler 先过 rejectUnauthenticated —— 与 dsh /api 同一道门（Host/Origin + 已登录
+  // cookie）。原先这些路由无 token 即可读，且不查 Host（DNS rebinding 可读走全部记忆）。
+  type Handler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
+  const guarded = (h: Handler): Handler => (req, res) => (rejectUnauthenticated(ctx, req, res) ? undefined : h(req, res));
   const disposers = [
-    webServer.register({ kind: 'exact', path: '/aemeath/api/settings', handler: handle }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/settings/', handler: handle }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/memory', handler: handleMemory }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/memory/', handler: handleMemory }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/boot-info', handler: handleBootInfo }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/boot-info/', handler: handleBootInfo }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/tts', handler: handleTts }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/', handler: handleTts }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/warmup', handler: handleTtsWarmup }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/warmup/', handler: handleTtsWarmup }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/status', handler: handleTtsStatus }),
-    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/status/', handler: handleTtsStatus }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/settings', handler: guarded(handle) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/settings/', handler: guarded(handle) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/memory', handler: guarded(handleMemory) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/memory/', handler: guarded(handleMemory) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/boot-info', handler: guarded(handleBootInfo) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/boot-info/', handler: guarded(handleBootInfo) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts', handler: guarded(handleTts) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/', handler: guarded(handleTts) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/warmup', handler: guarded(handleTtsWarmup) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/warmup/', handler: guarded(handleTtsWarmup) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/status', handler: guarded(handleTtsStatus) }),
+    webServer.register({ kind: 'exact', path: '/aemeath/api/tts/status/', handler: guarded(handleTtsStatus) }),
   ];
   ctx.effect(() => () => disposers.forEach((d) => d()));
   console.log('[aemeath-ui] 设置端点已注册: GET/POST /aemeath/api/settings');

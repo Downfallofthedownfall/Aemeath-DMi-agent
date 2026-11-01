@@ -27,7 +27,7 @@ import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { BlockAssembler } from '@deepseek-ai/dsh-llm';
-import { registerVolatileSettings } from '@aemeath/dsh-plugin-common';
+import { registerVolatileSettings, rejectUnauthenticated } from '@aemeath/dsh-plugin-common';
 import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-credentials';
@@ -3071,6 +3071,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     };
 
     const handler = (req: IncomingMessage, res: ServerResponse): void => {
+      // 与 dsh /api 同一道门（Host/Origin + 已登录 cookie），见 common 的 rejectUnauthenticated
+      if (rejectUnauthenticated(ctx, req, res)) return;
       void (async () => {
         try {
           if (await symbolHandler(req, res)) return;

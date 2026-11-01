@@ -32,7 +32,7 @@ import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
-import { registerVolatileSettings } from '@aemeath/dsh-plugin-common';
+import { registerVolatileSettings, rejectUnauthenticated } from '@aemeath/dsh-plugin-common';
 import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-credentials';
@@ -1808,6 +1808,8 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     const webSid = (courseId: string): string => `web:${courseId}`;
 
     const handler = (req: Parameters<typeof handleLectureHttp>[0], res: Parameters<typeof handleLectureHttp>[1]): void => {
+      // 与 dsh /api 同一道门（Host/Origin + 已登录 cookie），见 common 的 rejectUnauthenticated
+      if (rejectUnauthenticated(ctx, req, res)) return;
       void handleLectureHttp(req, res, {
         store,
         log,
