@@ -215,6 +215,8 @@ const runTurn = async (h, sid, query, reply, waitSettleMs = 30) => {
   const session = makeSession(sid);
   await h.fire('session/event', session, { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: query }] } });
   await h.fire('session/event', session, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: reply }] } } });
+  // 真实宿主每轮以 turn/end 收尾；采集在 turn/end 才交出这一轮（见 turns.ts）
+  await h.fire('session/event', session, { type: 'turn/end', data: { reason: 'completed' } });
   if (waitSettleMs > 0) await new Promise((r) => setTimeout(r, waitSettleMs));
 };
 
@@ -676,6 +678,39 @@ await t('真管线 LLM claims：LLM 输出被说明文字包裹时经抢救解�
   } finally {
     globalThis.fetch = original;
   }
+});
+
+// ——————————————————————————————————————————————
+// 采集：用了工具的一轮，L1 只收用户输入 + 最终输出（真机反馈"思考链也进了 L1"）
+// ——————————————————————————————————————————————
+await t('真管线：工具步骤的过程话与推理块不进 L1，最终回答进', async () => {
+  const h = makeHarness();
+  await h.start(baseConfig());
+  const session = makeSession('tool-turn', 'physicist');
+  const ev = (type, data) => h.fire('session/event', session, { type, data });
+  const query = '我这学期在准备 Physik 1 的期末，力学的能量守恒还不太熟';
+  await ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: query }] });
+  await ev('assistant/message', {
+    turn: 1,
+    step: 0,
+    message: {
+      content: [
+        { type: 'reasoning', text: '用户在备考，我应该先查课程再给建议' },
+        { type: 'text', text: '我先查一下你的课程安排。' },
+        { type: 'tool-call', id: 'c1', name: 'curriculum_query', input: {} },
+      ],
+    },
+  });
+  // 采集要等回合结束：中间步骤之后还没有任何东西进 L1
+  assert.equal(h.memoryService().l1Count('tool-turn'), 0);
+  await ev('assistant/message', { turn: 1, step: 1, message: { content: [{ type: 'text', text: '能量守恒先抓住 Ek + Ep 不变，下面给你三道练习题。' }] } });
+  await ev('turn/end', { turn: 1, reason: 'completed' });
+  await new Promise((r) => setTimeout(r, 30));
+  const turns = h.memoryService().l1Turns('tool-turn');
+  assert.equal(turns.length, 1, `这一轮应进 L1 缓冲，实际：${JSON.stringify(turns)}`);
+  assert.equal(turns[0].query, query);
+  assert.equal(turns[0].reply, '能量守恒先抓住 Ek + Ep 不变，下面给你三道练习题。');
+  assert.ok(!/先查一下|应该先查/.test(turns[0].reply), '工具前的过程话 / 推理不该进 L1');
 });
 
 console.log(`\n[memory-plugin-e2e] ${passed} 项断言全部通过`);

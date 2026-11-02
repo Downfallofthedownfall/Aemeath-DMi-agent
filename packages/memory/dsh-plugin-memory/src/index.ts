@@ -48,6 +48,8 @@ import { findClosableClaims, closeClaims, prepareClaims, activeClaimOf, timeline
 import { canonicalAttr, CANONICAL_ATTRS } from './attributes.js';
 // T3/T6（借 ripples-of-aion）：autoDream 空闲整合 + LLM 抢救解析
 import { Consolidator, parseLlmJson, type InsightRecordInput } from './insights.js';
+// 每轮 (用户输入, 最终输出) 配对：工具步骤里的过程话不进 L1
+import { TurnCollector, type CollectedTurn } from './turns.js';
 // T7：护栏集中表
 import {
   CONSOLIDATION_CATCHUP_DELAY_MS,
@@ -498,19 +500,10 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   );
   log('ctx.memory 服务已注册（search/list/save/softDelete/stats/scratch/l1/knowledge/toWorldbook/relationshipCue/timeline/dreamNow）');
 
-  // ---- 事实采集：缓冲每轮 (query, reply)，配对后进入 L1 分层 ----
-  interface CollectedTurn { query: string; reply: string; preset: string; ts: number }
-  const turnBuffer = new Map<string, CollectedTurn>();
-  // 第三关：turnBuffer 防无界增长——单轮未配对（assistant 消息缺失/会话中断）会滞留，
-  // 超过上限时淘汰最旧（Map 保持插入序）
-  const TURN_BUFFER_MAX = 200;
-  const trimTurnBuffer = (): void => {
-    while (turnBuffer.size > TURN_BUFFER_MAX) {
-      const oldest = turnBuffer.keys().next().value;
-      if (oldest === undefined) break;
-      turnBuffer.delete(oldest);
-    }
-  };
+  // ---- 事实采集：缓冲每轮 (用户输入, 最终输出)，回合结束后进入 L1 分层 ----
+  // 配对规则见 turns.ts：带工具调用的 step 是中间过程，正文不收；取最后一个无工具 step 的正文。
+  // 第三关：未配对轮次（turn/end 缺失/会话中断）有上限，超限淘汰最旧（TurnCollector 内部）。
+  const turnBuffer = new TurnCollector();
 
   // ---- A3 mood observer 滚动窗口（近 MOOD_WINDOW_CAP 轮观测做多数表决；按 preset 维护） ----
   const moodWindow = new Map<string, string[]>();
@@ -532,27 +525,15 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           .map((b: { type?: string; text?: string }) => (b.type === 'text' ? b.text ?? '' : ''))
           .join('')
           .trim();
-        if (text) {
-          turnBuffer.set(sid, { query: text, reply: '', preset: resolvePresetCompat(ctx, session) ?? config.defaultPreset ?? '', ts: Date.now() });
-          trimTurnBuffer();
-        }
+        if (text) turnBuffer.userMessage(sid, text, resolvePresetCompat(ctx, session) ?? config.defaultPreset ?? '', Date.now());
       } else if (event.type === 'assistant/message') {
-        const buf = turnBuffer.get(sid);
-        if (!buf) return;
-        const text = (event.data.message?.content ?? [])
-          .map((b: { type?: string; text?: string }) => (b.type === 'text' ? b.text ?? '' : ''))
-          .join('')
-          .trim();
-        buf.reply = text;
-        turnBuffer.delete(sid);
-        void processTurn(sid, buf);
+        // 每个模型 step 一条：只记最终输出，不在这里结束配对（后面可能还有工具步骤 / 重写）
+        turnBuffer.assistantMessage(sid, event.data.message?.content ?? []);
       } else if (event.type === 'turn/end') {
-        // 兜底配对（2026-08-17 修复）：assistant/message 缺失/异常时（如 LLM 失败、
-        // 流中断），turn/end 时仍处理已缓冲的用户轮次，避免事实丢失。
-        const buf = turnBuffer.get(sid);
-        if (!buf) return;
-        turnBuffer.delete(sid);
-        void processTurn(sid, buf);
+        // 回合结束才交出这一轮（2026-08-17 起 turn/end 也是 LLM 失败/流中断时的兜底：
+        // 没有最终输出时 reply 为空串，用户输入照样进规则初筛，事实不丢）。
+        const turn = turnBuffer.turnEnd(sid);
+        if (turn) void processTurn(sid, turn);
       }
     } catch (e) {
       warn(`采集失败: ${(e as Error).message}`);
@@ -1252,7 +1233,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   // 累积，短会话（1-2 轮）永远达不到 minBatch——session/flush 的"攒批留到下次"对短会话
   // 实际永不发生，会导致 L1 无限积压（用户曾见 53 轮未清）。会话真正结束时强制落库清空。
   ctx.on('session/disposed', (session) => {
-    turnBuffer.delete(session.id);
+    turnBuffer.drop(session.id);
     memoryService.clearScratch(session.id);
     if (memoryService.l1Count(session.id) > 0) {
       void summarizeL1(session.id, false, true).catch((e) => warn(`L1 会话结束总结失败: ${(e as Error).message}`));
