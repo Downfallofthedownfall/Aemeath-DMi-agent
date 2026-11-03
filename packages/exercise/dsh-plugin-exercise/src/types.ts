@@ -275,7 +275,7 @@ export type Mistake = z.infer<typeof mistakeSchema>;
 export function problemStatus(p: Pick<Problem, 'answer' | 'checks' | 'notes'>): ProblemStatus {
   const answer = (p.answer ?? '').trim();
   if (!answer) return 'todo';
-  const last = lastFreshCheck(p.checks);
+  const last = lastVerdictCheck(p.checks);
   if (!last) return p.answer.length > 0 ? 'answered' : 'draft';
   if (last.verdict === 'correct') return 'checked';
   if (last.verdict === 'wrong' || last.verdict === 'partial') return 'needs_fix';
@@ -287,6 +287,21 @@ export function lastFreshCheck(checks: readonly Check[]): Check | null {
   for (let i = checks.length - 1; i >= 0; i--) {
     const c = checks[i]!;
     if (!c.stale) return c;
+  }
+  return null;
+}
+
+/**
+ * 最近一次**未过期且真的给出了结论**的检查（跳过 verdict=error 的失败检查）。
+ *
+ * 为什么要和 lastFreshCheck 分开：失败的检查也要留着（界面要显示原始输出供排障），
+ * 但它不是结论 —— 拿它当"最新结论"会盖住上一次真正的批改：状态从「待修改」
+ * 变回「已作答」，答辩也会对着一条没有任何 issue 的空检查去辩。
+ */
+export function lastVerdictCheck(checks: readonly Check[]): Check | null {
+  for (let i = checks.length - 1; i >= 0; i--) {
+    const c = checks[i]!;
+    if (!c.stale && c.verdict !== 'error') return c;
   }
   return null;
 }
@@ -381,6 +396,21 @@ export function mistakeIdAt(now: number, seq: number): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `m${y}${m}${day}-${String(seq).padStart(3, '0')}`;
+}
+
+/**
+ * 不与已有错题撞车的新 id。
+ *
+ * 为什么不能只用 `条数 + 1`（早先的写法）：删过一条之后条数变小，
+ * 同一天就会再生成一个已经存在的 id，而 upsertMistake 按 id 合并 ——
+ * 新错题会把另一道题的错题记录整条改写掉。
+ */
+export function nextMistakeId(now: number, existingIds: readonly string[]): string {
+  const used = new Set(existingIds);
+  let seq = existingIds.length + 1;
+  let id = mistakeIdAt(now, seq);
+  while (used.has(id)) id = mistakeIdAt(now, ++seq);
+  return id;
 }
 
 // ============================================================

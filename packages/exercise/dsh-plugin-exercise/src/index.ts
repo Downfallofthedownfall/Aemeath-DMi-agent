@@ -21,7 +21,7 @@
 
 import { join, isAbsolute } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -81,7 +81,8 @@ import { ASSETS_PREFIX, serveExerciseAsset } from './assets.js';
 import {
   deriveTitle,
   lastFreshCheck,
-  mistakeIdAt,
+  lastVerdictCheck,
+  nextMistakeId,
   normalizeAnswer,
   parsePoints,
   problemStatus,
@@ -559,6 +560,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     lastLlmReasoning = wantReasoning ?? 'off';
     try {
       let withReasoning = !!wantReasoning;
+      // 实际被接受的模型：下面放大预算重试时要沿用它，不能又回到被拒的那个
+      let usedModel = model;
       let resp = await call(model, withReasoning).catch(() => null);
       if (resp && (resp.status === 400 || resp.status === 404)) {
         // 模型 id 不被接受（不同 provider 目录的命名不同）→ 退回经典 id 再试一次
@@ -566,6 +569,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         if (model !== alt) {
           warn(`多模态：模型 ${model} 被拒（HTTP ${resp.status}）→ 换 ${alt} 重试`);
           resp = await call(alt, withReasoning);
+          usedModel = alt;
         }
       }
       let got = resp ? await read(resp) : null;
@@ -583,7 +587,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
             `reasoning=${got.reasoningChars} 字）→ 预算放大到 ${bigger}，推理保持 ${wantReasoning}`,
         );
         budget = bigger;
-        got = await read(await call(model, true, budget));
+        got = await read(await call(usedModel, true, budget));
         log(`多模态重试（预算 ${budget}）：len=${got?.text.length ?? 0} finish=${got?.finish ?? '?'}`);
         if (budget >= 128_000) break;
       }
@@ -1111,24 +1115,38 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
     if (!parts.length) return { ok: false, error: tr('没识别出题目（多模态/LLM 与规则都没有结果）', 'No problems recognised (neither multimodal/LLM nor rules produced a result)') };
 
+    // 分块要等多模态/LLM，期间答案可能还在自动保存 → 以磁盘上的最新版为准对齐
+    const latest = store.readSheet(input.courseId, input.sheetId) ?? sheet;
     const fresh = problemsFromSplit(parts);
-    // 按 label 对齐旧答案（题号是最稳的锚点；重新分块也不该丢答案）
+    // 按 label 对齐旧题的全部用户数据（题号是最稳的锚点；重新分块不该丢任何用户写的东西）。
+    //
+    // ⚠️ 早先只在"有文字答案"时才带回 answer/checks/notes/mistakes：
+    //    附图（含手写答案的照片）和答辩记录一律丢掉，只有照片、没打字的题更是什么都不剩。
+    //    每道旧题只认领一次，免得重复题号把同一份答案复制到几道题上。
+    const claimed = new Set<Problem>();
     let kept = 0;
     for (const p of fresh) {
-      const old = sheet.problems.find((o) => o.label === p.label);
-      if (old && old.answer.trim()) {
-        p.answer = old.answer;
-        p.checks = old.checks;
-        p.notes = old.notes;
-        p.mistakes = old.mistakes;
-        kept++;
-      }
+      const old = latest.problems.find((o) => o.label === p.label && !claimed.has(o));
+      if (!old) continue;
+      const hasUserData =
+        old.answer.trim() || old.notes.trim() || old.images.length || old.checks.length || old.rebuttals.length || old.mistakes.length;
+      if (!hasUserData) continue;
+      claimed.add(old);
+      p.answer = old.answer;
+      p.answer_updated_at = old.answer_updated_at;
+      p.answer_edited_by = old.answer_edited_by;
+      p.checks = old.checks;
+      p.rebuttals = old.rebuttals;
+      p.images = old.images;
+      p.notes = old.notes;
+      p.mistakes = old.mistakes;
+      kept++;
     }
-    sheet.problems = fresh;
-    sheet.split_by = by;
-    store.writeSheet(input.courseId, sheet);
-    log(`重新分块：${sheet.problems.length} 题（${by}，保留 ${kept} 题的答案）`);
-    return { ok: true, sheet, used_llm: by !== 'rules', note };
+    latest.problems = fresh;
+    latest.split_by = by;
+    store.writeSheet(input.courseId, latest);
+    log(`重新分块：${latest.problems.length} 题（${by}，保留 ${kept} 题的作答）`);
+    return { ok: true, sheet: latest, used_llm: by !== 'rules', note };
   };
 
   // ============================================================
@@ -1238,11 +1256,14 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     } catch (e) {
       warn(`极简模式：PDF 页面渲染失败（仍可用文本）：${(e as Error).message}`);
     }
-    if (extracted.hasText) p.text = extracted.text.slice(0, 12_000).trim();
-    sheet.has_page_images = pages > 0;
-    store.writeSheet(SCRATCH_COURSE, sheet);
-    log(`极简模式：导入题目 PDF（${extracted.pageCount} 页，文本 ${p.text.length} 字，截图 ${pages} 张）`);
-    return { ok: true, sheet, text_length: p.text.length, pages };
+    // 抽文本 + 渲染要一会儿，期间答案可能已经自动保存过 → 写回前重新读，别用开头那份旧的覆盖
+    const latest = store.readSheet(SCRATCH_COURSE, SCRATCH_SHEET) ?? sheet;
+    const lp = latest.problems[0] ?? p;
+    if (extracted.hasText) lp.text = extracted.text.slice(0, 12_000).trim();
+    latest.has_page_images = pages > 0;
+    store.writeSheet(SCRATCH_COURSE, latest);
+    log(`极简模式：导入题目 PDF（${extracted.pageCount} 页，文本 ${lp.text.length} 字，截图 ${pages} 张）`);
+    return { ok: true, sheet: latest, text_length: lp.text.length, pages };
   };
   /**
    * 思路检查（**可重复、临时**，不落盘）。
@@ -1314,7 +1335,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         answerImages: readImages('answer'),
         lang: uiLang(),
       },
-      askViaRuntime,
+      // 与正式检查同一条通道：没有全局 LLM 运行时（headless / 独立 profile）时走直连兜底。
+      // 早先这里只传 askViaRuntime，没有运行时的环境里纯文字题的思路检查永远失败。
+      askLlm,
       askVision,
     );
     if (!result.ok || !result.parsed) {
@@ -1425,7 +1448,17 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       askVision,
     );
 
+    // ⚠️ 检查要跑一两分钟（推理 + 多模态，失败还会放大预算重试），这期间用户会接着写
+    //    别的题（自动保存）、甚至改这一题。开头读的那份 sheet 已经旧了 ——
+    //    早先直接把它整份写回，检查期间写的答案在磁盘和界面上都被退回旧版；
+    //    两题同时检查时，后完成的还会把先完成的结果抹掉。
+    //    所以这里重新读一次，只把这条检查合进去。
+    const fresh = store.readSheet(input.courseId, input.sheetId);
+    const fp = fresh ? store.findProblem(fresh, p.id) : null;
+    if (!fresh || !fp) return { ok: false, error: tr('检查期间题目被删除了', 'The problem was deleted while it was being checked') };
+
     const now = Date.now();
+    const checkedSha = answerFingerprint(normalizeAnswer(p.answer));
     const check: Check = {
       id: `c${now.toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
       created_at: now,
@@ -1436,26 +1469,27 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       hints: result.check?.hints ?? [],
       next_steps: result.check?.next_steps ?? [],
       raw: (result.raw ?? '').slice(0, 4000),
-      answer_sha: answerFingerprint(normalizeAnswer(p.answer)),
-      stale: false,
+      answer_sha: checkedSha,
+      // 检查期间答案又改过 → 这条结论针对的是旧答案，一落地就是过期的
+      stale: answerFingerprint(normalizeAnswer(fp.answer)) !== checkedSha,
       provider: llmProvider(),
       reasoning: llmReasoningState(),
       withdrawn: [],
       remaining: [],
       rebutted_at: 0,
     };
-    p.checks.push(check);
-    store.writeSheet(input.courseId, sheet);
+    fp.checks.push(check);
+    store.writeSheet(input.courseId, fresh);
 
     if (!result.ok) {
       warn(`检查失败（${p.id}）：${result.error}`);
-      return { ok: false, error: result.error, check, sheet };
+      return { ok: false, error: result.error, check, sheet: fresh };
     }
 
     // 错 → 自动进错题本（可手动删/标注；autoCollectMistakes=false 时只提示）
     // 极简模式（临时做题）不进错题本：没有多项目管理，错题本只会变成垃圾场。
     let mistake: Mistake | undefined;
-    if (input.courseId !== SCRATCH_COURSE && shouldCollectMistake(p.checks)) {
+    if (input.courseId !== SCRATCH_COURSE && shouldCollectMistake(fp.checks)) {
       if (autoCollect) {
         mistake =
           collectMistakeInternal({
@@ -1471,8 +1505,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       }
     }
 
-    store.writeSheetMarkdown(input.courseId, sheet);
-    return { ok: true, check, sheet, mistake };
+    // collectMistakeInternal 自己读写 sheet（挂错题 id）→ 以磁盘上的最新版为准
+    const latest = store.readSheet(input.courseId, input.sheetId) ?? fresh;
+    store.writeSheetMarkdown(input.courseId, latest);
+    return { ok: true, check, sheet: latest, mistake };
   };
 
   // ============================================================
@@ -1563,7 +1599,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (!p) return { ok: false, error: tr('题目不存在', 'Problem not found') };
     const text = input.text.trim();
     if (!text) return { ok: false, error: tr('写点你要答辩的内容（"这一步为什么对"）', 'Write what you are rebutting ("why this step is correct")') };
-    const target = lastFreshCheck(p.checks) ?? p.checks.at(-1) ?? null;
+    // 跳过失败的检查（verdict=error，没有任何 issue）：对着它答辩没有意义，
+    // 还会把撤回/保留记到一条空检查上，真正的批改反而没动。
+    const target = lastVerdictCheck(p.checks) ?? p.checks.filter((c) => c.verdict !== 'error').at(-1) ?? null;
     if (!target) return { ok: false, error: tr('这题还没检查过 —— 先让爱弥斯检查一次，再来答辩', 'This problem has not been checked yet — ask Aemeath to check it first, then rebut') };
 
     const course = store.readIndex(input.courseId);
@@ -1623,6 +1661,14 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
     if (!result.ok || !result.rebuttal) return { ok: false, error: result.error ?? tr('答辩失败', 'Rebuttal failed') };
 
+    // 与 checkProblem 同理：答辩也要跑一两分钟，期间写的东西不能被开头那份旧 sheet 冲掉。
+    const fresh = store.readSheet(input.courseId, input.sheetId);
+    const fp = fresh ? store.findProblem(fresh, p.id) : null;
+    const freshTarget = fp?.checks.find((c) => c.id === target.id) ?? null;
+    if (!fresh || !fp || !freshTarget) {
+      return { ok: false, error: tr('答辩期间题目或那次检查被删除了', 'The problem or that check was deleted during the rebuttal') };
+    }
+
     const now = Date.now();
     const rb: Rebuttal = {
       id: `rb${now.toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
@@ -1636,23 +1682,12 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       check_id: target.id,
       model: llmProvider(),
     };
-    p.rebuttals.push(rb);
+    fp.rebuttals.push(rb);
 
     // 被撤回的 issue 记在那次检查上（UI 划掉；原始记录保留，可追溯）
-    const merged = {
-      withdrawn: [...new Set([...target.withdrawn, ...rb.withdrawn])],
-      remaining: rb.remaining,
-      rebutted_at: now,
-    };
-    for (const c of p.checks) {
-      if (c.id !== target.id) continue;
-      c.withdrawn = merged.withdrawn;
-      c.remaining = merged.remaining;
-      c.rebutted_at = merged.rebutted_at;
-    }
-    target.withdrawn = merged.withdrawn;
-    target.remaining = merged.remaining;
-    target.rebutted_at = merged.rebutted_at;
+    freshTarget.withdrawn = [...new Set([...freshTarget.withdrawn, ...rb.withdrawn])];
+    freshTarget.remaining = rb.remaining;
+    freshTarget.rebutted_at = now;
 
     // 爱弥斯认错 → 该题错题自动标"已掌握"（否则错题本永远挂着一条被撤回的"错误"）
     if (rb.outcome === 'conceded') {
@@ -1664,10 +1699,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       }
     }
 
-    store.writeSheet(input.courseId, sheet);
-    store.writeSheetMarkdown(input.courseId, sheet);
+    store.writeSheet(input.courseId, fresh);
+    store.writeSheetMarkdown(input.courseId, fresh);
     log(`答辩：outcome=${rb.outcome}（撤回 ${rb.withdrawn.length} 条，保留 ${rb.remaining.length} 条）`);
-    return { ok: true, rebuttal: rb, sheet, check: target };
+    return { ok: true, rebuttal: rb, sheet: fresh, check: freshTarget };
   };
 
   // ============================================================
@@ -1687,7 +1722,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (!p) return null;
     const course = store.readIndex(input.courseId);
     const existing = store.findMistakeFor(input.courseId, input.sheetId, p.id);
-    const check = lastFreshCheck(p.checks) ?? p.checks.at(-1) ?? null;
+    const check = lastVerdictCheck(p.checks) ?? p.checks.at(-1) ?? null;
     const now = Date.now();
     const tags = (input.tags ?? []).length
       ? input.tags!
@@ -1700,7 +1735,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           ),
         ].slice(0, 4);
     const m: Mistake = existing ?? {
-      id: mistakeIdAt(now, store.readMistakes().length + 1),
+      id: nextMistakeId(now, store.readMistakes().map((x) => x.id)),
       course_id: input.courseId,
       course_title: course?.title ?? input.courseId,
       sheet_id: sheet.id,
@@ -1859,7 +1894,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       text: p.text,
       points: p.points,
       answer: p.answer,
-      verdict: lastFreshCheck(p.checks)?.verdict ?? null,
+      verdict: lastVerdictCheck(p.checks)?.verdict ?? null,
       note: p.notes,
       // 附图：读成 data URI 内联（PDF 走 file://，不能引用 http 资源）。
       // 题干截图（role=problem）印在题目下面，解答附图印在 Lösung 下面。
@@ -2388,7 +2423,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
               status: problemStatus(p),
               answered: !!p.answer.trim(),
               check_count: p.checks.length,
-              last_verdict: lastFreshCheck(p.checks)?.verdict ?? null,
+              last_verdict: lastVerdictCheck(p.checks)?.verdict ?? null,
             })),
           ),
         });
@@ -3112,13 +3147,20 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     log('未检测到 webServer（headless profile）——HTTP 桥跳过，工具路径不受影响');
   }
 
-  // 会话退役：清理临时打印页（避免 temp/ 越积越多）
+  // 会话退役：清理**过时的**临时打印页（避免 temp/ 越积越多）。
+  //
+  // 只删放了一阵子的：任何一个会话结束都会触发这里，早先一律全删，
+  // 用户手上正开着的打印页（没找到 Chromium 时给的 print_url）会跟着 404。
+  const PRINT_PAGE_TTL_MS = 6 * 60 * 60 * 1000;
   ctx.on('session/disposed', () => {
     try {
       const dir = join(process.cwd(), 'temp', 'exercise');
       if (!existsSync(dir)) return;
+      const cutoff = Date.now() - PRINT_PAGE_TTL_MS;
       for (const f of readdirSync(dir)) {
-        if (f.endsWith('.html')) rmSync(join(dir, f), { force: true });
+        if (!f.endsWith('.html')) continue;
+        const file = join(dir, f);
+        if (statSync(file).mtimeMs < cutoff) rmSync(file, { force: true });
       }
     } catch {
       /* 清理失败不影响功能 */
