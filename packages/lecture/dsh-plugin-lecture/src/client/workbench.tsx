@@ -703,6 +703,9 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
             ) : null}
             {right === 'review' && currentUnit ? (
               <ReviewPanel
+                // 按单元重建：面板里有追问、候选、勾选、草稿等本地状态，
+                // 不重建的话切到另一讲还留着上一讲的（确认时会把 A 讲的候选交给 B 讲）。
+                key={`${courseId}/${unitId}`}
                 courseId={courseId}
                 unitId={unitId}
                 unitTitle={currentUnit.title}

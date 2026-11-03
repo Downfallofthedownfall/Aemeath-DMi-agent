@@ -248,22 +248,30 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   };
 
   /**
-   * 最近一次 LLM 失败的原因（空串 = 没有失败）。
+   * 一次 LLM 调用的结果：失败时 text 为 null，reason 写明原因（成功时为空串）。
    *
-   * 为什么要有它：`AskLlm` 的返回类型是 `string | null`，null 把
+   * 为什么要带原因：`AskLlm` 的返回类型是 `string | null`，null 把
    * "没 key / HTTP 500 / 输出被截断 / 模型返回空" 全压成同一个值，
    * 调用方只能回一句"LLM 不可用" —— 用户和我们都无从判断。
-   * 现在失败原因记在这里，调用方取一次拼进提示里。
+   *
+   * 为什么原因跟着**这一次调用**返回，而不是记在闭包里的共享变量
+   * （早先的 `lastLlmFailure`）：后台转录与复盘会并发调用 LLM，
+   * 后开始的调用一进来就把共享变量清空/改写，先失败的那个调用读到的
+   * 就是别人的原因（或者空串）。
    */
-  let lastLlmFailure = '';
+  interface LlmOutcome {
+    text: string | null;
+    reason: string;
+  }
 
-  const askLlm: AskLlm = async (prompt, opts) => {
-    lastLlmFailure = '';
+  /** 只要文本的调用方（转录员）用这个；要失败原因的用 callLlm。 */
+  const askLlm: AskLlm = async (prompt, opts) => (await callLlm(prompt, opts)).text;
+
+  const callLlm = async (prompt: string, opts: Parameters<AskLlm>[1]): Promise<LlmOutcome> => {
     const apiKey = await resolveLlmKey();
     if (!apiKey) {
-      lastLlmFailure = '没有可用的 API key（检查凭据 DEEPSEEK_API_KEY）';
       warn(`LLM 无 apiKey，跳过（${opts.purpose}）`);
-      return null;
+      return { text: null, reason: '没有可用的 API key（检查凭据 DEEPSEEK_API_KEY）' };
     }
     try {
       const body: Record<string, unknown> = {
@@ -332,35 +340,44 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             `max_tokens=${opts.maxTokens ?? '不限制'}` +
             (finish === 'length' ? ' ← 撞到 max_tokens 上限（思考 token 也算在内）' : ''),
         );
-        lastLlmFailure =
-          finish === 'length'
-            ? `输出被截断（思考 token 也算在内，max_tokens=${opts.maxTokens ?? '默认'}）`
-            : finish === '(未知)'
-              ? '模型返回空内容'
-              : `模型返回空内容（finish_reason=${finish}）`;
-        return null;
+        return {
+          text: null,
+          reason:
+            finish === 'length'
+              ? `输出被截断（思考 token 也算在内，max_tokens=${opts.maxTokens ?? '默认'}）`
+              : finish === '(未知)'
+                ? '模型返回空内容'
+                : `模型返回空内容（finish_reason=${finish}）`,
+        };
       }
       if (finish === 'length') {
         // 截断的 JSON 解析出来一定是坏的，不如明确失败，让调用方走降级。
         warn(`LLM 输出被截断（${opts.purpose}）finish_reason=length，已丢弃`);
-        lastLlmFailure = `输出被截断（max_tokens=${opts.maxTokens ?? '默认'}）`;
-        return null;
+        return { text: null, reason: `输出被截断（max_tokens=${opts.maxTokens ?? '默认'}）` };
       }
-      return content;
+      return { text: content, reason: '' };
     } catch (e) {
       // `fetch failed` 本身没有信息量 —— 真正的原因（ECONNREFUSED、
       // 证书错误、超时）在 cause 里，一并带出来。
       const err = e as Error & { cause?: { code?: string; message?: string } };
       const cause = err.cause?.code ?? err.cause?.message ?? '';
-      lastLlmFailure = cause ? `${err.message}（${cause}）` : err.message;
-      warn(`LLM 调用失败（${opts.purpose}）: ${lastLlmFailure}`);
-      return null;
+      const reason = cause ? `${err.message}（${cause}）` : err.message;
+      warn(`LLM 调用失败（${opts.purpose}）: ${reason}`);
+      return { text: null, reason };
     }
   };
 
   // ---- 会话内状态（key = dsh sessionId） ----
   const active = new Map<string, ActiveLecture>();
   const machines = new Map<string, ReviewMachine>();
+  /**
+   * 复盘所属的课程（key = dsh sessionId）。
+   *
+   * 为什么单独记：复盘的课程和"正在记的那节课"（`active`）不是一回事 ——
+   * 一边记 A 课、一边复盘 B 课完全正常。早先复盘的课程是从 `active` 推出来的，
+   * 于是跨课复盘会读写到 A 课的目录；没有 active 时还退回成 unit_id 当课程 id。
+   */
+  const reviewCourse = new Map<string, string>();
 
   /**
    * 跑一次「对照」，把结果写进状态机。
@@ -374,16 +391,14 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
    */
   const runCompare = async (
     m: ReviewMachine,
-    sessionKey: string,
+    courseId: string,
   ): Promise<{ ok: true } | { ok: false; reason: string }> => {
-    const chunks = loadChunksFromFile(sessionKey, m.current.unit_id);
-    const out = await askLlm(m.buildComparePrompt(m.current.recall_text, chunks), {
-      // 2500：对照要输出三栏 JSON，而推理模型的思考 token 也计入这个预算。
-      // 早先给 1500，笔记多一点就可能被截断（截断的 JSON 必然解析失败）。
+    const chunks = loadChunks(courseId, m.current.unit_id);
+    const { text: out, reason } = await callLlm(m.buildComparePrompt(m.current.recall_text, chunks), {
       purpose: 'lecture-compare',
       json: true, // 对照结果是结构化 JSON
     });
-    if (!out) return { ok: false, reason: lastLlmFailure || '模型没有返回内容' };
+    if (!out) return { ok: false, reason: reason || '模型没有返回内容' };
     const comp = ReviewMachine.parseComparison(out);
     if (!comp) {
       return {
@@ -420,6 +435,45 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     } catch (e) {
       warn(`写摘要失败（${courseId}/${unitId}）：${(e as Error).message}`);
     }
+  };
+
+  /**
+   * 生成第 4 步的候选条目；成功才落盘（并写摘要）。
+   *
+   * 两条路径（工具 / HTTP）、两个时机（补漏结束 / 候选缺失时重试）都走这里。
+   *
+   * ⚠️ 失败时状态机已经在 candidates，但**没有**候选文件 —— 调用方必须让这一步
+   *    能原地重试。早先工具路径在这里是死路（下一步只回"候选条目缺失"）；
+   *    前端路径则直接进确认页，点确认就把单元标成"已复盘 + 有摘要"并导出握手包，
+   *    其实什么都没产出。
+   */
+  const generateCandidates = async (
+    m: ReviewMachine,
+    courseId: string,
+  ): Promise<{ ok: true; cand: Candidates } | { ok: false; reason: string }> => {
+    const unitId = m.current.unit_id;
+    const chunks = loadChunks(courseId, unitId);
+    const processing = store.readProcessing(courseId, unitId);
+    const { text: out, reason } = await callLlm(m.buildCandidatesPrompt(chunks, processing), {
+      purpose: 'lecture-candidates',
+      json: true, // 候选条目是结构化 JSON
+    });
+    const cand = ReviewMachine.parseCandidates(out, unitId, uiLang());
+    if (!cand) {
+      return {
+        ok: false,
+        reason: out
+          ? tr(
+              `模型输出不可解析（前 80 字：${out.trim().slice(0, 80)}）`,
+              `Unparseable model output (first 80 chars: ${out.trim().slice(0, 80)})`,
+            )
+          : reason || tr('模型没有返回内容', 'The model returned nothing'),
+      };
+    }
+    store.writeCandidates(courseId, cand);
+    // D4：候选生成即写摘要（两条路径同一出口，保证 has_summary 语义一致）
+    writeSummaryFor(courseId, unitId, cand, llm.model);
+    return { ok: true, cand };
   };
 
   /**
@@ -697,6 +751,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         const sid = exec.agent?.session?.id ?? 'default';
         const cur = activeOf(sid);
         if (!cur) return fail('尚未开始课堂（请先调用 lecture_session_start）');
+        syncChunksFromDisk(cur);
         const understanding = (args.my_understanding ?? '').trim();
         const question = (args.my_question ?? '').trim();
         // 留白缺失时**照样落盘**，只是标记为未完成并提示追问。
@@ -809,6 +864,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               : '当前没有进行中的课堂，磁盘上也还没有任何课程记录。',
           });
         }
+        syncChunksFromDisk(cur);
         const blanks = allBlanksOk(cur.chunks);
         return ok({
           active: true,
@@ -846,10 +902,12 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         const existing = store.readReviewState(index.course_id, args.unit_id);
         const machine = new ReviewMachine(args.unit_id, existing, uiLang());
         machines.set(sid, machine);
-        // 让 courseIdOf() 在无 active 课堂时也能解析（会话重启后复盘）
-        if (!active.has(sid)) {
-          active.set(sid, { courseId: index.course_id, unitId: args.unit_id, title: unit.title, date: unit.date, chunks: [] });
-        }
+        // 复盘的课程单独记（见 reviewCourse 的注释）。
+        //
+        // ⚠️ 不要再往 `active` 里塞一个 `chunks: []` 的占位课堂（早先的做法）：
+        //    之后这个会话一旦调 lecture_capture，就会把这一讲的笔记整份重写成
+        //    只剩新的那一块。
+        reviewCourse.set(sid, index.course_id);
         log(`复盘开始：${index.course_id}/${args.unit_id}（step=${machine.step}）`);
         return ok({
           step: machine.step,
@@ -879,15 +937,16 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         const sid = exec.agent?.session?.id ?? 'default';
         const m = machines.get(sid);
         if (!m) return fail('尚未开始复盘（请先调用 lecture_review_start）');
+        const cid = reviewCourse.get(sid) ?? '';
         const text = args.text.trim();
         if (!text) return fail('内容为空');
 
         // 第 1 步 → 第 2 步（对照）
         if (m.step === 'recall') {
           m.submitRecall(text);
-          const cmp = await runCompare(m, sid);
+          const cmp = await runCompare(m, cid);
           if (!cmp.ok) {
-            persistReview(sid, m);
+            persistReview(cid, m);
             // 把**具体原因**返回，而不是笼统的"LLM 不可用"
             return ok({
               step: 'compare',
@@ -899,7 +958,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               ),
             });
           }
-          persistReview(sid, m);
+          persistReview(cid, m);
           return ok({
             step: m.step,
             comparison: JSON.stringify(m.current.comparison),
@@ -909,9 +968,8 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
 
         // 第 3 步：记录回答，给出下一个追问
         if (m.step === 'repair') {
-          const lastQ = m.current.repair_turns.filter((t) => t.answer === '').at(-1)?.question ?? m.current.repair_turns.at(-1)?.question ?? '(未记录的上一问)';
-          m.addRepairTurn(lastQ, text);
-          persistReview(sid, m);
+          m.answerRepair(text, '(未记录的上一问)');
+          persistReview(cid, m);
 
           // 问够了就收尾（用户："不要追着我一直问"）。
           // 两种结束条件：轮数到上限，或模型说 DONE。
@@ -919,11 +977,11 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             return ok({ step: 'repair', question: null, done: true, note: tr('补漏到此为止（已经问得够多了），可以进入下一步。', 'Enough repair questions — you can move on.') });
           }
 
-          const out = await askLlm(m.buildRepairPrompt(), {
-              purpose: 'lecture-repair',
-              // 纯文本追问，不要 json
-            });
-          if (!out) return ok({ step: 'repair', question: null, note: tr('追问生成失败（LLM 不可用）', 'Follow-up generation failed (LLM unavailable)') });
+          const { text: out, reason } = await callLlm(m.buildRepairPrompt(), {
+            purpose: 'lecture-repair',
+            // 纯文本追问，不要 json
+          });
+          if (!out) return ok({ step: 'repair', question: null, note: `${tr('追问生成失败', 'Follow-up generation failed')}：${reason || tr('模型没有返回内容', 'the model returned nothing')}` });
           if (ReviewMachine.isRepairDone(out)) {
             return ok({ step: 'repair', question: null, done: true, note: tr('模型认为该确认的都确认了，可以进入下一步。', 'The model thinks everything needed has been confirmed — you can move on.') });
           }
@@ -938,7 +996,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             });
           }
           m.addRepairTurn(q, '');
-          persistReview(sid, m);
+          persistReview(cid, m);
           return ok({ step: 'repair', question: q, instruction: '让学生先回答，不要替他答。' });
         }
 
@@ -962,13 +1020,13 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         const sid = exec.agent?.session?.id ?? 'default';
         const m = machines.get(sid);
         if (!m) return fail('尚未开始复盘');
-        const cid = courseIdOf(sid);
+        const cid = reviewCourse.get(sid) ?? '';
 
         if (m.step === 'compare') {
           // 对照失败后停在 compare：就地重试，不让用户重说一遍。
           if (!m.current.recall_text) return fail('还没有「你先说」的内容');
-          const retry = await runCompare(m, sid);
-          persistReview(sid, m);
+          const retry = await runCompare(m, cid);
+          persistReview(cid, m);
           if (!retry.ok) return ok({ step: 'compare', comparison: null, note: `对照重试失败：${retry.reason}` });
           return ok({
             step: m.step,
@@ -982,23 +1040,23 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
         //    或者补漏整个被跳过（D12 失效）。
         //    按"有没有问过问题"区分：没问过 = 生成第一个；问过了 = 结束补漏。
         if (m.step === 'repair' && m.current.repair_turns.length === 0) {
-          const out = await askLlm(m.buildRepairPrompt(), {
+          const { text: out, reason } = await callLlm(m.buildRepairPrompt(), {
             purpose: 'lecture-repair',
             // 纯文本追问，不要 json
           });
           if (!out) {
-            persistReview(sid, m);
-            return ok({ step: 'repair', question: null, note: `第一个问题生成失败：${lastLlmFailure || '模型没有返回内容'}` });
+            persistReview(cid, m);
+            return ok({ step: 'repair', question: null, note: `第一个问题生成失败：${reason || '模型没有返回内容'}` });
           }
           // 学生全都记住了 → 模型直接说 DONE，不用硬造问题
           if (ReviewMachine.isRepairDone(out)) {
-            persistReview(sid, m);
+            persistReview(cid, m);
             return ok({ step: 'repair', question: null, done: true, note: tr('没有需要补漏的点，可以直接进入下一步。', 'Nothing to repair — you can move on.') });
           }
           const firstQ = out.trim();
           if (looksLikeDirectAnswer(firstQ)) {
             warn('引导输出疑似直接给答案（D12 护栏触发），已拦截');
-            persistReview(sid, m);
+            persistReview(cid, m);
             return ok({
               step: 'repair',
               question: null,
@@ -1006,37 +1064,30 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             });
           }
           m.addRepairTurn(firstQ, '');
-          persistReview(sid, m);
+          persistReview(cid, m);
           return ok({ step: 'repair', question: firstQ, instruction: '让学生先回答，不要替他答。' });
         }
 
-        if (m.step === 'repair') {
-          m.finishRepair();
-          const chunks = loadChunksFromFile(sid, m.current.unit_id);
-          const unitId = m.current.unit_id;
-          const processing = store.readProcessing(cid, unitId);
-          const out = await askLlm(m.buildCandidatesPrompt(chunks, processing), {
-            purpose: 'lecture-candidates',
-            json: true, // 候选条目是结构化 JSON
-          });
-          const cand = ReviewMachine.parseCandidates(out, unitId, uiLang());
-          if (!cand) {
-            persistReview(sid, m);
-            return ok({ step: m.step, candidates: null, note: tr('候选条目生成失败（LLM 不可用或输出不可解析）', 'Candidate generation failed (LLM unavailable or output unparseable)') });
+        // 补漏结束 → 生成候选；或者上次生成失败、停在 candidates 却没有候选 → 原地重试。
+        // （摘要的写入时机见 generateCandidates：两条路径都在候选生成时写。）
+        if (
+          m.step === 'repair' ||
+          (m.step === 'candidates' && !store.readCandidates(cid, m.current.unit_id))
+        ) {
+          if (m.step === 'repair') m.finishRepair();
+          persistReview(cid, m);
+          const gen = await generateCandidates(m, cid);
+          if (!gen.ok) {
+            return ok({
+              step: m.step,
+              candidates: null,
+              note: `${tr('候选条目生成失败', 'Candidate generation failed')}：${gen.reason}`,
+              retry: tr('再调一次 lecture_review_next 重新生成', 'Call lecture_review_next again to regenerate'),
+            });
           }
-          store.writeCandidates(cid, cand);
-          // D4：复盘到第 4 步（候选生成）才写摘要。
-          //
-          // ⚠️ 两条路径（工具 / HTTP）必须**在同一时刻**写摘要，否则
-          //    `has_summary` 的含义会分裂：工具的路径第 4 步就有摘要，
-          //    前端的路径要等第 5 步确认。两边都用本处语义：
-          //    「候选生成 = 已产出可握手的内容」→ 写摘要。
-          //    （早先前端路径把摘要在 commit 时才写，已统一到这里。）
-          writeSummaryFor(cid, unitId, cand, llm.model);
-          persistReview(sid, m);
           return ok({
             step: m.step,
-            candidates: JSON.stringify(cand),
+            candidates: JSON.stringify(gen.cand),
             instruction: '请逐条确认/修改/删除，然后调用 lecture_review_next 完成写入。',
           });
         }
@@ -1045,7 +1096,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           const cand = store.readCandidates(cid, m.current.unit_id);
           if (!cand) return fail('候选条目缺失，无法进入确认步');
           m.setCandidates();
-          persistReview(sid, m);
+          persistReview(cid, m);
           return ok({ step: m.step, candidates: JSON.stringify(cand) });
         }
 
@@ -1055,7 +1106,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
           if (!cand) return fail('候选条目缺失');
           m.commit();
           store.markUnit(cid, unitId, { reviewed: true, has_summary: true });
-          persistReview(sid, m);
+          persistReview(cid, m);
           // 可选：导出为讲义供主 agent 检索（plan §4.2）
           let exported = '';
           if (exportToNotes) {
@@ -1650,7 +1701,18 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   // 内部辅助
   // ============================================================
 
-  const courseIdOf = (sid: string): string => activeOf(sid)?.courseId ?? machines.get(sid)?.current.unit_id ?? '';
+  /**
+   * 以磁盘为准刷新当前课堂的块。
+   *
+   * 为什么：`cur.chunks` 是内存态，而同一讲在工作台里也能追加速记、改留白
+   * （都直接改 markdown）。capture 若拿着旧的内存块整份重写，就会把那些改动冲掉。
+   * 读不到文件（还没落过盘）时保留内存态。
+   */
+  function syncChunksFromDisk(cur: ActiveLecture): void {
+    const unit = store.readIndex(cur.courseId)?.units.find((u) => u.id === cur.unitId);
+    const md = unit ? store.readUnitMarkdown(cur.courseId, unit) : null;
+    if (md !== null) cur.chunks = parseUnitMarkdown(md).chunks;
+  }
 
   /** 落盘当前课堂记录（markdown）。 */
   function persist(cur: ActiveLecture): void {
@@ -1704,23 +1766,26 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     }
   }
 
-  /** 从文件恢复块（会话重启后复盘仍可用）。 */
-  function loadChunksFromFile(sid: string, unitId: string): RawChunk[] {
-    const cid = courseIdOf(sid);
-    if (!cid) return [];
-    const index = store.readIndex(cid);
+  /**
+   * 读某一讲已落盘的块（复盘对照 / 候选都以它为准）。
+   *
+   * 课程 id 由调用方**直接给**：早先是从会话 id 反推（`web:<课程>` 或 active 课堂），
+   * 推不出来时静默返回空 —— 对照就拿着「(无记录)」去比，没有任何报错。
+   */
+  function loadChunks(courseId: string, unitId: string): RawChunk[] {
+    if (!courseId) return [];
+    const index = store.readIndex(courseId);
     const unit = index?.units.find((u) => u.id === unitId);
     if (!unit) return [];
-    const md = store.readUnitMarkdown(cid, unit);
+    const md = store.readUnitMarkdown(courseId, unit);
     if (!md) return [];
     return parseUnitMarkdown(md).chunks;
   }
 
-  function persistReview(sid: string, m: ReviewMachine): void {
-    const cid = courseIdOf(sid) || activeOf(sid)?.courseId;
-    if (!cid) return;
+  function persistReview(courseId: string, m: ReviewMachine): void {
+    if (!courseId) return;
     try {
-      store.writeReviewState(cid, m.current);
+      store.writeReviewState(courseId, m.current);
     } catch (e) {
       warn(`复盘状态落盘失败: ${(e as Error).message}`);
     }
@@ -1743,6 +1808,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   ctx.on('session/disposed', (session) => {
     active.delete(session.id);
     machines.delete(session.id);
+    reviewCourse.delete(session.id);
     // 只清**本会话自己的**指针：别的 profile/会话的指针不归我们管
     //（早先单文件实现会把别人的指针一起删掉，属于跨 owner 误伤）。
     clearPointer(session.id);
@@ -1802,9 +1868,8 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   }
 
   if (webServer?.register) {
-    // 前端没有 dsh session，用 `web:<课程id>` 作为合成会话标识。
-    // 与下面 loadChunksFromFile 的 `web:${courseId}` 约定一致
-    //（courseIdOf 会把它解回课程 id）。
+    // 前端没有 dsh session，开课时用 `web:<课程id>` 作为合成会话标识（指针按它分片）。
+    // 复盘不靠它：请求里本来就带着 course_id，直接用。
     const webSid = (courseId: string): string => `web:${courseId}`;
 
     const handler = (req: Parameters<typeof handleLectureHttp>[0], res: Parameters<typeof handleLectureHttp>[1]): void => {
@@ -1928,6 +1993,14 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               log(`删除后清理课堂状态：${sid} → ${courseId}/${cur.unitId}`);
             }
           }
+          // 正在复盘被删的那一讲 → 一并丢掉，否则下一次落盘会把复盘文件写回已删的目录
+          for (const [sid, m] of machines) {
+            const hit = reviewCourse.get(sid) === courseId && (scope === 'course' || m.current.unit_id === unitId);
+            if (hit) {
+              machines.delete(sid);
+              reviewCourse.delete(sid);
+            }
+          }
         },
         // 前端复盘操作 → 复用状态机（与工具路径同一套 ReviewMachine）
         onReview: async (op, payload) => {
@@ -1961,7 +2034,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             const text = String(payload.text ?? '').trim();
             if (!text) return { error: tr('内容为空', 'Content is empty') };
             m.submitRecall(text);
-            const cmp = await runCompare(m, `web:${courseId}`);
+            const cmp = await runCompare(m, courseId);
             if (!cmp.ok) {
               save();
               // 把具体原因带给前端；此时 step 停在 compare，
@@ -1980,8 +2053,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             if (m.step !== 'repair') return { step: m.step, error: tr(`当前步骤 ${m.step} 不接受补漏回答`, `Step ${m.step} does not accept a repair answer`) };
             const text = String(payload.text ?? '').trim();
             if (!text) return { error: tr('内容为空', 'Content is empty') };
-            const lastQ = m.current.repair_turns.filter((t) => t.answer === '').at(-1)?.question ?? tr('(追问)', '(follow-up)');
-            m.addRepairTurn(lastQ, text);
+            m.answerRepair(text, tr('(追问)', '(follow-up)'));
             save();
 
             // 问够了就收尾（用户："不要追着我一直问"）。
@@ -1995,11 +2067,17 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               };
             }
 
-            const out = await askLlm(m.buildRepairPrompt(), {
+            const { text: out, reason } = await callLlm(m.buildRepairPrompt(), {
               purpose: 'lecture-repair',
               // 纯文本追问，不要 json
             });
-            if (!out) return { step: 'repair', question: null, note: tr('追问生成失败（LLM 不可用）', 'Follow-up generation failed (LLM unavailable)') };
+            if (!out) {
+              return {
+                step: 'repair',
+                question: null,
+                note: `${tr('追问生成失败', 'Follow-up generation failed')}：${reason || tr('模型没有返回内容', 'the model returned nothing')}`,
+              };
+            }
             if (ReviewMachine.isRepairDone(out)) {
               return {
                 step: 'repair',
@@ -2049,7 +2127,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
                   ),
                 };
               }
-              const retry = await runCompare(m, `web:${courseId}`);
+              const retry = await runCompare(m, courseId);
               save();
               if (!retry.ok) {
                 return {
@@ -2065,7 +2143,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               if (!m.current.comparison) {
                 return { step: 'compare', error: tr('还没有对照结果，请先完成第 1 步', 'No comparison yet — complete step 1 first') };
               }
-              const out = await askLlm(m.buildRepairPrompt(), {
+              const { text: out, reason } = await callLlm(m.buildRepairPrompt(), {
                 purpose: 'lecture-repair',
                 // 注意：**不传 json** —— 补漏要的是一句自然语言追问
               });
@@ -2073,7 +2151,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
                 return {
                   step: 'repair',
                   question: null,
-                  note: tr('追问生成失败（LLM 未返回内容），可再试一次', 'Follow-up generation failed (LLM returned nothing) — try again'),
+                  note: `${tr('追问生成失败，可再试一次', 'Follow-up generation failed — try again')}：${reason || tr('模型没有返回内容', 'the model returned nothing')}`,
                 };
               }
               // 没有需要补漏的点 → 模型直接 DONE，别硬造问题
@@ -2093,24 +2171,24 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
               save();
               return { step: 'repair', question: q };
             }
-            if (m.step === 'repair') {
-              m.finishRepair();
-              const chunks = loadChunksFromFile(`web:${courseId}`, unitId);
-              const processing = store.readProcessing(courseId, unitId);
-              const out = await askLlm(m.buildCandidatesPrompt(chunks, processing), {
-                purpose: 'lecture-candidates',
-              json: true, // 候选条目是结构化 JSON
-              });
-              const cand = ReviewMachine.parseCandidates(out, unitId, uiLang());
-              if (!cand) {
-                save();
-                return { step: 'candidates', candidates: null, note: tr('候选生成失败（LLM 不可用）', 'Candidate generation failed (LLM unavailable)') };
-              }
-              store.writeCandidates(courseId, cand);
-              // D4：候选生成即写摘要（与工具路径同一出口，保证 has_summary 语义一致）
-              writeSummaryFor(courseId, unitId, cand, llm.model);
+            // 已经有候选（刷新 / 换设备回来）→ 原样交回，让前端显示确认页
+            if (m.step === 'candidates' || m.step === 'commit') {
+              const existingCand = store.readCandidates(courseId, unitId);
+              if (existingCand) return { step: m.step, candidates: existingCand };
+            }
+            // 补漏结束 → 生成候选；或上次生成失败、停在 candidates → 原地重试
+            if (m.step === 'repair' || m.step === 'candidates' || m.step === 'commit') {
+              if (m.step === 'repair') m.finishRepair();
               save();
-              return { step: 'candidates', candidates: cand };
+              const gen = await generateCandidates(m, courseId);
+              if (!gen.ok) {
+                return {
+                  step: m.step,
+                  candidates: null,
+                  note: `${tr('候选生成失败，可再试一次', 'Candidate generation failed — try again')}：${gen.reason}`,
+                };
+              }
+              return { step: m.step, candidates: gen.cand };
             }
             return { step: m.step, error: tr(`当前步骤 ${m.step} 不能推进`, `Step ${m.step} cannot advance`) };
           }
@@ -2119,17 +2197,17 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
             if (m.step !== 'candidates' && m.step !== 'commit') {
               return { step: m.step, error: tr(`当前步骤 ${m.step} 不能确认写入`, `Step ${m.step} cannot confirm the commit`) };
             }
+            // 没有候选就不许确认：否则单元被标成"已复盘 + 有摘要"，其实什么都没产出
+            const stored = store.readCandidates(courseId, unitId);
+            if (!stored) return { step: m.step, error: tr('还没有候选条目，请先重新生成', 'No candidates yet — regenerate them first') };
             if (m.step === 'candidates') m.setCandidates();
-            const accepted = payload.accepted as Candidates | null;
-            const cand = accepted ?? store.readCandidates(courseId, unitId);
-            // 落盘在这里（状态机只管推进，见 ReviewMachine.commit 的契约注释）
-            if (cand) store.writeCandidates(courseId, cand);
+            const accepted = payload.accepted as Partial<Candidates> | null;
+            // 用户勾选后的条目在这里落盘（状态机只管推进，见 ReviewMachine.commit 的契约注释）
+            store.writeCandidates(courseId, accepted ? { ...stored, ...accepted, unit_id: unitId } : stored);
             m.commit();
             save();
             store.markUnit(courseId, unitId, { reviewed: true, has_summary: true });
-            // ⚠️ 摘要不在这里写——已在第 4 步（候选生成）由 writeSummaryFor 写过。
-            //    早先这里也写一次，导致"前端路径第 5 步才有摘要、工具路径第 4 步就有"，
-            //    has_summary 的语义在两个入口下不一致。现在统一由 writeSummaryFor 负责。
+            // 摘要不在这里写——已在第 4 步由 generateCandidates → writeSummaryFor 写过。
             log(`复盘完成（前端）：${courseId}/${unitId}`);
 
             // ⚠️ 自动导出握手包 —— 别让人记着"还要再调一个工具"。

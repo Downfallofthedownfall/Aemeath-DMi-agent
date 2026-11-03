@@ -233,10 +233,31 @@ export class ReviewMachine {
     return this.state.repair_turns.length >= ReviewMachine.MAX_REPAIR_TURNS;
   }
 
-  /** 记录一轮问答。 */
+  /** 记录一轮问答（新追问传 `answer: ''`，等学生回答后由 answerRepair 填上）。 */
   addRepairTurn(question: string, answer: string): ReviewState {
     this.requireStep('repair');
     this.state.repair_turns.push({ question: question.trim(), answer: answer.trim() });
+    this.state.updated_at = Date.now();
+    return this.current;
+  }
+
+  /**
+   * 记录学生对当前追问的回答：**填进**最近一条还没回答的追问。
+   *
+   * 为什么不是再 addRepairTurn 一条：早先就是那样做的，于是每轮问答占两条
+   * （`{问, ''}` + `{问, 答}`）—— 轮数上限只问到一半就触发，
+   * 提示词里每个问题也出现两次、其中一次"答"是空的。
+   *
+   * 没有待答的追问（上一问生成失败 / 被护栏拦截，学生仍然作答）才新开一条，
+   * 问题用 `fallbackQuestion` 占位。
+   */
+  answerRepair(answer: string, fallbackQuestion: string): ReviewState {
+    this.requireStep('repair');
+    const turns = this.state.repair_turns;
+    let i = turns.length - 1;
+    while (i >= 0 && turns[i]!.answer !== '') i--;
+    if (i >= 0) turns[i] = { ...turns[i]!, answer: answer.trim() };
+    else turns.push({ question: fallbackQuestion.trim(), answer: answer.trim() });
     this.state.updated_at = Date.now();
     return this.current;
   }

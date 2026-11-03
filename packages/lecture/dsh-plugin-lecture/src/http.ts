@@ -322,7 +322,7 @@ export async function handleLectureHttp(
           return;
         }
         const result = await deps.onReview('status', { course_id: course, unit_id: unit });
-        json(res, 200, { ok: true, ...result });
+        json(res, 200, { ok: !result.error, ...result });
         return;
       }
 
@@ -499,7 +499,9 @@ export async function handleLectureHttp(
 
       if (action === 'review') {
         const result = await deps.onReview(String(parsed.op ?? ''), parsed);
-        json(res, 200, { ok: true, ...result });
+        // 带 error 的结果必须是 ok:false —— 早先一律 ok:true，
+        // 前端靠 `r.ok` 判断出错的分支就永远进不去，错误被当成正常结果往下走。
+        json(res, 200, { ok: !result.error, ...result });
         return;
       }
 

@@ -63,7 +63,9 @@ async function postJson<T>(body: unknown): Promise<T | null> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60000),
+      // 后端单次 LLM 调用最长 60s，而「开始补漏」可能连着跑两次（重试对照 + 生成第一问）。
+      // 早先这里也是 60s：请求常常在前端先超时，界面报"提交失败"，后端其实已经推进了步骤。
+      signal: AbortSignal.timeout(180000),
     });
     return (await res.json().catch(() => null)) as T | null;
   } catch {
@@ -98,14 +100,29 @@ export function ReviewPanel(props: {
    */
   const [handoff, setHandoff] = useState<{ files: string[]; dir: string }>({ files: [], dir: '' });
 
+  /** 显示一组候选，默认全部勾选（让用户"取消不要的"比"逐个勾"快）。 */
+  const showCandidates = useCallback((c: Candidates) => {
+    setCandidates(c);
+    const init: Record<string, boolean> = {};
+    c.worldbook_entries.forEach((_, i) => (init[`w${i}`] = true));
+    c.entity_claims.forEach((_, i) => (init[`c${i}`] = true));
+    setChecked(init);
+  }, []);
+
   const load = useCallback(async () => {
-    const d = await getJson<{ ok: boolean; step?: Step; state?: ReviewState; candidates?: Candidates }>(
+    const d = await getJson<{ ok: boolean; step?: Step; state?: ReviewState; candidates?: Candidates | null }>(
       `${API}?action=review&course=${encodeURIComponent(courseId)}&unit=${encodeURIComponent(unitId)}`,
     );
     // 后端 review 状态走 POST（见下），GET 只用于兜底
     if (d?.step) setStep(d.step);
     if (d?.state) setState(d.state);
-  }, [courseId, unitId]);
+    // 刷新 / 换设备回来时把进行中的东西也恢复出来：
+    //   · 待回答的追问 —— 否则第 3 步只剩一个输入框，不知道在答什么
+    //   · 候选条目 —— 否则确认页是空的，点确认会把用户根本没看过的条目全部写入
+    const pending = d?.state?.repair_turns?.filter((x) => !x.answer).at(-1);
+    if (pending) setQuestion(pending.question);
+    if (d?.candidates) showCandidates(d.candidates);
+  }, [courseId, unitId, showCandidates]);
 
   useEffect(() => {
     void load();
@@ -134,6 +151,8 @@ export function ReviewPanel(props: {
     setBusy(false);
     if (!r?.ok) {
       setErr(r?.error ?? t('common.submitFailed'));
+      // 后端已不在 recall（比如上一次请求在前端超时、后端却已经做完）→ 跟上后端的步骤
+      if (r?.step && r.step !== 'recall') void load();
       return;
     }
     setStep('compare');
@@ -187,24 +206,32 @@ export function ReviewPanel(props: {
       }
       return;
     }
-    setStep('commit');
+    // 对照重试又失败了：留在第 2 步说明原因（早先会一路掉到确认页）
+    if (r.step === 'compare') {
+      setErr(r.note ?? t('lecture.review.compare.failed'));
+      return;
+    }
+    // 候选：拿到了 → 确认页；没拿到（生成失败）→ 停在第 4 步，显示原因和「重新生成」。
+    // 早先失败也进确认页，点确认就把单元标成"已复盘"，其实什么都没写。
     if (r.candidates) {
       try {
         const c = typeof r.candidates === 'string' ? JSON.parse(r.candidates) : r.candidates;
-        setCandidates(c as Candidates);
-        // 默认全部勾选（让用户"取消不要的"比"逐个勾"快）
-        const init: Record<string, boolean> = {};
-        (c as Candidates).worldbook_entries.forEach((_, i) => (init[`w${i}`] = true));
-        (c as Candidates).entity_claims.forEach((_, i) => (init[`c${i}`] = true));
-        setChecked(init);
+        showCandidates(c as Candidates);
+        setStep('commit');
       } catch {
+        setStep('candidates');
         setErr(t('lecture.review.err.parseCandidates'));
       }
+      return;
     }
+    setCandidates(null);
+    setStep('candidates');
+    setErr(r.note ?? t('lecture.review.err.candidatesFailed'));
   };
 
   const doCommit = async (): Promise<void> => {
     setBusy(true);
+    setErr('');
     const r = await postJson<{
       ok: boolean;
       error?: string;
@@ -318,8 +345,10 @@ export function ReviewPanel(props: {
               disabled={busy}
               onClick={async () => {
                 setBusy(true);
+                setErr('');
                 const r = await postJson<{
                   ok: boolean;
+                  error?: string;
                   question?: string | null;
                   warning?: string;
                   note?: string;
@@ -332,15 +361,23 @@ export function ReviewPanel(props: {
                   text,
                 });
                 setBusy(false);
+                // 没提交成功就别清空 —— 早先无条件清空，超时/出错时学生写的回答直接没了
+                if (!r?.ok) {
+                  setErr(r?.error ?? t('common.submitFailed'));
+                  return;
+                }
                 setText('');
-                if (r?.question) setQuestion(r.question);
-                else if (r?.warning) setErr(r.warning);
-                else if (r?.done) {
-                  // 后端说问够了（模型 DONE 或轮数到上限）——
-                  // 清掉当前问题并提示可以收尾，别再让用户等着下一个问题
-                  setQuestion(null);
+                if (r.question) {
+                  setQuestion(r.question);
+                  return;
+                }
+                // 回答已经记下了；没有下一问时别再挂着这道已答的题（再答一遍会记成新的一轮）
+                setQuestion(null);
+                if (r.warning) setErr(r.warning);
+                else if (r.done) {
+                  // 后端说问够了（模型 DONE 或轮数到上限）—— 提示可以收尾
                   setErr(r.note ?? t('lecture.review.repair.done'));
-                } else if (r?.note) setErr(r.note);
+                } else if (r.note) setErr(r.note);
               }}
             >
               {busy ? t('lecture.review.repair.busy') : t('lecture.review.repair.answer')}
@@ -379,9 +416,16 @@ export function ReviewPanel(props: {
             <div className="lec-hint">{t('lecture.review.commit.empty')}</div>
           )}
           <div className="lec-actions">
-            <button type="button" className="lec-btn" disabled={busy} onClick={() => void doCommit()}>
-              {busy ? t('lecture.review.commit.busy') : t('lecture.review.commit.submit')}
-            </button>
+            {candidates ? (
+              <button type="button" className="lec-btn" disabled={busy} onClick={() => void doCommit()}>
+                {busy ? t('lecture.review.commit.busy') : t('lecture.review.commit.submit')}
+              </button>
+            ) : (
+              // 没有候选就不给「确认写入」：后端也会拒绝，确认一个空集只会把单元误标成已复盘
+              <button type="button" className="lec-btn" disabled={busy} onClick={() => void nextFromRepair()}>
+                {busy ? t('lecture.review.commit.regenerating') : t('lecture.review.commit.regenerate')}
+              </button>
+            )}
           </div>
         </div>
       ) : null}

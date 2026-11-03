@@ -1331,14 +1331,21 @@ t('对照失败不能变成死路（必须能就地重试）', () => {
 });
 
 t('对照失败的原因要能看见（不能只留三个空栏）', () => {
-  // 后端：把 lastLlmFailure 拼进 note
+  // 后端：失败原因跟着**这一次调用**返回（callLlm → { text, reason }），拼进 note。
+  // 早先记在共享的 `lastLlmFailure` 里：后台转录与复盘并发时会互相清空/改写。
   const idx = readFileSync(join(root, 'src/index.ts'), 'utf-8');
-  assert.match(idx, /let lastLlmFailure/, '应有失败原因记录');
+  assert.ok(!/let lastLlmFailure/.test(idx), '失败原因不该再放共享变量（并发调用会串台）');
   const ask = idx.match(/const askLlm: AskLlm[\s\S]{0,5000}/);
   assert.ok(ask, '找不到 askLlm');
-  assert.match(ask[0], /lastLlmFailure = /, '失败时应记录原因');
+  assert.match(ask[0], /const callLlm = async[\s\S]*Promise<LlmOutcome>/, '应有带原因返回的 callLlm');
+  assert.match(ask[0], /return \{ text: null, reason/, '失败时应带回原因');
   // `fetch failed` 本身没信息量，cause 才是真因
   assert.match(ask[0], /err\.cause/, '应带出 cause（ECONNREFUSED 等）');
+  // 对照拿的是自己那次调用的原因
+  const cmp = idx.match(/const runCompare = async[\s\S]{0,800}/);
+  assert.ok(cmp, '找不到 runCompare');
+  assert.match(cmp[0], /await callLlm\(/, '对照应走 callLlm 拿原因');
+  assert.match(cmp[0], /reason: reason \|\|/, '失败原因应来自本次调用');
 
   // 前端：submitRecall 必须把 note 显示出来
   const panel = readFileSync(join(root, 'src/client/review-panel.tsx'), 'utf-8');
