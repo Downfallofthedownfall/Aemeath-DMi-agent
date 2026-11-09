@@ -82,3 +82,12 @@ export const SUMMARIZE_MAX_TOKENS = 1536;
 export const CONFLICT_MAX_TOKENS = 200;
 /** 情绪观察 LLM maxTokens。 */
 export const MOOD_MAX_TOKENS = 16;
+
+/** 同一条记忆在同一会话里隔多少轮才再注入一次（注入块会留在历史里，每轮重复只是涨上下文）。 */
+export const RECALL_REINJECT_TURNS = 20;
+/** BM25 归一化分数达到多少才算"与当前问题相关"（低于它的只算碰巧撞到常用词）。 */
+export const RECALL_RELEVANCE_MIN = 0.1;
+/** 总结层 LLM 调用失败后，多久内不再重试（缓冲留着等下次，避免每轮都等一次 60s 超时）。 */
+export const L1_LLM_RETRY_MS = 5 * 60 * 1000;
+/** 启动后多久开始把上次遗留的 L1 缓冲交给总结层（不拖慢启动）。 */
+export const L1_BOOT_SUMMARIZE_DELAY_MS = 30 * 1000;

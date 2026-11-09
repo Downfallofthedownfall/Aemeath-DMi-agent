@@ -224,3 +224,26 @@ export function consolidateTarget(content: string, existing: ExistingMemoryRef[]
 export function describeL1Turn(t: L1Turn): string {
   return `${t.preset}｜[${t.kind}] ${t.query.slice(0, 40)}${t.reply ? ' → ' + t.reply.slice(0, 30) : ''}`;
 }
+
+/** 含这些字的中文双字组基本是虚词组合（"的是""一个""什么"），当触发词会到处误中。 */
+const TRIGGER_STOP_CHARS = /[的了是在我你他她它这那有和与及或也都就不吗呢吧啊么什怎为个一们很要会可能到说对把被让]/;
+
+/**
+ * 生成世界书条目的触发词。worldbook 用"归一化后子串包含"匹配，所以触发词太短或太常见就会
+ * 到处命中：早先 F=ma 产出的触发词是 f / ma，任何带字母 f 的问题都会把这条知识注入进去。
+ *   · 公式整体（F=ma → 归一化后是 fma）优先；
+ *   · 拉丁词至少 3 个字符；
+ *   · 中文双字组跳过虚词。
+ */
+export function buildWorldbookTriggers(content: string, topic: string): string[] {
+  const out = new Set<string>();
+  if (topic && topic.length >= 2) out.add(topic);
+  for (const m of content.match(/[A-Za-z0-9]+\s*=\s*[A-Za-z0-9]+/g) ?? []) out.add(m.replace(/\s+/g, ''));
+  for (const m of content.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) ?? []) out.add(m);
+  const cjk = (content || '').replace(/[^\u4e00-\u9fff]/g, '');
+  for (let i = 0; i < cjk.length - 1; i++) {
+    const gram = cjk.slice(i, i + 2);
+    if (!TRIGGER_STOP_CHARS.test(gram)) out.add(gram);
+  }
+  return [...out].slice(0, 6);
+}

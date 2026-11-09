@@ -148,7 +148,11 @@ const makeHarness = () => {
 };
 
 /** 走一次真实 agent/pre-step 拦截链（serial 返回插件改写后的决策）。 */
-const preStep = (h, payload) => h.fireSerial('agent/pre-step', payload, async () => ({ kind: 'enter', messages: [] }));
+const preStep = (h, payload, text = '') =>
+  h.fireSerial('agent/pre-step', payload, async () => ({
+    kind: 'enter',
+    messages: text ? [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] }] : [],
+  }));
 
 const baseConfig = (extra = {}) => ({
   defaultPreset: 'aemeath',
@@ -379,12 +383,12 @@ await t('真管线 T5：pre-step 连续 5 次召回 → memories 只落盘 1 次
   assert.equal(target.last_persist_at, undefined, '新记录的节流锚点应为空（首次召回必落盘）');
 
   const beforeWrites = h.tables.memories.writes;
-  const decision = await preStep(h, { agent: { session: makeSession('s1') }, step: 1 });
+  const decision = await preStep(h, { agent: { session: makeSession('s1') }, step: 1 }, '讲讲量子力学');
   assert.equal(decision.kind, 'enter');
   assert.match(JSON.stringify(decision.messages ?? []), /量子力学/);
   assert.equal(h.tables.memories.writes - beforeWrites, 1, '首次召回应落盘 1 次');
   for (let i = 1; i < 5; i++) {
-    await preStep(h, { agent: { session: makeSession('s1') }, step: 1 });
+    await preStep(h, { agent: { session: makeSession('s1') }, step: 1 }, '讲讲量子力学');
   }
   const writes = h.tables.memories.writes - beforeWrites;
   assert.equal(writes, 1, `5 次召回应只落盘 1 次，实际 ${writes} 次`);
@@ -402,13 +406,13 @@ await t('真管线 T5：跨过 30 分钟窗口后再召回 → 落盘计数 +1�
   await runTurn(h, 's1', '记住，我最喜欢量子力学', '好的');
   const target = h.tables.memories.all().find((r) => r.content.includes('量子力学'));
   const beforeWrites = h.tables.memories.writes;
-  await preStep(h, { agent: { session: makeSession('s1') }, step: 1 });
+  await preStep(h, { agent: { session: makeSession('s1') }, step: 1 }, '讲讲量子力学');
   assert.equal(h.tables.memories.writes - beforeWrites, 1);
   // 把节流锚点拨回 40 分钟前（模拟时间流逝，无需真的等待）
   const cur = h.tables.memories.get(target.id);
   await h.tables.memories.put(target.id, { ...cur, last_persist_at: Date.now() - 40 * 60 * 1000, last_access: Date.now() - 40 * 60 * 1000 });
   const beforeSecond = h.tables.memories.writes;
-  await preStep(h, { agent: { session: makeSession('s1') }, step: 1 });
+  await preStep(h, { agent: { session: makeSession('s1') }, step: 1 }, '讲讲量子力学');
   assert.equal(h.tables.memories.writes - beforeSecond, 1, '跨过 30 分钟窗口应再次落盘');
 });
 
@@ -712,5 +716,101 @@ await t('真管线：工具步骤的过程话与推理块不进 L1，最终回�
   assert.equal(turns[0].reply, '能量守恒先抓住 Ek + Ep 不变，下面给你三道练习题。');
   assert.ok(!/先查一下|应该先查/.test(turns[0].reply), '工具前的过程话 / 推理不该进 L1');
 });
+
+// ——————————————————————————————————————————————
+// 2026-11 审查修复：召回看问题相关度，不靠激活值自我强化；同会话不重复注入
+// ——————————————————————————————————————————————
+await t('召回：相关的记忆排在前面，只抬高相关项的激活值', async () => {
+  const h = makeHarness();
+  await h.start(baseConfig({ l2RecallTopK: 1 }));
+  await runTurn(h, 's1', '记住，我最喜欢量子力学', '好的');
+  await runTurn(h, 's1', '记住，我每天早上跑步', '好的');
+  const all = h.tables.memories.all();
+  const running = all.find((r) => r.content.includes('跑步'));
+  const quantum = all.find((r) => r.content.includes('量子力学'));
+  // 把"量子力学"的激活值压低：只按激活值排的话它上不来
+  await h.tables.memories.put(quantum.id, { ...quantum, activation: 5 });
+  await h.tables.memories.put(running.id, { ...running, activation: 95 });
+  const decision = await preStep(h, { agent: { session: makeSession('s2') }, step: 1 }, '量子力学怎么入门');
+  const text = JSON.stringify(decision.messages ?? []);
+  assert.match(text, /量子力学/);
+  assert.doesNotMatch(text, /跑步/, 'topK=1 时应该只注入相关的那条');
+  assert.ok(h.tables.memories.get(quantum.id).activation > 5, '相关记忆的激活值要抬高');
+  assert.equal(h.tables.memories.get(running.id).activation, 95, '没用到的不能抬高');
+});
+
+await t('召回：同一条在同一会话里不重复注入，换会话才再发', async () => {
+  const h = makeHarness();
+  await h.start(baseConfig());
+  await runTurn(h, 's1', '记住，我最喜欢量子力学', '好的');
+  const first = await preStep(h, { agent: { session: makeSession('s9') }, step: 1 }, '量子力学');
+  assert.match(JSON.stringify(first.messages), /量子力学/);
+  const second = await preStep(h, { agent: { session: makeSession('s9') }, step: 1 }, '再讲讲');
+  assert.doesNotMatch(JSON.stringify(second.messages), /关于用户的记忆/);
+  const other = await preStep(h, { agent: { session: makeSession('s10') }, step: 1 }, '量子力学');
+  assert.match(JSON.stringify(other.messages), /量子力学/);
+});
+
+await t('总结层 LLM 输出不可信：非法类别回退、空内容丢弃、错类型知识不让整批失败', async () => {
+  const llm = installFakeLlm({
+    memories: [{ content: '  ', category: 'user_fact', importance: 10 }, { content: '用户在学分析力学', category: 'made_up', importance: 999, scope: 'mode' }],
+    knowledge: [{ topic: '没有内容' }, 'oops', { content: 'L=T-V', topic: '力学' }],
+  });
+  try {
+    const h = makeHarness();
+    await h.start(baseConfig({ llm: { enabled: true, apiKey: 'k', baseUrl: 'http://fake', model: 'm', batchSize: 8, minBatch: 1 }, knowledge: { enabled: true } }));
+    await runTurn(h, 's1', '我最近一直在看分析力学的书，总结一下', '不错');
+    await new Promise((r) => setTimeout(r, 30));
+    const saved = h.tables.memories.all();
+    const rec = saved.find((r) => r.content.includes('分析力学'));
+    assert.ok(rec, JSON.stringify(saved));
+    assert.equal(rec.category, 'session_summary');
+    assert.ok(rec.importance <= 100);
+    assert.ok(!saved.some((r) => !r.content.trim()));
+    assert.ok(h.tables.knowledge.all().some((k) => k.content === 'L=T-V'));
+    assert.equal(h.tables.l1.all().length, 0, '总结成功后缓冲应清空');
+  } finally {
+    llm.restore();
+  }
+});
+
+await t('总结层 LLM 失败：轮次留在缓冲，不走规则兜底丢弃', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error('network down');
+  };
+  try {
+    const h = makeHarness();
+    await h.start(baseConfig({ llm: { enabled: true, apiKey: 'k', baseUrl: 'http://fake', model: 'm', batchSize: 8, minBatch: 1 } }));
+    await runTurn(h, 's1', '我最近一直在看分析力学的书，总结一下', '不错');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(h.tables.l1.all().flat().length, 1, '缓冲不能丢');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+await t('总结层 LLM 一直失败：缓冲满了改走规则兜底，不让最旧的轮次被静默挤掉', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error('network down');
+  };
+  try {
+    const h = makeHarness();
+    await h.start(baseConfig({ l1Capacity: 8, llm: { enabled: true, apiKey: 'k', baseUrl: 'http://fake', model: 'm', batchSize: 8, minBatch: 1 } }));
+    for (let i = 1; i <= 7; i++) {
+      await runTurn(h, 's1', `我下周${i}号要去交第${i}次热学作业`, '好的');
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    assert.equal(h.tables.l1.all().flat().length, 7, '没满之前照旧留在缓冲等 LLM');
+    await runTurn(h, 's1', '我下周8号要去交第8次热学作业', '好的');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(h.tables.l1.all().flat().length, 0, '满了就该规则兜底卸载，而不是等下一轮把最旧的挤掉');
+    assert.ok(h.tables.audit.all().some((a) => a.action === 'l1_summarize' && /规则兜底/.test(JSON.stringify(a))), '兜底卸载要留审计');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 
 console.log(`\n[memory-plugin-e2e] ${passed} 项断言全部通过`);

@@ -15,6 +15,7 @@ import { appendL1, removeL1Turns, shouldTriggerL1 } from './layers.js';
 import { buildRelationshipCue } from './mood.js';
 import { computeActivation, activationOf, ACTIVATION_DEFAULT, type LifecycleStatus } from './engine.js';
 import { CANONICAL_ATTRS } from './attributes.js';
+import { RECALL_RELEVANCE_MIN } from './limits.js';
 import type { EntityClaim } from './timeline.js';
 import { EMPTY_INSIGHTS, type Insights } from './types.js';
 import type { MemoryRecord, AuditRecord, KnowledgeRecord, UserProfile, RelationshipRecord, Category, L1Turn } from './types.js';
@@ -142,16 +143,45 @@ export class MemoryService extends Service {
 
   /**
    * 按 preset 召回（L2 mode + L3 global），供 pre-step 注入。
-   * 借 Cyrene：按激活值降序（高激活优先），池含 active + archived——
-   * archived（未超期归档）也参与召回并被"唤醒"回 active（由调用方写回激活/状态）。
-   * dormant 不参与召回（保持原语义）。
+   * 池含 active + archived（archived 被召回时由调用方唤醒）；dormant 不参与。
+   *
+   * ⚠️ 排序先看**与当前问题的相关度**，名额没用完才按激活值补。早先只按激活值取前 K，
+   *   而被召回的又会更活跃 —— 永远是那几条，真正相关的记忆一直上不来。
+   *   relevant=false 的补位项调用方不要抬高激活值，否则又回到"自我强化"。
+   * @param query 当前用户输入；空串时只按激活值排
    */
-  recallForPreset(preset: string, topK: number): Array<{ key: string; rec: MemoryRecord }> {
+  recallForPreset(preset: string, topK: number, query = ''): Array<{ key: string; rec: MemoryRecord; relevant: boolean }> {
     const now = Date.now();
-    return this.allActive()
-      .filter(({ rec }) => (rec.status === 'active' || rec.status === 'archived') && (rec.scope === 'global' || rec.preset === preset))
+    const pool = this.allActive().filter(({ rec }) => (rec.status === 'active' || rec.status === 'archived') && (rec.scope === 'global' || rec.preset === preset));
+    const hits = query ? bm25Search(query, pool.map(({ key, rec }) => ({ id: key, content: rec.content })), topK).filter((h) => h.score >= RECALL_RELEVANCE_MIN) : [];
+    const hitIds = new Set(hits.map((h) => h.id));
+    const relevant = hits.flatMap((h) => {
+      const found = pool.find((p) => p.key === h.id);
+      return found ? [{ ...found, relevant: true }] : [];
+    });
+    const rest = pool
+      .filter((p) => !hitIds.has(p.key))
       .sort((a, b) => actOf(b.rec, now) - actOf(a.rec, now) || b.rec.importance - a.rec.importance)
-      .slice(0, topK);
+      .slice(0, Math.max(0, topK - relevant.length))
+      .map((p) => ({ ...p, relevant: false }));
+    return [...relevant, ...rest];
+  }
+
+  /**
+   * 检索台用：和注入同一套算法看"这个问题会命中什么"。
+   * score = BM25 归一化分（0~1 为主）× 0.8 + 激活值 / 100 × 0.2。
+   */
+  searchScored(query: string, topK = 10): Array<{ id: string; content: string; category: Category; score: number; bm25: number; activation: number }> {
+    const now = Date.now();
+    const pool = this.allActive();
+    return bm25Search(query, pool.map(({ key, rec }) => ({ id: key, content: rec.content })), topK)
+      .flatMap((h) => {
+        const found = pool.find((p) => p.key === h.id);
+        if (!found) return [];
+        const activation = actOf(found.rec, now);
+        return [{ id: h.id, content: found.rec.content, category: found.rec.category, score: h.score * 0.8 + (activation / 100) * 0.2, bm25: h.score, activation }];
+      })
+      .sort((a, b) => b.score - a.score);
   }
 
   /** 列出全部未删除记忆（供 /memory 命令与面板）。 */

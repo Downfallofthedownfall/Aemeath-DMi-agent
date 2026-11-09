@@ -35,13 +35,13 @@ import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-credentials';
-import { decide, hasTimeEvidence, isStrongKnowledge, classifyKnowledgeTopic, writeGate, classifyConflict, extractClaims, hasNewClaimValue, type Category, type WriteGateVerdict, type ConflictDecision, type ConflictType, type ExtractedClaim } from './gatekeeper.js';
+import { decide, hasTimeEvidence, isKnowledgeStatement, classifyKnowledgeTopic, writeGate, classifyConflict, extractClaims, hasNewClaimValue, type Category, type WriteGateVerdict, type ConflictDecision, type ConflictType, type ExtractedClaim } from './gatekeeper.js';
 import { search as bm25Search, overlapScore } from './bm25.js';
 import { selectEviction, suggestProfileFacts, computeActivation, classifyActivation, activationOf, afterRecallActivation, shouldPersistRecall, ACTIVATION_DEFAULT, ACTIVATION_ACTIVE_THRESHOLD } from './engine.js';
-import { buildSummarizePrompt, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, sanitizeCandidateClaims, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
+import { buildSummarizePrompt, buildWorldbookTriggers, consolidateTarget, fallbackUnload, describeL1Turn, sessionTokens, shouldTriggerL1ByTokens, sanitizeCandidateClaims, type L1MemoryCandidate, type L1KnowledgeCandidate } from './layers.js';
 import { memoryRecordSchema, auditRecordSchema, userProfileSchema, knowledgeRecordSchema, l1TurnsSchema, relationshipRecordSchema, insightsSchema, EMPTY_INSIGHTS, type MemoryRecord, type AuditRecord, type UserProfile, type KnowledgeRecord, type L1Turn, type RelationshipRecord, type Insights } from './types.js';
 import { MemoryService, MemoryIdError } from './service.js';
-import { classifyMoodStable, majorityLabel, pushMoodWindow, relationshipSignalOf, nextCareCueOf, moodClassifierPrompt, MOOD_WINDOW_CAP } from './mood.js';
+import { classifyMoodStable, majorityLabel, pushMoodWindow, relationshipSignalOf, nextCareCueOf, moodClassifierPrompt, MOOD_LABELS, MOOD_WINDOW_CAP } from './mood.js';
 // T1/T2（借 ripples-of-aion）：事实时间轴 + 演进≠矛盾
 import { findClosableClaims, closeClaims, prepareClaims, activeClaimOf, timelineOf, hasClosedTimelineOverlap, type EntityClaim } from './timeline.js';
 // T4（借 ripples-of-aion）：属性归一化
@@ -53,6 +53,9 @@ import { TurnCollector, type CollectedTurn } from './turns.js';
 // T7：护栏集中表
 import {
   CONSOLIDATION_CATCHUP_DELAY_MS,
+  L1_BOOT_SUMMARIZE_DELAY_MS,
+  L1_LLM_RETRY_MS,
+  RECALL_REINJECT_TURNS,
   CONSOLIDATION_IDLE_MINUTES,
   CONSOLIDATION_MAX_RECORDS,
   CONSOLIDATION_MIN_RECORDS,
@@ -173,6 +176,14 @@ function warn(msg: string): void {
 
 const LLM_BATCH_SIZE_DEFAULT = 8;
 
+/** 总结层 LLM 可用的记忆类别（与 Category 对齐）。 */
+const LLM_CATEGORIES: readonly Category[] = ['user_fact', 'study_log', 'preference', 'relationship', 'session_summary'];
+
+/** 日志用的会话短 id（session id 都以 session- 开头，直接 slice(0,8) 永远是 "session-"）。 */
+function shortId(sid: string): string {
+  return sid.replace(/^session-/, '').slice(0, 8);
+}
+
 /** 自动生成的管理端点 token 落盘位置：DSH_HOME（scripts/dsh.ps1 固定设置；缺省回退系统临时目录）。 */
 export function adminTokenFile(): string {
   return join(process.env.DSH_HOME || tmpdir(), 'aemeath-memory-admin.token');
@@ -189,7 +200,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     },
   };
   log(`settings 已应用: enabled=${runtime.enabled}`);
-  registerVolatileSettings('aemeath-memory', { enabled: runtime.enabled });
+  registerVolatileSettings('aemeath-memory', { enabled: () => runtime.enabled });
   ctx.on('loader/volatile-update', () => {
     log(`settings 已应用: enabled=${runtime.enabled}`);
   });
@@ -201,21 +212,21 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   const l1Threshold = Math.min(1, Math.max(0.1, config.l1Threshold ?? 0.8));
   const l1MaxTokens = Math.max(512, config.l1MaxTokens ?? 3000);
   const knowledgeEnabled = config.knowledge?.enabled ?? true;
-  // C8：worldbook 桥接的 preset→馆目录映射优先取 worldbook 插件（service）的配置，
-  // 避免 cordis.patch.yml 里 libraries 在两个插件各抄一份造成漂移；service 未加载
-  // （worldbook 插件未挂）时退回自身配置/内置默认。
-  const worldbookLibrariesFromService = ((): Record<string, string> | undefined => {
+  // C8：worldbook 桥接的 preset→馆目录映射：显式配置 > worldbook 插件（service）> 内置默认。
+  // ⚠️ 真机踩过（"加入世界书"必失败、知识永远写不进世界书）：schemastery 的 z.dict 缺省值是 {}，
+  //   早先用 config.worldbook?.libraries ?? service ?? 默认，{} 不是 nullish，后面两项永远轮不到。
+  //   service 也不能在 apply 时取一次：worldbook 插件可能还没注册完，要用时现取。
+  const worldbookEnabled = config.worldbook?.enabled ?? false;
+  const worldbookDirOf = (preset: string): string | undefined => {
+    const configured = config.worldbook?.libraries;
+    if (configured && Object.keys(configured).length) return configured[preset];
     try {
-      const svc = (ctx as unknown as { reflect?: { get(n: string): unknown } }).reflect?.get('worldbook') as
-        { libraries?: Record<string, string> } | undefined;
-      return svc?.libraries && Object.keys(svc.libraries).length ? svc.libraries : undefined;
+      const svc = (ctx as unknown as { reflect?: { get(n: string): unknown } }).reflect?.get('worldbook') as { libraries?: Record<string, string> } | undefined;
+      if (svc?.libraries && Object.keys(svc.libraries).length) return svc.libraries[preset];
     } catch {
-      return undefined;
+      /* worldbook 插件没挂：用内置默认 */
     }
-  })();
-  const worldbook = {
-    enabled: config.worldbook?.enabled ?? false,
-    libraries: config.worldbook?.libraries ?? worldbookLibrariesFromService ?? { physicist: 'packages/worldbook/data/physicist', aemeath: 'packages/worldbook/data/aemeath' },
+    return ({ physicist: 'packages/worldbook/data/physicist', aemeath: 'packages/worldbook/data/aemeath' } as Record<string, string>)[preset];
   };
   const decayDays = config.decayDays ?? 90;
   // T3 空闲整合配置（autoDream，借 ripples-of-aion）
@@ -533,7 +544,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         // 回合结束才交出这一轮（2026-08-17 起 turn/end 也是 LLM 失败/流中断时的兜底：
         // 没有最终输出时 reply 为空串，用户输入照样进规则初筛，事实不丢）。
         const turn = turnBuffer.turnEnd(sid);
-        if (turn) void processTurn(sid, turn);
+        // 这是 fire-and-forget：异常不接住会变成 unhandledRejection，宿主直接退出进程
+        if (turn) void processTurn(sid, turn).catch((e) => warn(`处理本轮记忆失败: ${(e as Error).message}`));
       }
     } catch (e) {
       warn(`采集失败: ${(e as Error).message}`);
@@ -681,7 +693,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         const scope: 'mode' | 'global' = decision.category === 'user_fact' ? 'global' : 'mode';
         if (wg.action === 'drop') {
           await auditWrite('write_gate', undefined, `user_fact 被写门拦截：${wg.reason}（「${decision.content.slice(0, 30)}」）`);
-          log(`写门拦截 user_fact（${sid.slice(0, 8)}）：${wg.reason}`);
+          log(`写门拦截 user_fact（${shortId(sid)}）：${wg.reason}`);
           break;
         }
         const confidence = wg.action === 'demote' ? (wg.confidence ?? 0.55) : 0.9;
@@ -698,7 +710,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           await saveMemory(turn.preset, decision.content, decision.category, importance, confidence, sid, scope, [decision.content, turn.query]);
         }
         // 规则初筛扩展：显式命令 + 内容是知识型（如"记住 F=ma"）→ 也直达知识层/worldbook（不经 LLM）
-        if (knowledgeEnabled && isStrongKnowledge(decision.content)) {
+        if (knowledgeEnabled && isKnowledgeStatement(decision.content)) {
           await handleKnowledgeDirect(turn.preset, decision.content, classifyKnowledgeTopic(decision.content), sid, 'user_query');
         }
         // 喂满 L1：显式 save 轮次的完整 (query+reply) 也进采集缓冲（此前 save 绕开 L1，
@@ -715,7 +727,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     // 记忆触动词：当前轮含"记住/整理/总结…" → 立即总结该会话 L1 缓冲（force 跳过
     // minBatch），记忆当场落库、跨会话立即可用。空缓冲时 summarizeL1 无副作用。
     if (termTrigger.some((re) => re.test(turn.query))) {
-      log(`记忆触动词「${turn.query.slice(0, 20)}」→ 触发 ${sid.slice(0, 8)} 的 L1 即时总结（跨会话可读）`);
+      log(`记忆触动词「${turn.query.slice(0, 20)}」→ 触发 ${shortId(sid)} 的 L1 即时总结（跨会话可读）`);
       await summarizeL1(sid, false, true);
     }
 
@@ -735,7 +747,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     }
     await memoryService.knowledgeAdd({ preset, content: clean, topic: topic || '物理/数学', sourceKind, sourceSession: sid, status: 'accepted' });
     log(`规则初筛直达知识层（accepted）：[${topic}] ${clean.slice(0, 40)}…`);
-    if (worldbook.enabled) await writeWorldbookEntry(preset, clean, topic);
+    if (worldbookEnabled) await writeWorldbookEntry(preset, clean, topic);
     else await auditWrite('knowledge_direct', undefined, `规则直达知识层（${topic}），worldbook 桥接关闭`);
   };
 
@@ -748,7 +760,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
    */
   const writeWorldbookEntry = async (preset: string, content: string, topic: string, source = '规则层生成（用户提问）'): Promise<{ id: string; title: string } | null> => {
     const title = topic || '物理知识';
-    const dir = worldbook.libraries[preset];
+    const dir = worldbookDirOf(preset);
     if (!dir) {
       log(`worldbook 桥接跳过（无 ${preset} 馆目录，不跨模态写入）`);
       return null;
@@ -783,23 +795,13 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     }
   };
 
-  /** 生成条目的触发词：topic + 拉丁符号 + 中文 bigram（归一化后做子串匹配）。 */
-  const buildWorldbookTriggers = (content: string, topic: string): string[] => {
-    const out = new Set<string>();
-    if (topic && topic.length >= 2) out.add(topic);
-    for (const m of content.toLowerCase().match(/[a-z0-9]+/g) ?? []) if (m) out.add(m);
-    const cjk = (content || '').replace(/[^\u4e00-\u9fff]/g, '');
-    for (let i = 0; i < cjk.length - 1; i++) out.add(cjk.slice(i, i + 2));
-    return [...out].slice(0, 6);
-  };
-
   /** 进 L1 缓冲（域表持久化）；达到 80% 容量或 token 预算触发总结卸载。 */
   const bufferL1 = async (sid: string, turn: L1Turn): Promise<void> => {
     const count = await memoryService.l1Append(turn);
     const tokens = sessionTokens(memoryService.l1Turns(sid));
     const byCount = memoryService.l1ShouldTrigger(sid);
     const byTokens = shouldTriggerL1ByTokens(tokens, l1MaxTokens);
-    log(`L1 缓冲 +1（${sid.slice(0, 8)}，${count}/${l1Capacity} 轮，~${tokens}/${l1MaxTokens} token，kind=${turn.kind}）：${turn.query.slice(0, 30)}…`);
+    log(`L1 缓冲 +1（${shortId(sid)}，${count}/${l1Capacity} 轮，~${tokens}/${l1MaxTokens} token，kind=${turn.kind}）：${turn.query.slice(0, 30)}…`);
     if (byCount || byTokens) {
       log(`L1 触发总结卸载（${byTokens ? 'token 预算' : '容量 80%'}：${count}/${l1Capacity} 轮，~${tokens}/${l1MaxTokens} token）`);
       await summarizeL1(sid, byTokens);
@@ -818,7 +820,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       : { action: 'accept', reason: '非用户事实，不经写门' };
     if (wg.action === 'drop') {
       await auditWrite('write_gate', undefined, `L1 user_fact 候选被写门拦截：${wg.reason}（「${m.content.slice(0, 30)}」）`);
-      log(`写门拦截 L1 user_fact（${sid.slice(0, 8)}）：${wg.reason}`);
+      log(`写门拦截 L1 user_fact（${shortId(sid)}）：${wg.reason}`);
       return;
     }
     const confidence = wg.action === 'demote' ? (wg.confidence ?? 0.55) : 0.7;
@@ -901,6 +903,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
 
   /** 会话内总结进行中标记（防并发重复卸载）。 */
   const summarizing = new Set<string>();
+  /** 总结层 LLM 上次失败后的冷却截止时间。 */
+  let llmRetryAfter = 0;
 
   /**
    * L1 总结卸载：把会话缓冲总结为记忆候选（落 L2/L3）+ 知识候选（落知识层 pending）。
@@ -927,18 +931,33 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       if (llm.enabled && apiKey) {
         if (turns.length < llmMinBatch && !forceByTokens && !force) {
           // 攒批：批次不足不调 LLM，留在 L1 持久化缓冲，等下次会话继续攒（省 token）
-          log(`L1 攒批中（${sid.slice(0, 8)}：${turns.length}/${llmMinBatch} 轮，未达最小批次，暂不总结）`);
+          log(`L1 攒批中（${shortId(sid)}：${turns.length}/${llmMinBatch} 轮，未达最小批次，暂不总结）`);
           return;
         }
-        // 每条缓冲轮附相似记忆上下文（BM25 top-3）
-        const similar = turns.flatMap((t) =>
-          bm25Search(`${t.query} ${t.reply}`, allMemories(), 3).map((h) => ({ id: h.id.slice(0, 8), content: (memories.get(h.id)?.content ?? '').slice(0, 80) })),
-        );
-        const parsed = await callSummarizeLlm(buildSummarizePrompt(turns, similar), apiKey);
+        // 冷却中不调 LLM（不每轮都等一次超时）
+        const cooling = Date.now() < llmRetryAfter;
+        let parsed: Awaited<ReturnType<typeof callSummarizeLlm>> = null;
+        if (!cooling) {
+          // 每条缓冲轮附相似记忆上下文（BM25 top-3）
+          const similar = turns.flatMap((t) =>
+            bm25Search(`${t.query} ${t.reply}`, allMemories(), 3).map((h) => ({ id: h.id.slice(0, 8), content: (memories.get(h.id)?.content ?? '').slice(0, 80) })),
+          );
+          parsed = await callSummarizeLlm(buildSummarizePrompt(turns, similar), apiKey);
+          if (!parsed) llmRetryAfter = Date.now() + L1_LLM_RETRY_MS;
+        }
         if (parsed) {
-          memoriesOut = parsed.memories ?? [];
-          knowledgeOut = parsed.knowledge ?? [];
+          memoriesOut = parsed.memories;
+          knowledgeOut = parsed.knowledge;
           viaLlm = true;
+        } else if (turns.length < l1Capacity) {
+          // LLM 配了但暂时不可用：留在缓冲等下次。走规则兜底的话，规则拿不准的轮次会被直接丢弃，
+          // 一次网络抖动就丢掉一批对话。
+          if (!cooling) log(`L1 总结 LLM 失败（${shortId(sid)}），${turns.length} 轮留在缓冲，${L1_LLM_RETRY_MS / 60000} 分钟后再试`);
+          return;
+        } else {
+          // ⚠️ 缓冲已满还等不到 LLM（key 过期 / 欠费 / 长时间断网）：再留着，下一轮进来时
+          //   最旧的一轮会被 appendL1 直接挤掉，连规则能认出来的事实也一起丢。这时改走规则兜底。
+          log(`L1 缓冲已满（${shortId(sid)}：${turns.length}/${l1Capacity} 轮）而 LLM 不可用，改走规则兜底，避免最旧的轮次被挤掉`);
         }
       }
       if (!viaLlm) {
@@ -952,11 +971,11 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       if (knowledgeEnabled) for (const k of knowledgeOut) await applyKnowledgeCandidate(k, preset, sid, viaLlm ? 'llm_extract' : 'user_query');
 
       await auditWrite('l1_summarize', undefined, `${turns.length} 轮 → ${memoriesOut.length} 记忆${viaLlm ? '(LLM)' : '(规则兜底)'} + ${knowledgeEnabled ? knowledgeOut.length : 0} 知识${!viaLlm && dropped ? `，${dropped} 轮无定论丢弃` : ''}`);
-      log(`L1 总结卸载完成（${sid.slice(0, 8)}）：${turns.length} 轮 → ${memoriesOut.length} 记忆 + ${knowledgeOut.length} 知识（${viaLlm ? 'LLM' : '规则兜底'}）`);
+      log(`L1 总结卸载完成（${shortId(sid)}）：${turns.length} 轮 → ${memoriesOut.length} 记忆 + ${knowledgeOut.length} 知识（${viaLlm ? 'LLM' : '规则兜底'}）`);
       await memoryService.l1Remove(sid, turns);
     } catch (e) {
       await auditWrite('l1_error', undefined, `L1 总结失败: ${(e as Error).message}`);
-      warn(`L1 总结失败（${sid.slice(0, 8)}）: ${(e as Error).message}`);
+      warn(`L1 总结失败（${shortId(sid)}）: ${(e as Error).message}`);
     } finally {
       summarizing.delete(sid);
     }
@@ -978,11 +997,11 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       for (const m of fb.result.memories) await applyMemoryCandidate(m, preset, sid);
       if (knowledgeEnabled) for (const k of fb.result.knowledge) await applyKnowledgeCandidate(k, preset, sid, 'user_query');
       await auditWrite('l1_stale_flush', undefined, `${turns.length} 轮陈旧缓冲规则兜底卸载（${reason}）`);
-      log(`L1 陈旧兜底卸载（${sid.slice(0, 8)}，${reason}）：${turns.length} 轮 → ${fb.result.memories.length} 记忆 + ${fb.result.knowledge.length} 知识`);
+      log(`L1 陈旧兜底卸载（${shortId(sid)}，${reason}）：${turns.length} 轮 → ${fb.result.memories.length} 记忆 + ${fb.result.knowledge.length} 知识`);
       await memoryService.l1Remove(sid, turns);
     } catch (e) {
       await auditWrite('l1_error', undefined, `L1 陈旧卸载失败: ${(e as Error).message}`);
-      warn(`L1 陈旧卸载失败（${sid.slice(0, 8)}）: ${(e as Error).message}`);
+      warn(`L1 陈旧卸载失败（${shortId(sid)}）: ${(e as Error).message}`);
     } finally {
       summarizing.delete(sid);
     }
@@ -1023,15 +1042,23 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         memories?: Array<Record<string, unknown>>;
         knowledge?: L1KnowledgeCandidate[];
       };
-      const memories: L1MemoryCandidate[] = (Array.isArray(obj.memories) ? obj.memories : []).map((m) => ({
-        content: String(m?.content ?? ''),
-        category: (m?.category as Category) ?? 'session_summary',
-        importance: typeof m?.importance === 'number' ? m.importance : 50,
-        scope: m?.scope === 'global' ? 'global' : 'mode',
-        // claims 白名单清洗（编造属性名不进时间轴；类型错误安全丢弃）
-        claims: sanitizeCandidateClaims(m?.claims, CANONICAL_ATTRS),
-      }));
-      return { memories, knowledge: Array.isArray(obj.knowledge) ? obj.knowledge : [] };
+      // LLM 输出一律当不可信：类别错了 zod 写库会抛（整批卡在缓冲里、每轮重试扣费），
+      // 空内容不写，importance 夹到合法范围，知识候选只留有内容的。
+      const memories: L1MemoryCandidate[] = (Array.isArray(obj.memories) ? obj.memories : [])
+        .map((m) => ({
+          content: String(m?.content ?? '').trim(),
+          category: LLM_CATEGORIES.includes(m?.category as Category) ? (m.category as Category) : 'session_summary',
+          importance: typeof m?.importance === 'number' ? Math.min(100, Math.max(0, m.importance)) : 50,
+          scope: (m?.scope === 'global' ? 'global' : 'mode') as 'global' | 'mode',
+          // claims 白名单清洗（编造属性名不进时间轴；类型错误安全丢弃）
+          claims: sanitizeCandidateClaims(m?.claims, CANONICAL_ATTRS),
+        }))
+        .filter((m) => m.content);
+      const knowledge: L1KnowledgeCandidate[] = (Array.isArray(obj.knowledge) ? obj.knowledge : []).flatMap((k) => {
+        const content = typeof k?.content === 'string' ? k.content.trim() : '';
+        return content ? [{ content, topic: typeof k?.topic === 'string' ? k.topic : '' }] : [];
+      });
+      return { memories, knowledge };
     } catch (e) {
       warn(`总结层 LLM 调用失败: ${(e as Error).message}`);
       return null;
@@ -1119,7 +1146,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
       if (!resp.ok) return null;
       const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
       const label = (data.choices?.[0]?.message?.content ?? '').trim().replace(/[\s。.!！，,]+$/g, '');
-      return label || null;
+      // 只认词表里的标签：模型多说几句的话，整段文本会被当成情绪写库、再注入提示词
+      return (MOOD_LABELS as readonly string[]).includes(label) ? label : null;
     } catch (e) {
       warn(`情绪观察 LLM 调用失败（走规则兜底）: ${(e as Error).message}`);
       return null;
@@ -1162,6 +1190,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   };
 
   // ---- 召回注入（agent/pre-step，form='recall'） ----
+  const recallTurns = new Map<string, number>();
+  const recallSeen = new Map<string, Map<string, number>>();
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next();
     if (decision.kind === 'reject') return decision;
@@ -1178,13 +1208,29 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     if (payload.step !== 1) return decision;
 
     const now = Date.now();
-    const top = memoryService.recallForPreset(preset, topK);
-    if (!top.length) return decision;
+    let query = '';
+    for (let i = decision.messages.length - 1; i >= 0; i--) {
+      const m = decision.messages[i] as { role?: string; source?: { kind?: string }; content?: readonly { type?: string; text?: string }[] };
+      if (m.role === 'user' && m.source?.kind === 'user') {
+        query = (m.content ?? []).map((b) => (b.type === 'text' ? b.text ?? '' : '')).join('').trim();
+        break;
+      }
+    }
+    // 注入的消息会留在会话历史里，每轮都发同一批只是涨上下文：同一条隔 N 轮才再发
+    const sid = payload.agent.session.id;
+    const turnNo = (recallTurns.get(sid) ?? 0) + 1;
+    recallTurns.set(sid, turnNo);
+    const seen = recallSeen.get(sid) ?? new Map<string, number>();
+    recallSeen.set(sid, seen);
+    const recalled = memoryService.recallForPreset(preset, topK, query);
+    if (!recalled.length) return decision;
 
     /** T5 节流抑制计数（仅用于日志可观测量）。 */
     let recallWriteSuppressed = 0;
 
-    for (const { key, rec } of top) {
+    for (const { key, rec, relevant } of recalled) {
+      // 只有真的和问题相关才算"被用到"；按激活值补位的不抬高（否则越靠前越活跃，自我强化）
+      if (!relevant) continue;
       // 借 Cyrene wake-on-recall：召回即把 last_access 推到 now（近因变满），
       // 并按 T5 的**渐近饱和**抬高激活值（衰减抵抗），把 archived 唤醒回 active。
       // T5 落盘节流（借 ripples-of-aion 的 30 分钟节流）：内存值/近因照常推进，
@@ -1202,7 +1248,11 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         })
         .catch(() => undefined);
     }
-    if (recallWriteSuppressed > 0) log(`召回回写节流：抑制 ${recallWriteSuppressed} 次落盘（${top.length} 条命中，仅落盘 ${top.length - recallWriteSuppressed} 次）`);
+    if (recallWriteSuppressed > 0) log(`召回回写节流：抑制 ${recallWriteSuppressed} 次落盘（${recalled.length} 条命中）`);
+
+    const top = recalled.filter(({ key }) => turnNo - (seen.get(key) ?? -RECALL_REINJECT_TURNS) >= RECALL_REINJECT_TURNS);
+    if (!top.length) return decision;
+    for (const { key } of top) seen.set(key, turnNo);
 
     const block = ['## 关于用户的记忆（第一人称）', ...top.map(({ rec }) => `- [${rec.category}|imp=${rec.importance}|${rec.scope}] ${rec.content}`)].join('\n');
     log(`preset=${preset} 召回 ${top.length} 条记忆注入`);
@@ -1222,7 +1272,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   ctx.on('session/flush', async (session) => {
     const sid = session.id;
     if (memoryService.l1Count(sid) > 0) {
-      log(`session/flush：${sid.slice(0, 8)} 有 ${memoryService.l1Count(sid)} 轮 L1 缓冲，触发总结卸载`);
+      log(`session/flush：${shortId(sid)} 有 ${memoryService.l1Count(sid)} 轮 L1 缓冲，触发总结卸载`);
       await summarizeL1(sid);
     }
     // T3：会话落盘检查点也重置空闲计时（空闲判定以"最后活动"为准）
@@ -1234,6 +1284,8 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   // 实际永不发生，会导致 L1 无限积压（用户曾见 53 轮未清）。会话真正结束时强制落库清空。
   ctx.on('session/disposed', (session) => {
     turnBuffer.drop(session.id);
+    recallTurns.delete(session.id);
+    recallSeen.delete(session.id);
     memoryService.clearScratch(session.id);
     if (memoryService.l1Count(session.id) > 0) {
       void summarizeL1(session.id, false, true).catch((e) => warn(`L1 会话结束总结失败: ${(e as Error).message}`));
@@ -1241,12 +1293,23 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   });
   log('session/flush 已接入（L1 缓冲总结卸载）；session/disposed 已接入（强制总结 + 残留清理）');
 
-  // ---- 启动清理：一次性规则兜底清空历史积压 L1 ----
-  // 历史短会话攒批永不达标而积压的轮次（进程重启前产生的）；规则兜底只落规则识别的
-  // 记忆（计划/身份/知识类），其余丢弃，不调 LLM。此后正常会话经 session/disposed 即时总结。
-  for (const sid of memoryService.l1Sessions()) {
-    void flushStaleL1(sid, '启动积压清理');
-  }
+  // ---- 启动：把上次遗留的 L1 缓冲交给总结层 ----
+  // ⚠️ 早先这里每次启动都走规则兜底：规则拿不准的轮次（也就是大多数）直接丢弃，
+  //   每次重启都丢一批还没总结的对话。现在交给 LLM；LLM 开着但暂时拿不到 key 就先留着，
+  //   真放太久由下面的 14 天陈旧清理处理。
+  //   没启用 LLM 的配置照旧处理：summarizeL1 本来就只走规则，留着也等不来别的结果，
+  //   跳过的话上次没正常结束的会话要等 14 天才落库。
+  const bootSummarize = setTimeout(() => {
+    void (async () => {
+      if (llm.enabled && !(await resolveLlmKey())) return;
+      for (const sid of memoryService.l1Sessions()) {
+        if (disposed) return;
+        await summarizeL1(sid, false, true);
+      }
+    })().catch((e) => warn(`启动总结 L1 失败: ${(e as Error).message}`));
+  }, L1_BOOT_SUMMARIZE_DELAY_MS);
+  if (bootSummarize.unref) bootSummarize.unref();
+  ctx.effect(() => () => clearTimeout(bootSummarize));
 
   // ---- 衰减（宿主级定时）+ 沉淀 + L1 陈旧清理 ----
   const decayTimer = setInterval(() => {
@@ -1298,6 +1361,7 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
     void promoteProfileFacts();
   }, 6 * 3600 * 1000);
   if (decayTimer.unref) decayTimer.unref();
+  ctx.effect(() => () => clearInterval(decayTimer));
   log(`衰减已启用（${decayDays} 天未访问：高激活抵抗衰减，其余 -10 importance + 按激活值落三态，每 6h 检查）`);
 
   // ---- T3 启动补跑：上次整合距今超过一个空闲周期 → 延迟补跑一次 ----
@@ -1352,14 +1416,14 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
         const sid = args[1] ?? '';
         if (!sid) return err('用法: /memory scratch <sessionId>');
         const keys = memoryService.scratchKeys(sid);
-        return ok(`scratch(${sid.slice(0, 8)}) keys: ${keys.join(', ') || '（空）'}`);
+        return ok(`scratch(${shortId(sid)}) keys: ${keys.join(', ') || '（空）'}`);
       }
       if (cmd === 'l1') {
         const cap = memoryService.l1CapacityOf();
         const sessions = memoryService.l1Sessions();
         if (!sessions.length) return ok(`L1 缓冲（容量 ${cap.capacity}，阈值 ${Math.round(cap.threshold * 100)}%）当前为空`);
         const lines = sessions.flatMap((sid) =>
-          memoryService.l1Turns(sid).map((t, i) => `- ${sid.slice(0, 8)}#${i} ${describeL1Turn(t)}`),
+          memoryService.l1Turns(sid).map((t, i) => `- ${shortId(sid)}#${i} ${describeL1Turn(t)}`),
         );
         return ok(`L1 缓冲（容量 ${cap.capacity}，阈值 ${Math.round(cap.threshold * 100)}%，${memoryService.stats().l1} 轮）:\n${lines.join('\n')}`);
       }
@@ -1419,13 +1483,16 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
   if (adminHttp.enabled) {
     try {
       // 访问 token：配置未给则自动生成（uuid 随机），启动时打印一次供本地脚本使用
-      const adminToken = adminHttp.token ?? randomUUID();
+      // 用 ||：配置里写 token: '' 时不能真的用空串，否则不带任何头的请求也能通过认证
+      const adminToken = adminHttp.token || randomUUID();
       const MAX_ADMIN_BODY = 1024 * 1024; // 1MB body 上限（防内存耗尽）
 
       /** 读 JSON body，超过 1MB 直接拒绝（S5：原实现 body += c 无上限）。 */
       const readJsonLimited = (req: IncomingMessage): Promise<Record<string, unknown>> =>
         new Promise((resolve, reject) => {
-          let body = '';
+          // 先攒 Buffer 再解码：逐块 += 会把跨块的多字节字符（中文）解成乱码
+          const parts: Buffer[] = [];
+          let size = 0;
           let done = false;
           const fail = (code: number, msg: string): void => {
             if (done) return;
@@ -1436,17 +1503,19 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           };
           req.on('data', (c) => {
             if (done) return;
-            body += c;
-            if (body.length > MAX_ADMIN_BODY) {
+            const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c as string);
+            size += chunk.length;
+            if (size > MAX_ADMIN_BODY) {
               fail(413, 'body too large (max 1MB)');
-              req.destroy();
+              return;
             }
+            parts.push(chunk);
           });
           req.on('end', () => {
             if (done) return;
             done = true;
             try {
-              resolve(JSON.parse(body || '{}') as Record<string, unknown>);
+              resolve(JSON.parse(Buffer.concat(parts).toString('utf-8') || '{}') as Record<string, unknown>);
             } catch (e) {
               reject(e);
             }
@@ -1540,6 +1609,9 @@ export async function apply(ctx: Context, config: MemoryConfig): Promise<void> {
           }
         })();
       });
+      // listen 失败（端口被占）是异步的 'error' 事件，外层 try/catch 接不到；
+      // 不处理就是 uncaught exception，整个进程退出。管理端点是可选的，不该拖垮主程序。
+      server.on('error', (e) => warn(`HTTP 管理端点启动失败（端口 ${adminHttp.port}）: ${(e as Error).message}`));
       server.listen(adminHttp.port, '127.0.0.1');
       // 与本仓库的定时器同一习惯：管理端点不该单独吊住进程（宿主退出 / 测试结束时不拖住事件循环）
       server.unref();

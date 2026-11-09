@@ -95,13 +95,40 @@ const IDENTITY_PATTERNS = [
  */
 const KNOWLEDGE_PATTERNS = [
   /F\s*=\s*ma/, /E\s*=\s*mc/, /Σ|∫|∂|∇|Δ/, /d\/dx|dy\/dx/, /牛顿第/, /能量守恒/,
-  /动量守恒/, /热力学第/, /薛定谔/, /麦克斯韦/, /电磁感应/, /简谐振动/, /sine|cos|tan/i,
+  /动量守恒/, /热力学第/, /薛定谔/, /麦克斯韦/, /电磁感应/, /简谐振动/, /\b(?:sin|sine|cos|cosine|tan)\b/i,
   /积分|微分|导数|矩阵|特征值/i, /波长|频率|折射|衍射|干涉/i, /洛伦兹|安培|欧姆|焦耳/,
 ];
 
-/** 规则初筛：文本是否含强知识模式（供 save 分支二次判断"显式命令+知识内容"）。 */
+/** 规则初筛：文本是否含强知识模式。 */
 export function isStrongKnowledge(text: string): boolean {
   return KNOWLEDGE_PATTERNS.some((re) => re.test(text));
+}
+
+/**
+ * 第一人称：这句话在说用户自己（进度 / 计划 / 状态），不是一条知识。
+ *
+ * ⚠️ 英文的 I 不能按"独立的字母 i、不分大小写"匹配：公式里的电流 I（U = R I）和
+ *   虚数单位 i（e^(i π)）都会中，用户陈述的公式反而进不了知识层。
+ *   只认大写 I 后面跟着小写单词或缩写（I think / I'm）的写法。
+ */
+const PERSONAL_SIGNALS = /[我咱俺]|\b(?:my|me|mine)\b/i;
+const FIRST_PERSON_I = /\bI(?:'[a-z]+|\s+[a-z]{2,})/;
+
+/** 含"几 / 么"但不是在提问的常见词：判断问句前先去掉（解析几何、那么 F = ma）。 */
+const NOT_QUESTION_WORDS = /几何|几率|几乎|那么|这么|多么|要么/g;
+
+/**
+ * 这句话本身是不是一条可以直接入库的知识陈述。
+ *
+ * ⚠️ 只看"含公式/术语"是不够的：物理对话里几乎每句都含术语。真机效果是
+ *   "我下周三考 Physik 1，能帮我看看这道积分吗" 被存成主题为 Physik 的已接受知识，
+ *   考试这件事反而进不了记忆；"今天复习了电磁学…还是记不住" 的主题是"今天复习了电"。
+ *   问句（要问的还不是知识）和第一人称句（说的是用户）一律不直达，交 L1 由总结层判断。
+ */
+export function isKnowledgeStatement(text: string): boolean {
+  if (!isStrongKnowledge(text)) return false;
+  if (PERSONAL_SIGNALS.test(text) || FIRST_PERSON_I.test(text)) return false;
+  return !QUESTION_SIGNALS.test(text.replace(NOT_QUESTION_WORDS, ''));
 }
 
 /** 从提问中提取知识主题（topic）：优先取公式/拉丁符号，其次取连续中文片段（≤6 字）。 */
@@ -271,21 +298,6 @@ export function extractMemory(query: string): string {
 }
 
 /**
- * 知识直达内容提取（B1 修复）：知识命中可能来自用户提问，也可能来自模型回复
- * （例如用户问"这是什么？"，回复含 "F=ma"）。知识命中自回复时，必须把回复文本
- * 写入知识层/worldbook，而不是把用户提问（"这是什么？"）当知识内容。
- * @returns 拟写入知识层的内容文本（回复优先，超长截断）。
- */
-export function extractKnowledge(query: string, reply: string): string {
-  const r = (reply || '').trim();
-  if (isStrongKnowledge(r)) {
-    const clean = r.replace(/\s+/g, ' ').trim();
-    return clean.length > 120 ? clean.slice(0, 120) + '…' : clean;
-  }
-  return extractMemory(query);
-}
-
-/**
  * 规则层主入口：返回动作决策。
  * @param query 用户输入
  * @param reply physicist/爱弥斯回复
@@ -336,24 +348,18 @@ export function decide(query: string, reply: string): MemoryAction {
     };
   }
 
-  // 4) 强知识模式（公式/定律/数学术语）→ knowledge_direct（规则初筛直达，不经 LLM）
-  //    B1 修复：知识命中来源决定内容/主题取哪个——提问本身含知识（如"F=ma 是什么？"）
-  //    取提问；仅回复含知识（如问"这是什么？"答"F=ma"）则取回复文本，避免把
-  //    "这是什么？"这类提问本身当成知识写入知识层/worldbook。
-  {
-    const hitQuery = isStrongKnowledge(q);
-    const hitReply = !hitQuery && isStrongKnowledge(r);
-    if (hitQuery || hitReply) {
-      return {
-        kind: 'knowledge_direct',
-        content: hitReply ? extractKnowledge(q, r) : extractMemory(q),
-        topic: classifyKnowledgeTopic(hitReply ? r : q),
-        reason: '规则初筛：强知识模式（公式/定律/术语），直达知识层',
-      };
-    }
+  // 4) 用户自己陈述的知识（公式/定律/术语）→ knowledge_direct（规则初筛直达，不经 LLM）
+  //    模型回复里的知识**不直达**：那是没核实过的模型输出，交 L1 由总结层提取、进 pending 评审。
+  if (isKnowledgeStatement(q)) {
+    return {
+      kind: 'knowledge_direct',
+      content: extractMemory(q),
+      topic: classifyKnowledgeTopic(q),
+      reason: '规则初筛：用户陈述的知识（公式/定律/术语），直达知识层',
+    };
   }
 
-  // 4) 闲聊/纯情绪 → skip
+  // 4.5) 闲聊/纯情绪 → skip
   if (CHAT_PATTERNS.some((re) => re.test(q))) return { kind: 'skip', reason: '闲聊/情绪' };
   // 纯占位单字 → skip；其余（含短身份陈述如"我是准大一"）→ pending 进 L1 滚动捕获，
   // 由总结层（LLM/规则兜底）决定取舍——不再静默丢弃普通陈述（2026-08-17 修复）。

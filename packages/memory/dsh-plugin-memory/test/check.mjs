@@ -4,6 +4,7 @@
 // ============================================================
 import assert from 'node:assert/strict';
 import { decide, isStrongKnowledge, classifyKnowledgeTopic, writeGate, classifyConflict } from '../lib/gatekeeper.js';
+import { buildWorldbookTriggers } from '../lib/layers.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -42,8 +43,8 @@ t('显式关键词（记一下）→ save（规则初筛直达，不经 LLM）',
   assert.equal(d.kind, 'save');
 });
 
-t('物理公式 → knowledge_direct（规则初筛直达，不经 LLM）', () => {
-  const d = decide('F = ma 是什么意思', 'F=ma 是牛顿第二定律…');
+t('用户陈述的公式 → knowledge_direct（规则初筛直达，不经 LLM）', () => {
+  const d = decide('F = ma 是牛顿第二定律', '对');
   assert.equal(d.kind, 'knowledge_direct');
   if (d.kind === 'knowledge_direct') {
     assert.ok(d.topic.length > 0);
@@ -51,8 +52,32 @@ t('物理公式 → knowledge_direct（规则初筛直达，不经 LLM）', () =
   }
 });
 
-t('物理术语（能量守恒）→ knowledge_direct', () => {
-  assert.equal(decide('能量守恒定律怎么证明', '').kind, 'knowledge_direct');
+t('问句不是知识：含术语的提问进 L1，不直达', () => {
+  assert.equal(decide('能量守恒定律怎么证明', '').kind, 'pending');
+  assert.equal(decide('F = ma 是什么意思', 'F=ma 是牛顿第二定律…').kind, 'pending');
+});
+
+t('第一人称不是知识：用户的进度/状态不能被当成知识吞掉', () => {
+  assert.equal(decide('我下周三考 Physik 1，能帮我看看这道积分吗', '分部积分 ∫x dx').kind, 'pending');
+  assert.equal(decide('今天我复习了电磁学，麦克斯韦方程组还是记不住', '方程组是…').kind, 'pending');
+});
+
+t('公式里的符号 I / i 不是第一人称；含"几 / 么"的陈述不是问句', () => {
+  assert.equal(decide('欧姆定律 U = R I', '对').kind, 'knowledge_direct');
+  assert.equal(decide('欧拉公式 e^(i π) + 1 = 0，由 cos 和 sin 的级数得到', '对').kind, 'knowledge_direct');
+  assert.equal(decide('解析几何里椭圆的离心率由焦距决定，面积用积分算', '对').kind, 'knowledge_direct');
+  assert.equal(decide('I think F = ma is wrong', 'no').kind, 'pending');
+  assert.equal(decide("I'm stuck on the integral ∫x dx", 'ok').kind, 'pending');
+  assert.equal(decide('椭圆的离心率是几', '').kind, 'pending');
+});
+
+t('模型回复里的公式不直达（没核实的输出，交总结层进 pending 评审）', () => {
+  assert.equal(decide('这道题我不太懂，能讲讲吗', '根据牛顿第二定律 F=ma，可得 a=2').kind, 'pending');
+});
+
+t('三角函数按整词匹配（instance / standard 不算知识）', () => {
+  assert.ok(isStrongKnowledge('sin(x) 的导数'));
+  assert.ok(!isStrongKnowledge('an instance of standard usage'));
 });
 
 t('isStrongKnowledge：公式/定律命中，闲聊不命中', () => {
@@ -180,6 +205,16 @@ t('B6 classifyConflict：时间证据状态变化 → direct_conflict（新值�
 t('B6 classifyConflict：非偏好无时间证据高相似 → 默认 direct_conflict', () => {
   const c = classifyConflict('我下周三有物理考试', '我下周三有物理考试，有点紧张', 'study_log', 'study_log');
   assert.equal(c.type, 'direct_conflict');
+});
+
+t('世界书触发词：不产出单字母、虚词（否则任何问题都会误中）', () => {
+  const t1 = buildWorldbookTriggers('F=ma', 'F');
+  assert.deepEqual(t1, ['F=ma']);
+  const t2 = buildWorldbookTriggers('能量守恒的一个应用是什么', '能量守恒');
+  assert.ok(t2.includes('能量守恒'));
+  assert.ok(!t2.includes('的一') && !t2.includes('一个') && !t2.includes('什么'));
+  assert.ok(buildWorldbookTriggers('Newton law of motion', '').every((w) => w.length >= 3));
+  assert.ok(buildWorldbookTriggers('很长的内容一二三四五六七八九十'.repeat(5), '主题').length <= 6);
 });
 
 console.log(`\n[memory-gatekeeper] ${passed} 项断言全部通过`);
