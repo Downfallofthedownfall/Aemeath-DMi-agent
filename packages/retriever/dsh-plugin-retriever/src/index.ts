@@ -18,7 +18,8 @@ import { resolveRole, registerVolatileSettings } from '@aemeath/dsh-plugin-commo
 import type {} from '@deepseek-ai/cordis-plugin-loader';
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-settings';
-import { chunkText, type NoteChunk } from './chunker.js';
+import { chunkText } from './chunker.js';
+import { buildFtsQuery, isRelevantChunk, queryTerms, toIndexable } from './fts.js';
 
 export const name = 'aemeath-retriever';
 export const inject = ['settings'];
@@ -47,43 +48,6 @@ function warn(msg: string): void {
   console.warn(`[aemeath-retriever] ⚠ ${msg}`);
 }
 
-/** 中文 bigram 化（"牛顿第二定律" → "牛顿 顿第 第二 二定 定律"）。 */
-function bigramize(cjk: string): string {
-  const grams: string[] = [];
-  for (let i = 0; i < cjk.length - 1; i++) grams.push(cjk.slice(i, i + 2));
-  return grams.join(' ');
-}
-
-/** 可索引文本：中文转 bigram + 英文/数字保留（供 FTS5 unicode61 检索中文子串）。 */
-function toIndexable(text: string): string {
-  let out = '';
-  let buf = '';
-  for (const ch of text) {
-    if (/[\u4e00-\u9fff]/.test(ch)) {
-      buf += ch;
-      continue;
-    }
-    if (buf) {
-      out += bigramize(buf) + ' ';
-      buf = '';
-    }
-    if (/[a-zA-Z0-9]/.test(ch)) out += ch.toLowerCase();
-    else out += ' ';
-  }
-  if (buf) out += bigramize(buf);
-  return out;
-}
-
-/** FTS5 MATCH 查询：bigram 化后按词 OR 组合（中文短词召回）。 */
-function escapeFtsQuery(query: string): string {
-  const terms = toIndexable(query)
-    .split(/\s+/)
-    .map((t) => t.trim().replace(/"/g, ''))
-    .filter((t) => t.length > 0);
-  if (!terms.length) return '';
-  return terms.map((t) => `"${t}"`).join(' OR ');
-}
-
 /** 物理/数学术语触发模式（physicist 注入条件之一）。 */
 const PHYSICS_TERM = /F\s*=\s*ma|牛顿|能量|动量|热力学|电磁|量子|波动|干涉|衍射|光|力学|统计|微分|积分|矩阵|特征值|熵|温度|压强|力|质量|速度|加速度|角动量|力矩|功|薛定谔|麦克斯韦|拉格朗日|哈密顿|简谐|谐振|电容|电感|磁场|电场|相对论|热容/i;
 
@@ -98,7 +62,7 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
     },
   };
   log(`settings 已应用: enabled=${runtime.enabled}`);
-  registerVolatileSettings('aemeath-retriever', { enabled: runtime.enabled });
+  registerVolatileSettings('aemeath-retriever', { enabled: () => runtime.enabled });
   ctx.on('loader/volatile-update', () => {
     log(`settings 已应用: enabled=${runtime.enabled}`);
   });
@@ -161,6 +125,10 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
   };
   const reloadTimer = setInterval(scanMtimes, 5000);
   if (reloadTimer.unref) reloadTimer.unref();
+  ctx.effect(() => () => {
+    clearInterval(reloadTimer);
+    db.close();
+  });
 
   // ---- physicist 注入（agent/pre-step） ----
   ctx.on('agent/pre-step', async (payload, next) => {
@@ -192,15 +160,17 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
     // 注入条件：query>8 字 或 含物理术语
     if (query.length <= 8 && !PHYSICS_TERM.test(query)) return decision;
 
-    // 第三关：escapeFtsQuery 对纯标点/无索引词返回 ''——MATCH '' 会抛异常，
+    // 第三关：纯标点/无索引词时查询为空——MATCH '' 会抛异常，
     // 且 pre-step 无 try/catch 会冒泡；这里显式跳过 + 整体兜底
-    const fts = escapeFtsQuery(query);
-    if (!fts) return decision;
-    let rows: Array<{ id: string; file: string; section: string; content: string }> = [];
+    const terms = queryTerms(query);
+    if (!terms.length) return decision;
+    let rows: Array<{ id: string; file: string; section: string; content: string; idx: string }> = [];
     try {
       rows = db
-        .prepare('SELECT id, file, section, content FROM notes WHERE notes MATCH ? ORDER BY bm25(notes) LIMIT 3')
-        .all(fts) as typeof rows;
+        .prepare('SELECT id, file, section, content, idx FROM notes WHERE notes MATCH ? ORDER BY bm25(notes) LIMIT 12')
+        .all(buildFtsQuery(terms)) as typeof rows;
+      // 多取几条再过滤：只取前 3 的话，前 3 被相关度滤掉时排第 4 的相关块没有机会补上
+      rows = rows.filter((r) => isRelevantChunk(terms, r.idx)).slice(0, 3);
     } catch (e) {
       warn(`讲义检索失败（query=${query.slice(0, 30)}）: ${(e as Error).message}`);
       return decision;
@@ -209,7 +179,8 @@ export function apply(ctx: Context, config: RetrieverConfig): void {
     const parts: string[] = [];
     let used = 0;
     for (const r of rows) {
-      const text = `【${r.file} › ${r.section}】\n${r.content}`;
+      // 单块最长 2000 字，比预算还大时截断，不能让"至少放一块"绕过预算
+      const text = `【${r.file} › ${r.section}】\n${r.content}`.slice(0, maxTokens);
       const approx = text.length;
       if (parts.length && used + approx > maxTokens) break;
       parts.push(text);

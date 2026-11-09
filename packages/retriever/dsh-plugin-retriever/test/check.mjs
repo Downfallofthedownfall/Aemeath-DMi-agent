@@ -51,4 +51,31 @@ t('空输入返回空数组', () => {
   assert.deepEqual(chunkText('empty.txt', '   '), []);
 });
 
-console.log(`\n[retriever-chunker] ${passed} 项断言全部通过`);
+import('../lib/fts.js').then(({ queryTerms, buildFtsQuery, isRelevantChunk, toIndexable }) => {
+  const idx = toIndexable('拉格朗日量 L = T - V，欧拉-拉格朗日方程');
+  t('讲义相关度：问到内容才算命中', () => {
+    assert.ok(isRelevantChunk(queryTerms('请推导拉格朗日方程'), idx));
+    assert.ok(isRelevantChunk(queryTerms('拉格朗日'), idx));
+  });
+  t('讲义相关度：只撞上一个词 / 只有常用词不算', () => {
+    assert.ok(!isRelevantChunk(queryTerms('今天天气方程式赛车比赛怎么样'), idx));
+    assert.equal(queryTerms('什么').length, 0);
+    assert.equal(queryTerms('怎么').length, 0);
+    assert.ok(!isRelevantChunk([], idx));
+  });
+  t('讲义相关度：中文提问里夹一个外文术语也能命中外文讲义', () => {
+    const de = toIndexable('Der Drehimpuls L = r x p ist eine Erhaltungsgroesse im Zentralfeld');
+    assert.ok(isRelevantChunk(queryTerms('Drehimpuls 怎么推导'), de));
+    assert.ok(isRelevantChunk(queryTerms('explain Drehimpuls'), de));
+    assert.ok(!isRelevantChunk(queryTerms('PDF 怎么导入进来'), toIndexable('siehe PDF im Anhang')), '太短的外文词不能单独算命中');
+  });
+  t('讲义相关度：外文常用词不算命中', () => {
+    const de = toIndexable('Der Drehimpuls ist eine Erhaltungsgroesse und die Energie ist auch erhalten');
+    assert.deepEqual(queryTerms('what is the weather'), ['weather']);
+    assert.ok(!isRelevantChunk(queryTerms('wie ist das Wetter und der Verkehr'), de));
+  });
+  t('FTS 查询：去重并转义', () => {
+    assert.equal(buildFtsQuery(queryTerms('电场电场')), '"电场" OR "场电"');
+  });
+  console.log(`\n[retriever-chunker] ${passed} 项断言全部通过`);
+});
