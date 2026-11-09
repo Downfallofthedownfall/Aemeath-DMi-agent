@@ -32,6 +32,57 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const DSH_SCRIPT = path.join(REPO_ROOT, 'scripts', 'dsh.ps1');
 const APP_ORIGIN = `http://${HOST}:${PORT}`;
 
+/**
+ * 同源的文档地址（习题的提交 PDF / 原卷 / 打印页 / 页面截图）：这些要在应用里开新窗口，
+ * 系统浏览器没有登录 cookie 打不开。只放行 /aemeath/api/ 下的路径，主界面不能被开成第二份。
+ */
+function isAppDocumentUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.origin === APP_ORIGIN && u.pathname.startsWith('/aemeath/api/');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * window.open 的统一策略（主窗口 / 课堂窗共用）。
+ * ⚠️ 早先一律 deny 非 https：习题的"生成提交 PDF""打开原卷""打印页"在桌面版点了都没反应。
+ *   - 同源文档 → 应用内新窗口（共享 session，带登录 cookie）；?download=1 → 直接下载
+ *   - https 外链 → 系统默认浏览器
+ *   - 其余 → 拒绝
+ */
+function handleWindowOpen(owner, url) {
+  if (isAppDocumentUrl(url)) {
+    if (new URL(url).searchParams.get('download') === '1') {
+      owner.webContents.downloadURL(url);
+      return { action: 'deny' };
+    }
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        width: 960,
+        height: 900,
+        autoHideMenuBar: true,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, plugins: true },
+      },
+    };
+  }
+  if (url.startsWith('https://')) shell.openExternal(url);
+  return { action: 'deny' };
+}
+
+/** 文档子窗口的约束：不能跳去别的地方，也不能再开窗口。 */
+function lockDocumentWindow(child) {
+  child.webContents.on('will-navigate', (e, url) => {
+    if (!isAppDocumentUrl(url)) e.preventDefault();
+  });
+  child.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://')) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+}
+
 let mainWindow = null;
 // 课堂记录模式的**独立窗口**。
 // 为什么必须开第二个 BrowserWindow（而不是在宿主 Web UI 里做面板）：
@@ -325,11 +376,9 @@ function createWindow(loadUrl) {
     }
   });
 
-  // C24：外链只放 https（拒绝 http/自定义 scheme/file），交系统默认浏览器
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) shell.openExternal(url);
-    return { action: 'deny' };
-  });
+  // C24：外链只放 https（拒绝 http/自定义 scheme/file），交系统默认浏览器；同源文档开应用内窗口
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => handleWindowOpen(mainWindow, url));
+  mainWindow.webContents.on('did-create-window', lockDocumentWindow);
 
   // 外链与下载走系统默认
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
@@ -439,10 +488,8 @@ function openLectureWindow() {
       e.preventDefault();
     }
   });
-  lectureWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) shell.openExternal(url);
-    return { action: 'deny' };
-  });
+  lectureWindow.webContents.setWindowOpenHandler(({ url }) => handleWindowOpen(lectureWindow, url));
+  lectureWindow.webContents.on('did-create-window', lockDocumentWindow);
 
   // ⚠️ 课堂窗口靠 **URL query** 自报身份，而不是 did-finish-load 里 executeJavaScript：
   //    标记必须在客户端插件 apply() 之前就可见，而 executeJavaScript 是在页面加载完成后
