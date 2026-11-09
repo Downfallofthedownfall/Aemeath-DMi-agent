@@ -151,17 +151,22 @@ def _run_child(script, timeout, max_stdout=2 * 1024 * 1024, max_stderr=64 * 1024
 #      必须显式置空 __builtins__ 才能封死 eval 逃逸。
 # ============================================================
 SAFE_PARSE_SNIPPET = '''
+from tokenize import NAME as _NAME, OP as _OP, STRING as _STRING
 from sympy.parsing.sympy_parser import parse_expr, standard_transformations
 
 def _reject_dangerous(tokens, local_dict, global_dict):
+    # token 类型是 tokenize 的整数常量；早先和字符串 'NAME' / 'OP' 比较，恒为假，黑名单从未生效
     for tok in tokens:
-        if tok[0] == 'NAME' and tok[1].startswith('__'):
+        if tok[0] == _NAME and tok[1].startswith('__'):
             raise ValueError("禁止的名称: " + tok[1])
-        if tok[0] == 'OP' and tok[1] == '.':
+        if tok[0] == _OP and tok[1] == '.':
             raise ValueError("禁止的属性访问（表达式不允许点号）")
+        if tok[0] == _STRING:
+            raise ValueError("禁止字符串字面量")
     return tokens
 
-_SAFE_TRANSFORMS = standard_transformations + (_reject_dangerous,)
+# 黑名单必须最先跑：standard_transformations 之后名字已被 auto_symbol 改写成字符串
+_SAFE_TRANSFORMS = (_reject_dangerous,) + standard_transformations
 
 # standard_transformations 的 auto_number/factorial_notation/auto_symbol/
 # repeated_decimals 会在 token 流注入 Integer/Float/factorial/Symbol/Rational
