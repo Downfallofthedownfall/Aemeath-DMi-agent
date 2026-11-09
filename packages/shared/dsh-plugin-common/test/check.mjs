@@ -4,8 +4,8 @@
 // 注：用 node 直接执行（node:test 的子进程 spawn 在沙箱下不可用）
 // ============================================================
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { checkOoc, extractText, runtimeContextDirective, executionDirective, relationshipCueFor, resolveRole, rejectUnauthenticated, describeToolArgs } from '../lib/index.js';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { checkOoc, extractText, executionDirective, relationshipCueFor, resolveRole, rejectUnauthenticated, describeToolArgs, registerVolatileSettings, readSetting, fetchWithSsrfGuard, sessionPresetOf, AEMEATH_HIDDEN_TOOLS } from '../lib/index.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -60,42 +60,11 @@ t('extractText 容忍 undefined', () => {
   assert.equal(extractText(undefined), '');
 });
 
-t('runtimeContextDirective 始终非空且区分中英', () => {
-  const zh = runtimeContextDirective('zh');
-  const en = runtimeContextDirective('en');
-  const fallback = runtimeContextDirective('');
-  assert.ok(zh.length > 0);
-  assert.ok(en.length > 0);
-  assert.ok(fallback.length > 0);
-  assert.notEqual(zh, en);
-  assert.match(zh, /上下文/);
-  assert.match(en, /Runtime context/);
-});
-
 t('executionDirective 非空且为执行指令', () => {
   const d = executionDirective();
   assert.ok(d.length > 0);
   assert.match(d, /任务正确/);
   assert.match(d, /工具/);
-});
-
-// —— A4 relationship cue 注入（借 Cyrene 想法；返回给 runtime-context 段） ——
-t('runtimeContextDirective：无 cue 时保持占位且不含线索块', () => {
-  const zh = runtimeContextDirective('zh');
-  assert.match(zh, /上下文/);
-  assert.ok(!zh.includes('【近期关系线索】'));
-  assert.equal(runtimeContextDirective('zh', ''), zh);
-});
-
-t('runtimeContextDirective：带 cue 时把线索块一并注入', () => {
-  const cue = '【近期关系线索】\n- 当前状态：难过';
-  const zh = runtimeContextDirective('zh', cue);
-  assert.ok(zh.includes('【近期关系线索】'));
-  assert.match(zh, /当前状态：难过/);
-  assert.match(zh, /上下文/); // 占位说明仍在
-  const en = runtimeContextDirective('en', cue);
-  assert.ok(en.includes('【近期关系线索】'));
-  assert.match(en, /Runtime context/);
 });
 
 // —— relationshipCueFor：记忆插件缺失/异常时安全回退 ''（绝不抛错） ——
@@ -204,5 +173,108 @@ t('ask-notify.ps1：参数摘要进 toast（XML 转义）与气泡', () => {
   assert.doesNotMatch(ps, />\$detail</, 'toast 里不能放未转义的 $detail');
   assert.match(ps, /\$balloon = "\$balloon`n\$detail"/);
 });
+
+// —— 2026-11 审查修复的回归护栏 ——
+const pluginIndexes = () => {
+  const root = new URL('../../../', import.meta.url);
+  const out = [];
+  for (const group of readdirSync(root, { withFileTypes: true })) {
+    if (!group.isDirectory()) continue;
+    for (const pkg of readdirSync(new URL(group.name + '/', root), { withFileTypes: true })) {
+      if (!pkg.isDirectory() || !pkg.name.startsWith('dsh-plugin-')) continue;
+      const file = new URL(group.name + '/' + pkg.name + '/src/index.ts', root);
+      if (existsSync(file)) out.push({ name: pkg.name, src: readFileSync(file, 'utf-8') });
+    }
+  }
+  return out;
+};
+
+t('registerVolatileSettings：取值函数每次读都是最新值', () => {
+  let on = true;
+  registerVolatileSettings('check-live', { enabled: () => on });
+  assert.equal(readSetting({}, 'check-live').enabled, true);
+  on = false;
+  assert.equal(readSetting({}, 'check-live').enabled, false);
+});
+
+/**
+ * 取出源码里每个 registerVolatileSettings(...) 调用的完整文本（按括号配对找结尾）。
+ * ⚠️ 不能用 /registerVolatileSettings\([^)]*\)/：取值函数 `() =>` 的右括号就把匹配截断了，
+ *   第一个字段之后的内容根本没被检查。
+ */
+const volatileSettingsCalls = (src) => {
+  const calls = [];
+  const marker = 'registerVolatileSettings(';
+  for (let at = src.indexOf(marker); at !== -1; at = src.indexOf(marker, at + marker.length)) {
+    let depth = 0;
+    let end = at + marker.length - 1;
+    for (; end < src.length; end++) {
+      if (src[end] === '(') depth++;
+      else if (src[end] === ')' && --depth === 0) break;
+    }
+    calls.push(src.slice(at, end + 1));
+  }
+  return calls;
+};
+const SNAPSHOT_FIELD = /:\s*runtime\.\w+/;
+
+t('所有插件登记开关时都传取值函数（传 runtime.x 是启动时快照，开关会弹回去）', () => {
+  // 先确认扫描本身能看到后面的字段
+  const sample = "registerVolatileSettings('x', { a: () => runtime.a, b: runtime.b });";
+  assert.equal(volatileSettingsCalls(sample).length, 1);
+  assert.match(volatileSettingsCalls(sample)[0], SNAPSHOT_FIELD, '扫描漏掉了第二个字段');
+  assert.doesNotMatch(volatileSettingsCalls("registerVolatileSettings('x', { a: () => runtime.a, b: () => runtime.b });")[0], SNAPSHOT_FIELD);
+  let seen = 0;
+  for (const { name, src } of pluginIndexes()) {
+    for (const call of volatileSettingsCalls(src)) {
+      seen++;
+      assert.doesNotMatch(call, SNAPSHOT_FIELD, name + ' 把快照传给了 registerVolatileSettings: ' + call);
+    }
+  }
+  assert.ok(seen >= 8, '扫描到的调用太少，可能没扫到插件源码');
+});
+
+t('sessionPresetOf：调用方没 inject 也能读到会话中途选的角色（走 reflect）', () => {
+  const session = { header: { agentPreset: 'aemeath' } };
+  const ctx = new Proxy(
+    { reflect: { get: (n) => (n === 'sessionProjections' ? { stateOf: () => 'physicist' } : undefined) } },
+    {
+      get(target, prop) {
+        if (prop === 'sessionProjections') throw new Error('cannot get property without inject');
+        return target[prop];
+      },
+    },
+  );
+  assert.equal(sessionPresetOf(ctx, session), 'physicist');
+  assert.equal(resolveRole(ctx, session, 'aemeath'), 'physicist');
+});
+
+t('AEMEATH_HIDDEN_TOOLS 覆盖所有学习类工具（新增工具要加进去）', () => {
+  const names = new Set();
+  for (const { src } of pluginIndexes()) {
+    for (const m of src.matchAll(/name:\s*'((?:lecture|exercise|curriculum)_[a-z_]+|compute_verify|check_dimensions|plan_step|plan_status)'/g)) {
+      names.add(m[1]);
+    }
+  }
+  assert.ok(names.size > 20, '扫描到的工具太少，正则可能失效了');
+  for (const n of names) assert.ok(AEMEATH_HIDDEN_TOOLS.includes(n), n + ' 没有加入 AEMEATH_HIDDEN_TOOLS');
+});
+
+// fetchWithSsrfGuard 是异步的，单独跑（IP 字面量不需要 DNS，不依赖网络）
+{
+  const hops = [];
+  const fakeFetch = async (url) => {
+    hops.push(url);
+    return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:3081/aemeath/api/memory' } });
+  };
+  const blocked = await fetchWithSsrfGuard('http://93.184.216.34/start', {}, fakeFetch);
+  assert.equal(blocked, null, '重定向到回环地址必须被拦下');
+  assert.deepEqual(hops, ['http://93.184.216.34/start'], '回环地址不能被真正请求');
+  const ok = await fetchWithSsrfGuard('http://93.184.216.34/page', {}, async () => new Response('hi', { status: 200 }));
+  assert.equal(await ok.text(), 'hi');
+  assert.equal(await fetchWithSsrfGuard('http://127.0.0.1/x', {}, fakeFetch), null);
+  passed++;
+  console.log('  ✓ web_scraper：重定向的每一跳都校验私网地址');
+}
 
 console.log(`\n[ooc-check] ${passed} 项断言全部通过`);

@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import type {} from '@deepseek-ai/dsh-settings';
 // DSH 0.2.0：'loader/volatile-update' 事件由 cordis-plugin-loader 声明，
@@ -81,6 +82,48 @@ export const inject = ['tools', 'systemPrompt', 'agents', 'credentials', 'settin
 
 /** 当前 v2 版本标识（M0）。 */
 export const VERSION = '2.0.0-m0';
+
+/**
+ * 爱弥斯（陪伴角色）看不到的工具：学习 / 解题 / 课堂 / 习题全部属于学霸。
+ * README 承诺两个角色隔离；工具不隐藏的话，模型照样能在陪伴对话里读笔记、改答案。
+ * 新增这几类工具时要加进来（test/check.mjs 会扫描各插件源码防漏）。
+ * retrieve_worldbook 不在此列：它是双角色通用的，只是限定读本角色的馆。
+ */
+export const AEMEATH_HIDDEN_TOOLS: readonly string[] = [
+  'compute_verify',
+  'check_dimensions',
+  'plan_step',
+  'plan_status',
+  'curriculum_query',
+  'lecture_session_start',
+  'lecture_capture',
+  'lecture_status',
+  'lecture_review_start',
+  'lecture_review_submit',
+  'lecture_review_next',
+  'lecture_export_handoff',
+  'lecture_import_handoff',
+  'lecture_imported',
+  'lecture_read',
+  'exercise_list',
+  'exercise_new_sheet',
+  'exercise_open',
+  'exercise_problem',
+  'exercise_save_answer',
+  'exercise_resplit',
+  'exercise_check',
+  'exercise_scratch',
+  'exercise_attach_image',
+  'exercise_rebut',
+  'exercise_collect_mistake',
+  'exercise_lessons',
+  'exercise_export_text',
+  'exercise_sync_worldbook',
+  'exercise_build_submission',
+  'exercise_progress',
+  'exercise_export_handoff',
+  'exercise_import_handoff',
+];
 
 // ===== 配置（schemastery：属性默认可选，required() 才必填） =====
 export const Config = z.object({
@@ -157,12 +200,35 @@ export function warn(msg: string): void {
 // projection；两者都不可用时返回 undefined，由调用方回退 defaultPreset。
 // ============================================================
 
+/**
+ * 读一个没写进调用方 inject 的 host 服务。
+ *
+ * ⚠️ 这些 helper 被所有插件带着各自的 ctx 调用，而它们的 inject 都不含
+ *   sessionProjections / agentPresets。直接写 `ctx.sessionProjections` 只会抛
+ *   `cannot get property ... without inject` 并被 catch 吃掉 —— 结果「会话中途选的角色」
+ *   永远读不到、只剩创建时的 header。ctx.reflect.get 不要求 inject；
+ *   没有 reflect 的简单对象（单测的假 ctx）退回普通属性读取。
+ */
+function hostService<T>(ctx: unknown, name: string): T | undefined {
+  const reflect = (ctx as { reflect?: { get?: (n: string, strict?: boolean) => unknown } } | undefined)?.reflect;
+  try {
+    const found = reflect?.get?.(name, false);
+    if (found) return found as T;
+  } catch {
+    /* 落到普通读取 */
+  }
+  try {
+    return Reflect.get(ctx as object, name) as T | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 会话当前 agent preset（0.2.0 读法）；解析不出时 undefined。 */
 export function sessionPresetOf(ctx: unknown, session: unknown): string | undefined {
   if (!ctx || !session) return undefined;
   try {
-    const projections = (ctx as { sessionProjections?: { stateOf?: (s: unknown, k: string) => unknown } })
-      .sessionProjections;
+    const projections = hostService<{ stateOf?: (s: unknown, k: string) => unknown }>(ctx, 'sessionProjections');
     const value = projections?.stateOf?.(session, 'agentPreset');
     return typeof value === 'string' && value.length > 0 ? value : undefined;
   } catch {
@@ -258,7 +324,7 @@ export function readSetting(ctx: unknown, ns: string): Record<string, unknown> |
  */
 export function globalDefaultRole(ctx: unknown): string | undefined {
   try {
-    const presets = (ctx as { agentPresets?: { defaultId?: string } } | undefined)?.agentPresets;
+    const presets = hostService<{ defaultId?: string }>(ctx, 'agentPresets');
     if (typeof presets?.defaultId === 'string' && presets.defaultId) return presets.defaultId;
   } catch {
     /* 服务缺失：落到兼容读 */
@@ -336,8 +402,12 @@ export function rejectUnauthenticated(ctx: unknown, req: IncomingMessage, res: S
 /**
  * 把一组 volatile 配置引用登记为一个命名空间的读取器。
  * 用法（插件 apply 内）：
- *   registerVolatileSettings('aemeath-common', { oocRulesEnabled: config.oocRulesEnabled, ... });
+ *   registerVolatileSettings('aemeath-common', { oocRulesEnabled: () => runtime.oocRulesEnabled, ... });
  * 之后任意地方 `readSetting(ctx, 'aemeath-common')?.oocRulesEnabled` 拿到的都是最新值。
+ *
+ * ⚠️ 不要写 `{ enabled: runtime.enabled }`：getter 在这里求值一次，登记进去的就是
+ *   启动时的布尔值快照。真机症状：开关点了后端已生效，GET 读回的却是旧值 → 界面弹回去，
+ *   再点一次发的还是同一个值，重启前再也改不回来。（test/check.mjs 扫描防回归）
  *
  * 每个字段可以是三种形态之一，求值顺序：
  *   1) volatile 引用（`{ get(): T }`）      → 调 .get()
@@ -375,7 +445,7 @@ export function registerVolatileSettings(
 // S7：系统审批（免 alt-tab 切回 Web UI）
 //   首选：右下角通知 + 全局快捷键（scripts/ask-notify.ps1）——
 //     气泡通知右下角弹出、托盘图标常驻、全程不抢焦点不切窗口；
-//     Ctrl+Alt+1 = 允许，Ctrl+Alt+2 = 拒绝，点击通知/托盘菜单亦可。
+//     F5 = 允许，F6 = 拒绝，点击通知/托盘菜单亦可。
 //   fallback：模态 MessageBox（回车=允许 Esc=拒绝），通知脚本不可用时使用。
 // 实现：spawn powershell；参数经环境变量传入（防注入）；脚本需 UTF-8 BOM
 // （PowerShell 5.1 无 BOM 按 GBK 读，中文会破坏解析）。
@@ -472,14 +542,15 @@ async function systemApproval(toolName: string, reason: string, detail: string, 
 }
 
 /**
- * 读取当前 UI locale 偏好（settings.locale.preference，由 dsh 平台 locale 插件
- * 注册；缺省 zh）。host 侧无法感知浏览器语言，只能读用户显式选择的偏好。
+ * 当前 UI 语言（en / zh；缺省 zh）。
  *
- * DSH 0.2.0：平台 locale 插件的 preference 是它自己的 volatile 配置，本插件
- * 读不到（跨命名空间读已取消），故这里只在旧 CLI 上有效；新 CLI 下走
- * uiLocale() 的前端上报路径。
+ * 优先读前端上报的 aemeath-ui.locale：平台 locale 插件的 preference 是它自己的
+ * volatile 配置，0.2.0 起读不到。⚠️ 早先只读 'locale' 这个没人登记的命名空间，
+ * 结果恒为 zh —— 英文界面下人格文件和系统审批弹窗一直是中文。
  */
 function currentLocale(ctx: Context): string {
+  const reported = uiLocale(ctx);
+  if (reported) return reported;
   try {
     const v = readSetting(ctx, 'locale');
     return v?.preference === 'en' ? 'en' : 'zh';
@@ -569,34 +640,6 @@ function craftDirective(locale: string): string {
     ].join('\n');
   }
   return '';
-}
-
-/**
- * 运行时上下文段文本（A1：稳定人格 + 动态尾巴；借 Cyrene prompt 设计的
- * stablePrefix / runtimeContext 分离思路，只取思想不复制文案）。
- * 每次 assembly 重新求值，专门承载"随回合变化"的内容——A4 已接入关系线索
- * （【近期关系线索】块，来自记忆插件 ctx.memory.recallRelationshipCue）。
- * 稳定人格段（deployment:persona）保留可缓存的稳定字符串，这里只放动态尾巴，
- * 二者分离以保住 prompt-cache 命中率。
- * @param cue 可选关系线索块（A4，无则回退原占位文案）
- * locale=en → 英文；其余（含未上报）→ 中文，保证该段始终非空。
- */
-export function runtimeContextDirective(locale: string, cue = ''): string {
-  const base =
-    locale === 'en'
-      ? [
-          'Runtime context (rebuilt every turn; filled by relationship / memory / worldbook cues):',
-          '- This block is re-evaluated on each assembly — only this-turn-scoped, ephemeral facts go here.',
-          '- Stable persona traits stay in the cached persona section above, not here.',
-        ].join('\n')
-      : [
-          '当前上下文（每轮重新求值；由关系 / 记忆 / worldbook 线索填充）：',
-          '- 本段每次组装时重建——只放"本回合才成立"的临时信息。',
-          '- 稳定的人格特征不写在这里，已由上面可缓存的人格段承载。',
-        ].join('\n');
-  const trimmedCue = (cue || '').trim();
-  if (!trimmedCue) return base;
-  return `${base}\n\n${trimmedCue}`;
 }
 
 /**
@@ -707,6 +750,50 @@ async function resolveBlocksPrivate(url: string): Promise<boolean> {
   }
 }
 
+/** 单次抓取读取的正文上限（工具只回传前 3000 字符，不需要把整个大文件读进内存）。 */
+const SCRAPE_MAX_BYTES = 2 * 1024 * 1024;
+const SCRAPE_MAX_REDIRECTS = 5;
+
+/**
+ * 带 SSRF 校验的抓取：**每一跳**都重新校验目标地址。
+ *
+ * ⚠️ fetch 默认自动跟随重定向 —— 公网页面回一个 302 到 http://127.0.0.1:3081/…，
+ *   只校验入口 URL 就等于没防。这里改成手动跟随。
+ * @returns 响应；被拦截时返回 null（调用方给出拒绝文案）
+ */
+export async function fetchWithSsrfGuard(url: string, init: RequestInit = {}, fetchImpl: typeof fetch = fetch): Promise<Response | null> {
+  let current = url;
+  for (let hop = 0; hop <= SCRAPE_MAX_REDIRECTS; hop++) {
+    if (await resolveBlocksPrivate(current)) return null;
+    const resp = await fetchImpl(current, { ...init, redirect: 'manual' });
+    const location = resp.status >= 300 && resp.status < 400 ? resp.headers.get('location') : null;
+    if (!location) return resp;
+    await resp.body?.cancel().catch(() => undefined);
+    current = new URL(location, current).href;
+  }
+  throw new Error(`重定向次数超过 ${SCRAPE_MAX_REDIRECTS} 次`);
+}
+
+/** 读响应正文，最多 maxBytes（超出部分丢弃并中断下载）。 */
+export async function readTextLimited(resp: Response, maxBytes: number): Promise<string> {
+  const reader = resp.body?.getReader();
+  if (!reader) return resp.text();
+  const decoder = new TextDecoder();
+  let out = '';
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    out += decoder.decode(value, { stream: true });
+    if (size >= maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
+  }
+  return out;
+}
+
 // ⚠ 已知残留：DNS rebinding（TOCTOU）。此处先 lookup 校验、随后 fetch 由 Node
 // 在连接时重新解析——恶意域名可在两次解析之间从公网 IP 切到内网，绕过本检查。
 // 对本地桌宠威胁模型影响小（需攻击者控制被抓取域名的 DNS 且内网可达），故未做
@@ -745,8 +832,8 @@ export function apply(ctx: Context, config: CommonConfig): void {
   // 把本命名空间登记进全局读表（供 readSetting 跨插件读，语义同旧的
   // ctx.settings.get('aemeath-common')）。
   registerVolatileSettings('aemeath-common', {
-    oocRulesEnabled: runtime.oocRulesEnabled,
-    oocLlmEnabled: runtime.oocLlmEnabled,
+    oocRulesEnabled: () => runtime.oocRulesEnabled,
+    oocLlmEnabled: () => runtime.oocLlmEnabled,
   });
   // 热更新通知（仅派发给本条目）：值已提交，这里只需重新读一次并记录。
   ctx.on('loader/volatile-update', () => {
@@ -772,8 +859,8 @@ export function apply(ctx: Context, config: CommonConfig): void {
   // control_mcp 的工具（mcp__control__*）会在用户机器上真实操作键鼠/窗口、启动程序，
   // 且 control_open 白名单含任意存在的 .exe 路径。模型被注入后可直接调用，因此这里
   // 对所有 mcp__control__* 调用强制审批。审批方式（S7，默认开）：
-  //   系统级审批——右下角通知 + 托盘图标 + 全局快捷键（Ctrl+Alt+1 允许 /
-  //   Ctrl+Alt+2 拒绝，点击通知亦可），不抢焦点不切窗口；通知不可用时回退
+  //   系统级审批——右下角通知 + 托盘图标 + 全局快捷键（F5 允许 /
+  //   F6 拒绝，点击通知亦可），不抢焦点不切窗口；通知不可用时回退
   //   模态 MessageBox；仍不可用 → 回退 kind:'ask' 走 dsh 原生 Web UI 审批
   //   （缺省策略 ask 交给 answerer，无人应答 fail-closed deny）。
   // 放在公共插件（而非 workflow）是为了与 workflow.enabled 开关无关、始终挂载。
@@ -839,16 +926,14 @@ export function apply(ctx: Context, config: CommonConfig): void {
           if (SEARCH_PAGE_URL.test(url)) {
             return `Web scraper error: 这是搜索引擎结果页（${url.slice(0, 100)}），有反爬且不适合抓取。请改用 dsh 内置的 web_search 工具搜索，再对返回的具体文章 URL 调用本工具。`;
           }
-          // S6：SSRF 防护——私网/回环/保留地址或非 http(s) 一律拒绝
-          if (await resolveBlocksPrivate(url)) {
-            return `Web scraper error: URL 不可访问（拒绝私网/回环/保留地址或非 http(s)）: ${url.slice(0, 120)}`;
-          }
-          const resp = await fetch(url, {
+          // S6：SSRF 防护——私网/回环/保留地址或非 http(s) 一律拒绝（重定向的每一跳都校验）
+          const resp = await fetchWithSsrfGuard(url, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
             signal: AbortSignal.timeout(10_000),
           });
+          if (!resp) return `Web scraper error: URL 不可访问（拒绝私网/回环/保留地址或非 http(s)）: ${url.slice(0, 120)}`;
           if (!resp.ok) return `Web scraper error: HTTP ${resp.status} (${url})`;
-          const html = await resp.text();
+          const html = await readTextLimited(resp, SCRAPE_MAX_BYTES);
           const noScript = html.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
           const text = noScript.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
           return `Web content:\n\n${text.slice(0, 3000)}${text.length > 3000 ? '\n\n...(truncated)' : ''}`;
@@ -951,7 +1036,34 @@ export function apply(ctx: Context, config: CommonConfig): void {
     return text;
   };
 
+  // —— 工具隔离：爱弥斯看不到学习类工具（见 AEMEATH_HIDDEN_TOOLS）——
+  // 放在这里统一管（原先只有 workflow 自己隐藏了 4 个）。
+  // 逐个 restrict：tools.restrict 遇到没注册的名字会整批抛错，而不同 profile 挂的插件不一样。
+  // 空白会话改选角色时 dsh 不重建 agent，所以还要跟 agent-preset/selected 重新判定一次。
+  const toolRestrictions = new Map<string, Array<() => void>>();
+  const applyToolIsolation = (agent: { id: string; ctx: Context }, preset: string | undefined): void => {
+    const current = toolRestrictions.get(agent.id);
+    const hide = preset === 'aemeath';
+    if (hide && !current) {
+      const disposers: Array<() => void> = [];
+      for (const name of AEMEATH_HIDDEN_TOOLS) {
+        try {
+          disposers.push(agent.ctx.tools.restrict({ deny: [name] }));
+        } catch {
+          /* 这个 profile 没挂该工具：无需隐藏 */
+        }
+      }
+      toolRestrictions.set(agent.id, disposers);
+      log(`preset=aemeath（${agent.id}）已隐藏 ${disposers.length} 个学习类工具`);
+    } else if (!hide && current) {
+      for (const dispose of current) dispose();
+      toolRestrictions.delete(agent.id);
+      log(`preset=${preset}（${agent.id}）已恢复学习类工具`);
+    }
+  };
+
   const mountPersona = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
+    applyToolIsolation(agent, resolvePresetCompat(ctx, agent.session) ?? config.defaultPreset);
     if (mountedAgentPersonas.has(agent.id)) {
       warn(`人格已挂载过（跳过重复）: agent=${agent.id}`);
       return;
@@ -986,21 +1098,10 @@ export function apply(ctx: Context, config: CommonConfig): void {
         order: 2,
         text: () => craftDirective(uiLocale(agent.ctx)),
       });
-      // A1（借 Cyrene prompt 设计，只取思想）：稳定人格 + 动态尾巴。
-      // deployment:persona 段的文本来自可缓存（role+locale 键）的稳定字符串，
-      // 每次 assembly 只是命中缓存返回同一串，唯一失效是角色切换/locale 变化
-      // （cache-miss 重读文件）。aemeath:runtime-context（order=3）则每次
-      // assembly 重新求值，专放随回合变化的动态上下文——A4 已接入记忆插件
-      // 的【近期关系线索】块（relationshipCueFor 懒读 ctx.memory；记忆插件
-      // 缺失/异常时回退占位文案），与稳定人格分离以保住 prompt-cache 命中率。
-      agent.ctx.systemPrompt.section({
-        name: 'aemeath:runtime-context',
-        order: 3,
-        text: () => {
-          const preset = resolvePresetCompat(ctx, agent.session) ?? config.defaultPreset ?? '';
-          return runtimeContextDirective(uiLocale(agent.ctx), relationshipCueFor(agent.ctx, preset));
-        },
-      });
+      // ⚠️ 这里原来有一段 aemeath:runtime-context，把【近期关系线索】放进系统提示。
+      //   系统提示一变，dsh 就把**完整提示词**再追加一份进历史（5000+ 字）——
+      //   每次情绪变化上下文都涨一大截，所谓"保住缓存"恰恰相反。
+      //   线索改走下面 agent/pre-step 的普通注入，只有内容变了才发一次。
       // A2（借 Cyrene cyrene_harness.md 的 Execution Persona 思路）：紧凑执行人格，
       // 只约束工具调用循环的风格——任务正确 > 清晰 > 人格，不让个性泄漏进工具调用/参数。
       agent.ctx.systemPrompt.section({
@@ -1023,6 +1124,36 @@ export function apply(ctx: Context, config: CommonConfig): void {
   ctx.on('agent/created', ({ agent }) => {
     mountPersona(agent);
     return undefined;
+  });
+  // agent 没了就把登记清掉：同 id 的会话重新打开时要重新挂人格，否则新 agent 没有人格段
+  ctx.on('agent/disposed', ({ agent }) => {
+    mountedAgentPersonas.delete(agent.id);
+    toolRestrictions.delete(agent.id);
+    lastRelationshipCue.delete(agent.id);
+  });
+  // 空白会话改选角色：dsh 只重组 preset、不重建 agent（事件由 dsh-agent-preset-registry 发出）
+  (ctx as unknown as { on(name: string, cb: (sessionId: string, preset: string) => void): void }).on(
+    'agent-preset/selected',
+    (sessionId, preset) => {
+      const agent = ctx.agents.get(sessionId as never);
+      if (agent) applyToolIsolation(agent, preset);
+    },
+  );
+
+  // ---- 2.5) 关系线索注入（A4）：只有线索变了才发，不进系统提示（理由见 mountPersona）----
+  const lastRelationshipCue = new Map<string, string>();
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next();
+    if (decision.kind === 'reject' || payload.step !== 1) return decision;
+    const preset = resolvePresetCompat(ctx, payload.agent.session) ?? config.defaultPreset ?? '';
+    const cue = relationshipCueFor(payload.agent.ctx, preset).trim();
+    if (!cue || lastRelationshipCue.get(payload.agent.id) === cue) return decision;
+    lastRelationshipCue.set(payload.agent.id, cue);
+    const injectMsg = createUserMessage({
+      content: [{ type: 'text', text: cue }],
+      source: { kind: 'aemeath-common', form: 'notice', summary: '近期关系线索' },
+    });
+    return { kind: 'enter', messages: [...decision.messages, injectMsg] };
   });
 
   // ---- 3) OOC 规则层（agent/pre-step） ----
@@ -1086,65 +1217,65 @@ export function apply(ctx: Context, config: CommonConfig): void {
   log('OOC 规则层已挂载（agent/pre-step）');
 
   // ---- 4) OOC LLM 判定层（M6，默认关；assistant 回复后异步判定越界 → steer 纠偏） ----
+  // ⚠️ 必须无条件挂载、每次调用时再查开关：早先只在启动时开着才挂，
+  //   于是在设置页打开开关后要重启才生效（开关本身是 volatile，插件不会重新 apply）。
   const oocLlm = config.oocLlm ?? { enabled: false, apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' };
-  if (oocLlm.enabled || runtime.oocLlmEnabled) {
-    ctx.on('session/event', async (session, event) => {
-      try {
-        if (!runtime.oocLlmEnabled) return;
-        if (event.type !== 'assistant/message') return;
-        const preset = resolvePresetCompat(ctx, session) ?? config.defaultPreset;
-        if (!preset) return;
-        const text = (event.data.message?.content ?? [])
-          .map((b: { type?: string; text?: string }) => (b.type === 'text' ? b.text ?? '' : ''))
-          .join('')
-          .trim();
-        if (!text) return;
-        const personaName = preset === 'aemeath' ? '爱弥斯（桌宠，活泼俏皮，不讲物理公式）' : 'physicist（物理学霸，严谨专业，不卖萌）';
-        let apiKey = oocLlm.apiKey;
-        if (!apiKey) {
-          try {
-            apiKey = (await ctx.credentials?.resolve(credentialRef('DEEPSEEK_API_KEY')))?.value ?? '';
-          } catch {
-            apiKey = '';
-          }
+  ctx.on('session/event', async (session, event) => {
+    try {
+      if (!runtime.oocLlmEnabled) return;
+      if (event.type !== 'assistant/message') return;
+      const preset = resolvePresetCompat(ctx, session) ?? config.defaultPreset;
+      if (!preset) return;
+      const text = (event.data.message?.content ?? [])
+        .map((b: { type?: string; text?: string }) => (b.type === 'text' ? b.text ?? '' : ''))
+        .join('')
+        .trim();
+      if (!text) return;
+      const personaName = preset === 'aemeath' ? '爱弥斯（桌宠，活泼俏皮，不讲物理公式）' : 'physicist（物理学霸，严谨专业，不卖萌）';
+      let apiKey = oocLlm.apiKey;
+      if (!apiKey) {
+        try {
+          apiKey = (await ctx.credentials?.resolve(credentialRef('DEEPSEEK_API_KEY')))?.value ?? '';
+        } catch {
+          apiKey = '';
         }
-        if (!apiKey) return; // 无可用凭据：判定层静默跳过
-        // 每回合最多判定一次（与规则层同款去重，防反复 steer / 重复扣费）
-        const llmTurnKey = `${session.id}:${(event.data as { turn?: number }).turn ?? 0}`;
-        if (steeredTurns.get(llmTurnKey)) return;
-        steeredTurns.set(llmTurnKey, 1);
-        trimSteered();
-        const resp = await fetch(`${oocLlm.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: oocLlm.model,
-            messages: [
-              { role: 'system', content: '你是角色一致性判定器。判断回复是否符合角色设定，只输出 JSON：{"ooc": true/false, "reason": "简要原因"}' },
-              { role: 'user', content: `角色：${personaName}\n回复：${text.slice(0, 600)}` },
-            ],
-            response_format: { type: 'json_object' },
-            max_tokens: 120,
-            temperature: 0,
-          }),
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!resp.ok) return;
-        const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
-        const parsed = JSON.parse(data.choices?.[0]?.message?.content ?? '{}') as { ooc?: boolean; reason?: string };
-        if (parsed.ooc) {
-          log(`[OOC-LLM] preset=${preset} 越界（${parsed.reason}）→ steer 纠偏`);
-          const agent = ctx.agents.get(session.id);
-          if (agent) {
-            agent.steer({
-              content: [{ type: 'text', text: `（系统提示）你刚才的回答偏离了角色（${parsed.reason}）。请立即修正：保持角色，直接重答。` }],
-            } as never);
-          }
-        }
-      } catch {
-        /* OOC LLM 判定失败静默（不影响对话） */
       }
-    });
-    log('OOC LLM 判定层已挂载（session/event，assistant 回复后）');
-  }
+      if (!apiKey) return; // 无可用凭据：判定层静默跳过
+      // 每回合最多判定一次（与规则层同款去重，防反复 steer / 重复扣费）
+      const llmTurnKey = `${session.id}:${(event.data as { turn?: number }).turn ?? 0}`;
+      if (steeredTurns.get(llmTurnKey)) return;
+      steeredTurns.set(llmTurnKey, 1);
+      trimSteered();
+      const resp = await fetch(`${oocLlm.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: oocLlm.model,
+          messages: [
+            { role: 'system', content: '你是角色一致性判定器。判断回复是否符合角色设定，只输出 JSON：{"ooc": true/false, "reason": "简要原因"}' },
+            { role: 'user', content: `角色：${personaName}\n回复：${text.slice(0, 600)}` },
+          ],
+          response_format: { type: 'json_object' },
+          max_tokens: 120,
+          temperature: 0,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!resp.ok) return;
+      const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
+      const parsed = JSON.parse(data.choices?.[0]?.message?.content ?? '{}') as { ooc?: boolean; reason?: string };
+      if (parsed.ooc) {
+        log(`[OOC-LLM] preset=${preset} 越界（${parsed.reason}）→ steer 纠偏`);
+        const agent = ctx.agents.get(session.id);
+        if (agent) {
+          agent.steer({
+            content: [{ type: 'text', text: `（系统提示）你刚才的回答偏离了角色（${parsed.reason}）。请立即修正：保持角色，直接重答。` }],
+          } as never);
+        }
+      }
+    } catch {
+      /* OOC LLM 判定失败静默（不影响对话） */
+    }
+  });
+  log('OOC LLM 判定层已挂载（session/event，开关实时生效）');
 }
