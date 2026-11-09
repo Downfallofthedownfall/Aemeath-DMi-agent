@@ -65,6 +65,28 @@ function readFileAsBase64(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+
+/**
+ * 打开一个文档地址；带 download=1 的直接下载。返回 false = 弹窗被拦截。
+ *
+ * ⚠️ 下载地址不能走 window.open 再看返回值：桌面版对它是"开始下载 + 不开窗口"，
+ *   window.open 返回 null，会被当成弹窗被拦截 —— 下载已经开始，页面上还多一条
+ *   「已生成 · 打开」，点它又下载一遍。用 <a download> 触发，浏览器和桌面版行为一致。
+ */
+function openOrDownload(url: string): boolean {
+  if (/[?&]download=1(?:&|$)/.test(url)) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return true;
+  }
+  return !!window.open(url, '_blank');
+}
+
 export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.Element {
   const t = useT();
   const [courses, setCourses] = useState<CourseView[]>([]);
@@ -81,6 +103,13 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
   const [error, setError] = useState<string | null>(null);
   const [lessonDraft, setLessonDraft] = useState('');
   const [printUrl, setPrintUrl] = useState('');
+  /** 生成好的提交 PDF：弹窗被拦截时显示一个可点的按钮（生成要几秒，已经不算用户手势了）。 */
+  const [submissionUrl, setSubmissionUrl] = useState('');
+  const [newSheetOpen, setNewSheetOpen] = useState(false);
+  const [newSheetTitle, setNewSheetTitle] = useState('');
+  const [newSheetDue, setNewSheetDue] = useState('');
+  const [creatingSheetBusy, setCreatingSheetBusy] = useState(false);
+  const creatingSheet = useRef(false);
   const [navOpen, setNavOpen] = useState(true);
   // 极简模式：临时做题（一个工作区、无课程/提交功能），偏好记在 localStorage
   const [minimal, setMinimal] = useState<boolean>(() => {
@@ -101,6 +130,11 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const toastTimer = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const digestSeq = useRef(0);
+  const selectSeq = useRef(0);
+  /** 正在看的题集：晚到的保存响应不能把界面切回别的题集。 */
+  const viewRef = useRef({ courseId: '', sheetId: '' });
+  viewRef.current = { courseId, sheetId: sheet?.id ?? '' };
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -125,12 +159,13 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
   }, []);
 
   const loadDigest = useCallback(async (cid: string) => {
+    const seq = ++digestSeq.current;
     if (!cid) {
       setDigest(null);
       return;
     }
     const r = await apiGet<DigestView>('digest', { course: cid });
-    setDigest({ digest: r.digest, stats: r.stats });
+    if (seq === digestSeq.current) setDigest({ digest: r.digest, stats: r.stats });
   }, []);
 
   useEffect(() => {
@@ -157,10 +192,18 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
 
   /** 选套题（跨课程也能选：左栏列出全部课程，和 lecture 一样）。 */
   const selectSheet = async (cid: string, sid: string): Promise<void> => {
+    // 取到新题集后再一起切换。早先先换课程再等请求，这段时间答案框的自动保存会带着
+    // "新课程 + 旧题集"发出去；两门课都有 ub01 时，答案就写进了别的课。
+    const seq = ++selectSeq.current;
+    const r = await apiGet<{ sheet: SheetView }>('sheet', { course: cid, sheet: sid });
+    if (seq !== selectSeq.current) return;
     setCourseId(cid);
-    await loadSheet(cid, sid);
+    setSheet(r.sheet);
     setPrintUrl('');
+    setSubmissionUrl('');
     scrollRef.current?.scrollTo({ top: 0 });
+    // 进度页跟着当前课走（早先只在启动时读一次，切课后还显示第一门课）
+    await loadDigest(cid).catch(() => undefined);
   };
 
   const refreshAfterWrite = async (): Promise<void> => {
@@ -181,6 +224,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
         problem_id: problemId,
         patch,
       });
+      if (viewRef.current.courseId !== courseId || viewRef.current.sheetId !== sheet.id) return;
       setSheet(r.sheet);
       if (r.stale) showToast(t('exercise.wb.toast.answerUpdated', { n: r.stale }));
     },
@@ -246,15 +290,58 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
       showToast(t('exercise.wb.toast.importFirst'));
       return;
     }
-    const title = window.prompt(t('exercise.wb.prompt.sheetTitle'), '') ?? '';
-    const due = window.prompt(t('exercise.wb.prompt.sheetDue'), '') ?? '';
+    // ⚠️ 不能用 window.prompt：Electron 不支持，直接抛错，桌面版这个按钮等于坏的
+    setNewSheetTitle('');
+    setNewSheetDue('');
+    setNewSheetOpen(true);
+  };
+
+  const createSheet = async (): Promise<void> => {
+    // 请求没回来之前弹窗还开着：不挡住的话连点两下就建出两套空题集
+    if (!courseId || creatingSheet.current) return;
+    creatingSheet.current = true;
+    setCreatingSheetBusy(true);
     try {
-      const r = await apiPost<{ sheet: SheetView }>('create', { course_id: courseId, title, due });
+      const r = await apiPost<{ sheet: SheetView }>('create', { course_id: courseId, title: newSheetTitle.trim(), due: newSheetDue.trim() });
+      setNewSheetOpen(false);
       await loadCourses();
       await loadSheet(courseId, r.sheet.id);
       showToast(t('exercise.wb.toast.sheetCreated', { number: r.sheet.number }));
     } catch (e) {
       showToast(t('exercise.wb.toast.createFailed', { error: (e as Error).message }));
+    } finally {
+      creatingSheet.current = false;
+      setCreatingSheetBusy(false);
+    }
+  };
+
+  /** 删一套题 / 整门课（不可逆，所以要确认）。 */
+  const deleteSheet = async (cid: string, m: SheetMetaView): Promise<void> => {
+    if (!window.confirm(t('exercise.wb.confirm.deleteSheet', { number: m.number, answered: m.answered }))) return;
+    try {
+      await apiPost('delete', { scope: 'sheet', course_id: cid, sheet_id: m.id });
+      if (cid === courseId && sheet?.id === m.id) setSheet(null);
+      await loadCourses();
+      await loadMistakes();
+      await loadDigest(courseId);
+    } catch (e) {
+      showToast(t('exercise.common.deleteFailed', { error: (e as Error).message }));
+    }
+  };
+
+  const deleteCourse = async (c: CourseView): Promise<void> => {
+    if (!window.confirm(t('exercise.wb.confirm.deleteCourse', { title: c.title, n: c.sheets.length }))) return;
+    try {
+      await apiPost('delete', { scope: 'course', course_id: c.course_id });
+      if (c.course_id === courseId) {
+        setCourseId('');
+        setSheet(null);
+        setDigest(null);
+      }
+      await loadCourses();
+      await loadMistakes();
+    } catch (e) {
+      showToast(t('exercise.common.deleteFailed', { error: (e as Error).message }));
     }
   };
 
@@ -316,6 +403,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     if (!courseId || !sheet) return;
     setBusy(true);
     setPrintUrl('');
+    setSubmissionUrl('');
     try {
       const r = await apiPost<{ url: string; pages: number; bytes: number; renderer?: string; math_warnings?: string[] }>(
         'build_submission',
@@ -338,7 +426,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
               })
             : ''),
       );
-      window.open(r.url, '_blank');
+      if (!openOrDownload(r.url)) setSubmissionUrl(r.url);
     } catch (e) {
       const err = e as ApiError;
       showToast(err.message);
@@ -474,9 +562,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
   };
 
   const jumpToMistake = async (cid: string, sid: string, problemId: string): Promise<void> => {
-    setCourseId(cid);
-    await loadSheet(cid, sid);
-    await loadDigest(cid);
+    await selectSheet(cid, sid);
     window.setTimeout(() => {
       document.getElementById(`lec-problem-${problemId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 120);
@@ -605,6 +691,17 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                       {c.semester ? <span className="lec-course-sem">{c.semester}</span> : null}
                       {!isOpen && c.sheets.length ? <span className="lec-course-count">{c.sheets.length}</span> : null}
                     </span>
+                    <button
+                      type="button"
+                      className="lec-del lec-del-course"
+                      title={t('exercise.wb.course.deleteTitle', { title: c.title })}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void deleteCourse(c);
+                      }}
+                    >
+                      ✕
+                    </button>
                   </div>
                   {isOpen && c.sheets.length === 0 ? (
                     <div className="lec-hint" style={{ padding: '2px 10px 6px' }}>
@@ -617,7 +714,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                           <button
                             type="button"
                             className="lec-unit"
-                            data-active={sheet?.id === m.id ? '1' : '0'}
+                            data-active={c.course_id === courseId && sheet?.id === m.id ? '1' : '0'}
                             onClick={() => void selectSheet(c.course_id, m.id)}
                             title={t('exercise.wb.unitTitle', {
                               answered: m.answered,
@@ -637,6 +734,17 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                             <span className="lec-progress">
                               <i style={{ width: `${Math.max(2, m.percent)}%` }} />
                             </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="lec-del"
+                            title={t('exercise.wb.sheet.deleteTitle', { number: m.number })}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void deleteSheet(c.course_id, m);
+                            }}
+                          >
+                            ✕
                           </button>
                         </div>
                       ))
@@ -725,6 +833,14 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                   <div className="lec-nextstep">{t('exercise.wb.needsManualText')}</div>
                 )}
                 {sheet.next_hint && <div className="lec-nextstep">{sheet.next_hint}</div>}
+                {submissionUrl && (
+                  <div className="lec-nextstep">
+                    {t('exercise.wb.submissionReady')}
+                    <button type="button" className="lec-btn lec-btn-ghost" style={{ marginLeft: 6 }} onClick={() => openOrDownload(submissionUrl)}>
+                      {t('exercise.wb.openSubmission')}
+                    </button>
+                  </div>
+                )}
                 {printUrl && (
                   <div className="lec-nextstep">
                     {t('exercise.wb.noChrome')}
@@ -740,7 +856,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
 
                 {sheet.problems.map((p) => (
                   <ProblemCard
-                    key={p.id}
+                    key={`${courseId}/${sheet.id}/${p.id}`}
                     problem={p}
                     pageImageUrl={
                       sheet.has_page_images && courseId
@@ -957,13 +1073,35 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
         onClose={() => setImportOpen(false)}
         onImported={async (cid, s, warnings) => {
           await loadCourses();
-          await loadSheet(cid, s.id);
-          setCourseId(cid);
-          await loadDigest(cid);
+          await selectSheet(cid, s.id);
           if (warnings.length) showToast(warnings.join('\n'));
         }}
         onToast={showToast}
       />
+
+      {newSheetOpen && (
+        <div className="lec-modal-mask" onMouseDown={(e) => e.target === e.currentTarget && setNewSheetOpen(false)}>
+          <div className="lec-modal">
+            <h2>{t('exercise.wb.newSheet')}</h2>
+            <div className="lec-field">
+              <div className="lec-label">{t('exercise.wb.prompt.sheetTitle')}</div>
+              <input className="lec-input" autoFocus value={newSheetTitle} onChange={(e) => setNewSheetTitle(e.currentTarget.value)} />
+            </div>
+            <div className="lec-field">
+              <div className="lec-label">{t('exercise.wb.prompt.sheetDue')}</div>
+              <input className="lec-input" type="date" value={newSheetDue} onChange={(e) => setNewSheetDue(e.currentTarget.value)} />
+            </div>
+            <div className="lec-modal-actions">
+              <button type="button" className="lec-btn lec-btn-ghost" onClick={() => setNewSheetOpen(false)}>
+                {t('exercise.common.cancel')}
+              </button>
+              <button type="button" className="lec-btn" disabled={creatingSheetBusy} onClick={() => void createSheet()}>
+                {t('exercise.wb.newSheet')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && <div className="lec-toast">{toast}</div>}
     </div>

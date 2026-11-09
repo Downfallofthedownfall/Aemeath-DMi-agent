@@ -110,34 +110,61 @@ export function AnswerEditor({
   const timer = useRef<number | null>(null);
   const pending = useRef<{ answer?: string; notes?: string }>({});
   const dirtyRef = useRef(false);
+  /** 进行中的保存：响应回来时编辑框里可能已经有更新的内容，不能用响应覆盖。 */
+  const inflightRef = useRef<Promise<void> | null>(null);
+  const flushRef = useRef<() => Promise<void>>(async () => undefined);
+  // onSave / onToast 是父组件每次渲染新建的，放 ref 里：effect 不依赖它们（见卸载 effect 的注释）
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+  const onToastRef = useRef(onToast);
+  onToastRef.current = onToast;
   /** 让"稳定的插入器"始终调到最新的 schedule 实现（避免每次 render 重建插入器）。 */
   const scheduleRef = useRef<(patch: { answer?: string; notes?: string }) => void>(() => undefined);
 
   useEffect(() => {
-    if (!dirtyRef.current) {
+    if (!dirtyRef.current && !inflightRef.current) {
       setDraft(problem.answer);
       setNotes(problem.notes);
     }
   }, [problem.answer, problem.notes, problem.answer_updated_at]);
 
   const flush = useCallback(async (): Promise<void> => {
+    if (timer.current != null) {
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }
     if (!dirtyRef.current) return;
+    // ⚠️ 同一时间只发一个保存：并发时后发的请求可能先到，旧内容反而盖掉新内容。
+    //    这里直接返回，上一个保存结束后会接着发。
+    if (inflightRef.current) return;
+    // ⚠️ 发请求前就把待保存内容取走：早先响应回来才清空，保存途中打的字被一起清掉，
+    //    下一次发的是 {}，编辑框还会退回旧内容（真实丢字）。
     const patch = pending.current;
+    pending.current = {};
     dirtyRef.current = false;
     setDirty(false);
+    if (!Object.keys(patch).length) return;
     setSaving(true);
+    let failed = false;
+    const saving = onSaveRef.current(patch);
+    inflightRef.current = saving;
     try {
-      await onSave(patch);
+      await saving;
       setSavedAt(Date.now());
-      pending.current = {};
     } catch (e) {
+      failed = true;
+      pending.current = { ...patch, ...pending.current }; // 新打的内容优先
       dirtyRef.current = true;
       setDirty(true);
-      onToast(t('exercise.common.saveFailed', { error: (e as Error).message }));
+      onToastRef.current(t('exercise.common.saveFailed', { error: (e as Error).message }));
     } finally {
+      inflightRef.current = null;
       setSaving(false);
     }
-  }, [onSave, onToast]);
+    // 保存途中又有新内容：接着发。失败时不自动重试（避免死循环），等下一次输入或失焦。
+    if (!failed && dirtyRef.current && timer.current == null) void flushRef.current();
+  }, [t]);
+  flushRef.current = flush;
 
   const schedule = useCallback(
     (patch: { answer?: string; notes?: string }) => {
@@ -154,17 +181,28 @@ export function AnswerEditor({
   );
   scheduleRef.current = schedule;
 
+  // 只在卸载时收尾。早先依赖 [onSave]，而 onSave 每次渲染都是新函数：父组件任何一次
+  // 重渲染（弹个提示、切个标签）都会跑这段清理 —— 定时器被清、界面卡在"未保存"。
   useEffect(() => {
     return () => {
       if (timer.current != null) window.clearTimeout(timer.current);
       if (dirtyRef.current) {
         dirtyRef.current = false;
-        void onSave(pending.current).catch(() => undefined);
+        const patch = pending.current;
+        const save = onSaveRef.current;
+        // 排在进行中的保存之后发，不和它抢（上一个失败也不影响这一个）
+        void (inflightRef.current ?? Promise.resolve())
+          .catch(() => undefined)
+          .then(() => save(patch))
+          .catch((e: unknown) => {
+            onToastRef.current(t('exercise.common.saveFailed', { error: (e as Error).message }));
+          });
       }
       const ta = taRef.current;
       if (ta && activeTextArea === ta) setActiveTextArea(null);
     };
-  }, [onSave]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * 插入器只建一次（依赖全在 ref 里）：读 textarea 的真实值/选区，

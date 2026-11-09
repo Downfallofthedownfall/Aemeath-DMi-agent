@@ -39,6 +39,7 @@ import {
   safeSheetId,
   type StoreOptions,
 } from './store.js';
+import { safeCourseId } from './store.js';
 import { extractPdfText, type PdfExtractResult } from './pdf-text.js';
 import { splitProblems, type SplitProblem } from './split.js';
 import { segmentWithLlm } from './llm-split.js';
@@ -204,7 +205,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       return enabledRef?.get?.() ?? true;
     },
   };
-  registerVolatileSettings('aemeath-exercise', { enabled: runtime.enabled });
+  registerVolatileSettings('aemeath-exercise', { enabled: () => runtime.enabled });
   ctx.on('loader/volatile-update', () => {
     log(`settings 已更新: enabled=${runtime.enabled}`);
   });
@@ -623,15 +624,28 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // ============================================================
   // lecture 进度（只读另一模块的数据目录；读不到就省略这段）
   // ============================================================
-  const lectureProgress = (): LectureProgress | null => {
+  // 只统计同一门课（课程 id 相同）的课堂进度：这段摘要会进这门课的检查 prompt，
+  // 把别的课的讲次混进来只会误导模型。
+  const lectureMismatchLogged = new Set<string>();
+  const lectureProgress = (courseId: string): LectureProgress | null => {
     try {
       const root = isAbsolute(lectureDataDir) ? lectureDataDir : join(process.cwd(), lectureDataDir);
       if (!existsSync(root)) return null;
       let reviewed = 0;
       let total = 0;
       let latest: LectureProgress['latest'] = null;
-      for (const dir of readdirSync(root, { withFileTypes: true })) {
-        if (!dir.isDirectory()) continue;
+      // 两个模块的课程标识是各自手填的：physik-1 / physik_1 / physik1 算同一门课。
+      // 完全对不上时不回退成"全部课程"（会把别的课混进检查 prompt），但要留一条日志，
+      // 否则课堂进度这一段只是悄悄消失，用户不知道是标识没对上。
+      const looseId = (id: string): string => id.toLowerCase().replace(/[^a-z0-9]+/g, '');
+      const wanted = looseId(safeCourseId(courseId));
+      const courseDirs = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory());
+      const matched = wanted ? courseDirs.filter((d) => looseId(d.name) === wanted) : courseDirs;
+      if (wanted && !matched.length && courseDirs.length && !lectureMismatchLogged.has(wanted)) {
+        lectureMismatchLogged.add(wanted);
+        log(`课堂记录里没有标识为「${courseId}」的课程（现有：${courseDirs.map((d) => d.name).join(', ')}）——进度摘要不含课堂进度；两边课程标识一致才会带上`);
+      }
+      for (const dir of matched) {
         const idxFile = join(root, dir.name, 'index.json');
         if (!existsSync(idxFile)) continue;
         try {
@@ -662,7 +676,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   const digestFor = (courseId: string, excludeSheetId?: string): DigestResult => {
     const sheets = store.listSheets(courseId).filter((s) => s.id !== excludeSheetId);
     const mistakes = store.readMistakes().filter((m) => !courseId || m.course_id === courseId);
-    return buildProgressDigest({ sheets, mistakes, lecture: lectureProgress() });
+    return buildProgressDigest({ sheets, mistakes, lecture: lectureProgress(courseId) });
   };
 
   /** 把最新摘要写进 sheet（开题时调用一次；之后不自动刷新——它是"当时"的快照）。 */
@@ -2301,7 +2315,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   const buildDigestPreview = (courseId: string) => {
     const d = digestFor(courseId);
-    return { digest: d.text, stats: d.stats, lecture: lectureProgress() };
+    return { digest: d.text, stats: d.stats, lecture: lectureProgress(courseId) };
   };
 
   const buildSymbolsView = async () => {

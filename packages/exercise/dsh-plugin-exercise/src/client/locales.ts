@@ -84,6 +84,12 @@ export const zh = {
   'exercise.wb.needsManualText':
     'PDF 抽不出可读文字（扫描版/公式为主）—— 请点每道题的「改题干」补上，或用「＋ 添加题目」。',
   'exercise.wb.noChrome': '没找到本机 Chrome/Edge，自动生成失败。',
+  'exercise.wb.submissionReady': '提交 PDF 已生成。',
+  'exercise.wb.openSubmission': '打开',
+  'exercise.wb.sheet.deleteTitle': '删除第 {number} 套题',
+  'exercise.wb.course.deleteTitle': '删除整门课：{title}',
+  'exercise.wb.confirm.deleteSheet': '删除第 {number} 套题？已写的 {answered} 道答案也会一起删除，不能恢复。',
+  'exercise.wb.confirm.deleteCourse': '删除「{title}」这门课？里面 {n} 套题和答案都会删除，不能恢复。',
   'exercise.wb.openPrint': '打开打印页',
   'exercise.wb.noProblems': '这套题还没有题目 —— 用「＋ 添加题目」手填，或导入 PDF 让 LLM 拆题。',
 
@@ -248,7 +254,7 @@ export const zh = {
 
   // —— 导入 ——
   'exercise.import.title': '导入 Übungsblatt',
-  'exercise.import.lead': 'PDF 会抽出文字，**由 LLM 拆成题目**（识别不了就退回规则分块）。公式可在题干里用 $...$ 补。',
+  'exercise.import.lead': 'PDF 会抽出文字，由 LLM 拆成题目（识别不了就退回规则分块）。公式可在题干里用 $...$ 补。',
   'exercise.import.courseIdLabel': '课程标识',
   'exercise.import.courseIdNote': '（英文短名，会作为文件夹名）',
   'exercise.import.courseIdRequired': '课程标识不能为空（例如 physik-1）',
@@ -407,6 +413,12 @@ export const en: Record<ExerciseKey, string> = {
   'exercise.wb.needsManualText':
     'Could not extract readable text from the PDF (scanned or formula-heavy) — use “Edit statement” on each problem, or “＋ Add problem”.',
   'exercise.wb.noChrome': 'No local Chrome/Edge found — automatic export failed.',
+  'exercise.wb.submissionReady': 'Submission PDF is ready.',
+  'exercise.wb.openSubmission': 'Open',
+  'exercise.wb.sheet.deleteTitle': 'Delete sheet {number}',
+  'exercise.wb.course.deleteTitle': 'Delete the whole course: {title}',
+  'exercise.wb.confirm.deleteSheet': 'Delete sheet {number}? Its {answered} written answers go with it and cannot be restored.',
+  'exercise.wb.confirm.deleteCourse': 'Delete the course "{title}"? Its {n} sheets and all answers will be deleted and cannot be restored.',
   'exercise.wb.openPrint': 'Open print page',
   'exercise.wb.noProblems':
     'This sheet has no problems yet — add them with “＋ Add problem”, or import a PDF and let the LLM split it.',
@@ -579,7 +591,7 @@ export const en: Record<ExerciseKey, string> = {
   // —— import ——
   'exercise.import.title': 'Import Übungsblatt',
   'exercise.import.lead':
-    'The PDF is converted to text and **split into problems by the LLM** (falls back to rule-based splitting if that fails). You can add formulas to a statement with $...$.',
+    'The PDF is converted to text and split into problems by the LLM (falls back to rule-based splitting if that fails). You can add formulas to a statement with $...$.',
   'exercise.import.courseIdLabel': 'Course ID',
   'exercise.import.courseIdNote': ' (short English name, used as the folder name)',
   'exercise.import.courseIdRequired': 'Course ID is required (e.g. physik-1)',

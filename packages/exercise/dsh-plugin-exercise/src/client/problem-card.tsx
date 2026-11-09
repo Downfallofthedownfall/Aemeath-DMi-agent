@@ -11,7 +11,7 @@
 // 题干可编辑：多模态转录也可能漏字，用户必须能改。
 // ============================================================
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ProblemView } from './api.ts';
 import { AnswerEditor } from './answer-editor.tsx';
 import { ApproachPanel, type ApproachResult } from './approach-panel.tsx';
@@ -75,6 +75,10 @@ export function ProblemCard({
   const [text, setText] = useState(problem.text);
   const [savingText, setSavingText] = useState(false);
   const [showPage, setShowPage] = useState(problem.has_figure);
+  // 题干可能在外面变（重新分块 / agent 改过）：没在编辑时跟上，否则点"保存"会写回旧文本
+  useEffect(() => {
+    if (!editing) setText(problem.text);
+  }, [problem.text, editing]);
 
   const status = problem.status;
 
