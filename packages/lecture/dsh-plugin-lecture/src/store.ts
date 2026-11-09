@@ -22,6 +22,7 @@ import {
   reviewStateSchema,
   renderFrontMatter,
   parseFrontMatter,
+  classifyLine,
   parseShorthand,
   splitChunks,
   missingBlanks,
@@ -305,21 +306,19 @@ export class LectureStore {
   renderUnitMarkdown(fm: LectureFrontMatter, chunks: readonly RawChunk[]): string {
     const parts: string[] = [renderFrontMatter(fm), ''];
     for (const c of chunks) {
-      const lines = parseShorthand(c.raw);
-      // 用块内第一个 topic 作小节标题；没有则用序号
-      const topicLine = lines.find((l) => l.kind === 'topic');
-      const title = topicLine?.text || `速记块 ${c.seq + 1}`;
-      parts.push(`## ${title}`, '');
-      for (const l of lines) {
-        if (l.kind === 'topic') continue; // 已作标题
-        if (!l.text) continue;
-        const prefix = { formula: '= ', question: '? ', keypoint: '! ', example: '> ' }[l.kind as string] ?? '';
-        parts.push(`${prefix}${l.text}`);
-      }
+      // ⚠️ 正文必须逐行原样写：每次追加一块、改一个留白都会把整个文件重写一遍。
+      //    早先按速记语法解析后再拼回去，丢第二个 # 标题、空行、--- 和行内的前后缀。
+      //    只有开头的 # 主题行提升成小节标题（读回时还原）。
+      const rawLines = c.raw.split(/\r?\n/);
+      const firstIdx = rawLines.findIndex((l) => l.trim());
+      const first = firstIdx >= 0 ? classifyLine(rawLines[firstIdx]!) : null;
+      const hasTitle = first?.kind === 'topic' && !!first.text;
+      parts.push(`## ${hasTitle ? first.text : generatedTitle(c.seq)}`, '');
+      for (const line of hasTitle ? rawLines.slice(firstIdx + 1) : rawLines) parts.push(escapeMdLine(line));
       parts.push('');
       // 强制留白（D3）：始终写出标签，未填则留空——便于复盘时定位
-      parts.push(`[我的理解] ${c.my_understanding}`.trimEnd());
-      parts.push(`[我的疑问] ${c.my_question}`.trimEnd());
+      parts.push(`[我的理解] ${escapeBlank(c.my_understanding)}`.trimEnd());
+      parts.push(`[我的疑问] ${escapeBlank(c.my_question)}`.trimEnd());
       parts.push('');
     }
     return parts.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
@@ -484,9 +483,50 @@ export class LectureStore {
   }
 }
 
+/** 没有主题行的块写盘时用的占位标题（读回时不进正文）。 */
+function generatedTitle(seq: number): string {
+  return `速记块 ${seq + 1}`;
+}
+const GENERATED_TITLE = /^速记块 \d+$/;
+
+/**
+ * 正文 / 留白里长得像结构标记的行要转义，否则读回时会被当成新小节或留白标签。
+ * 转义形式是行首加反斜杠，文件仍然人可读。
+ *
+ * ⚠️ 两条要和读回的规则对称：
+ *   · 小节是用 /^##\s+/m 切的，\s+ 能吃到换行 —— 只有「##」两个字符的行也会被切开，必须转义；
+ *   · 用户自己写的、本来就以反斜杠开头的结构行（\## x）也要再加一层，
+ *     否则读回时那个反斜杠会被当成转义符吃掉。
+ */
+const STRUCTURAL_LINE = /^\\*(?:##(?:\s|$)|\s*\[我的(?:理解|疑问)\])/;
+const ESCAPED_LINE = /^\\(\\*(?:##(?:\s|$)|\s*\[我的(?:理解|疑问)\]))/;
+
+function escapeMdLine(line: string): string {
+  return STRUCTURAL_LINE.test(line) ? `\\${line}` : line;
+}
+
+function escapeBlank(text: string): string {
+  const [first = '', ...rest] = text.split(/\r?\n/);
+  return [first, ...rest.map(escapeMdLine)].join('\n');
+}
+
+function unescapeMdLines(lines: readonly string[]): string {
+  return lines
+    .map((l) => l.replace(ESCAPED_LINE, '$1'))
+    .join('\n')
+    .trim();
+}
+
+const UNDERSTANDING_LABEL = /^\s*\[我的理解\]\s?/;
+const QUESTION_LABEL = /^\s*\[我的疑问\]\s?/;
+
 /**
  * 从 markdown 正文重建块序列（供复盘读取强制留白）。
  * 与 renderUnitMarkdown 对称：`## ` 小节 = 一个块，`[我的理解]`/`[我的疑问]` 为留白字段。
+ *
+ * ⚠️ 留白可以有多行（输入框里按回车就换行）。早先只剔除标签那一行，
+ *   后面的行留在正文里 —— 每次重写文件都往正文多复制一份，笔记越存越乱。
+ *   现在按行切：最后一个 [我的理解] 之前是正文，两个标签之间是理解，之后是疑问。
  */
 export function parseUnitMarkdown(md: string): { front: Record<string, string>; chunks: RawChunk[] } {
   const { front, body } = parseFrontMatter(md);
@@ -495,16 +535,29 @@ export function parseUnitMarkdown(md: string): { front: Record<string, string>; 
   sections.forEach((sec, i) => {
     const nl = sec.indexOf('\n');
     const title = nl === -1 ? sec.trim() : sec.slice(0, nl).trim();
-    const content = nl === -1 ? '' : sec.slice(nl + 1);
-    const understanding = /\[我的理解\]\s*([\s\S]*?)(?=\[我的疑问\]|$)/.exec(content)?.[1]?.trim() ?? '';
-    const question = /\[我的疑问\]\s*([\s\S]*?)$/.exec(content)?.[1]?.trim() ?? '';
-    // 去掉留白标签行，剩下的是速记正文；把标题还原成 `# ` 主题行
-    const bodyLines = content
-      .split(/\r?\n/)
-      .filter((l) => !/^\s*\[我的(理解|疑问)\]/.test(l))
-      .join('\n')
-      .trim();
-    const raw = [`# ${title}`, bodyLines].filter(Boolean).join('\n');
+    const lines = (nl === -1 ? '' : sec.slice(nl + 1)).split(/\r?\n/);
+    let ui = -1;
+    let qi = -1;
+    for (let k = lines.length - 1; k >= 0; k--) {
+      if (qi < 0 && QUESTION_LABEL.test(lines[k]!)) {
+        qi = k;
+      } else if (UNDERSTANDING_LABEL.test(lines[k]!)) {
+        ui = k;
+        break;
+      }
+    }
+    const bodyEnd = ui >= 0 ? ui : qi >= 0 ? qi : lines.length;
+    const bodyText = unescapeMdLines(lines.slice(0, bodyEnd));
+    let understanding = ui >= 0 ? unescapeMdLines([lines[ui]!.replace(UNDERSTANDING_LABEL, ''), ...lines.slice(ui + 1, qi > ui ? qi : lines.length)]) : '';
+    let question = qi >= 0 ? unescapeMdLines([lines[qi]!.replace(QUESTION_LABEL, ''), ...lines.slice(qi + 1)]) : '';
+    // 手改文件时可能把两个标签写在同一行
+    if (qi < 0 && understanding.includes('[我的疑问]')) {
+      const at = understanding.indexOf('[我的疑问]');
+      question = understanding.slice(at + '[我的疑问]'.length).trim();
+      understanding = understanding.slice(0, at).trim();
+    }
+    // 把标题还原成 `# ` 主题行；占位标题不是用户写的，不进正文
+    const raw = [GENERATED_TITLE.test(title) ? '' : `# ${title}`, bodyText].filter(Boolean).join('\n');
     chunks.push({ seq: i, raw, my_understanding: understanding, my_question: question, created_at: 0 });
   });
   return { front, chunks };

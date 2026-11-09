@@ -197,23 +197,36 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
     const d = await getJson<{ ok: boolean; courses: CourseView[] }>(`${API}?action=courses`);
     if (!d?.courses) return;
     setCourses(d.courses);
-    setCourseId((cur) => cur || d.courses[0]?.course_id || '');
-    setUnitId((cur) => cur || d.courses[0]?.units[0]?.id || '');
+    setCourseId((cur) => (cur && d.courses.some((c) => c.course_id === cur) ? cur : d.courses[0]?.course_id || ''));
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
+  // 选中的讲必须属于选中的课。早先缺省值取"第一门课的第一讲"：删掉第二门课里的当前讲之后，
+  // courseId 还是第二门、unitId 变成第一门的，界面显示"还没有课程"，输入框却还在，发送必失败。
+  useEffect(() => {
+    const course = courses.find((c) => c.course_id === courseId);
+    if (course && !course.units.some((u) => u.id === unitId)) setUnitId(course.units[0]?.id ?? '');
+  }, [courses, courseId, unitId]);
+
+  // 只认最后一次请求：快速切讲时，先发的响应晚到会把另一讲的内容显示出来
+  const loadSeq = useRef(0);
   const loadUnit = useCallback(async (c: string, u: string) => {
+    const seq = ++loadSeq.current;
     if (!c || !u) {
       setChunks([]);
+      // 这里也要收掉 loading：被这次调用取代的那个请求回来时不会再动它，
+      // 不复位的话空课程页会一直显示"加载中"。
+      setLoading(false);
       return;
     }
     setLoading(true);
     const d = await getJson<{ ok: boolean; chunks: RawChunk[] }>(
       `${API}?action=unit&course=${encodeURIComponent(c)}&unit=${encodeURIComponent(u)}`,
     );
+    if (seq !== loadSeq.current) return;
     setChunks(d?.chunks ?? []);
     setLoading(false);
   }, []);
@@ -363,7 +376,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
         </button>
         <span className="lec-title">{t('lecture.wb.title')}</span>
         <span className="lec-sub">
-          {currentUnit ? `${currentCourse?.title ?? courseId} · ${currentUnit.title}` : t('lecture.wb.noCourses')}
+          {currentUnit ? `${currentCourse?.title ?? courseId} · ${currentUnit.title}` : hasCourses ? t('lecture.wb.noUnit') : t('lecture.wb.noCourses')}
         </span>
         <span className="lec-grow" />
         <button type="button" className="lec-btn-tiny" onClick={() => setStarting((v) => !v)} title={t('lecture.wb.start.title')}>
@@ -643,7 +656,7 @@ export function Workbench({ onClose, standalone = false }: { onClose: () => void
 
               留白（[我的理解]/[我的疑问]）**不在这里填** ——
               那是复盘阶段的事（D12），现场没时间写；服务端也不再强制。 */}
-          {!starting && unitId ? (
+          {!starting && currentUnit ? (
             <MathComposer
               disabled={busy}
               apiRef={composerApi}

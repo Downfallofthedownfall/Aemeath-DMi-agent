@@ -156,6 +156,7 @@ export function ReviewPanel(props: {
       return;
     }
     setStep('compare');
+    setText(''); // 回忆已提交：第 3 步的回答框和它共用状态，不清的话会预填这段回忆
     if (r.comparison) {
       try {
         const c = typeof r.comparison === 'string' ? JSON.parse(r.comparison) : r.comparison;
@@ -200,6 +201,8 @@ export function ReviewPanel(props: {
       if (r.question) {
         setQuestion(r.question);
         setStep('repair');
+        // 重试对照成功时后端会直接进第 3 步：把对照结果取回来（下面折叠显示，别让人错过）
+        if (!state?.comparison) void load();
       } else {
         // 生成失败或 D12 拦截：留在原地，把原因说清楚（别让人以为点坏了）
         setErr(r.warning ?? r.note ?? t('lecture.review.err.candidatesFailed'));
@@ -323,6 +326,12 @@ export function ReviewPanel(props: {
           <div className="lec-notice">
             {t('lecture.review.repair.lead')}<b>{t('lecture.review.repair.strong')}</b>{t('lecture.review.repair.tail')}
           </div>
+          {state?.comparison ? (
+            <details className="lec-card">
+              <summary>{t('lecture.review.repair.comparison')}</summary>
+              <ComparisonGrid comparison={state.comparison} />
+            </details>
+          ) : null}
           {question ? (
             <div className="lec-card">
               <b>{t('lecture.review.repair.question')}</b>

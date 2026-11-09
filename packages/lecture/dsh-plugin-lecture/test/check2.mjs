@@ -321,4 +321,69 @@ t('写入是原子的：不留临时文件，内容完整可读', () => {
 });
 
 rmSync(tmp, { recursive: true, force: true });
+// —— 笔记写盘往返：正文和留白都要原样读回（2026-11 审查修复）——
+{
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join: pjoin } = await import('node:path');
+  const dir = mkdtempSync(pjoin(tmpdir(), 'lec-rt-'));
+  const st = new LectureStore({ rootDir: dir });
+  st.ensureCourse('c', 'C');
+  const unit = { id: 'u01', date: '2026-11-05', title: 'T', file: '2026-11-05-u01.md', reviewed: false, has_summary: false };
+  st.upsertUnit('c', unit);
+  const fm = { course: 'C', unit: 'T', date: '2026-11-05', semester: '', module: '' };
+  const samples = [
+    { raw: '# 主题一\n第一段\n# 主题二\n第二段', my_understanding: '第一行\n第二行\n第三行', my_question: '疑问一\n疑问二' },
+    { raw: '普通段落一\n\n普通段落二\n- 列表 A', my_understanding: '', my_question: '' },
+    { raw: '= F=ma\n? 为什么\n! 重点\n> 例子\n---\n分割后的内容', my_understanding: '', my_question: '' },
+    { raw: '$$\n\\int_0^1 x dx\n$$\n[我的理解] 这是笔记原文，不是留白', my_understanding: '[我的疑问] 理解里提到这个词', my_question: '## 疑问里的井号行' },
+    { raw: '## 1.2 小节标题\n### 三级\n## 又一个二级\n代码 `a=b`', my_understanding: 'x\n## 理解里的标题\n[我的疑问] y', my_question: '' },
+  ].map((c, seq) => ({ ...c, seq, created_at: 0 }));
+  const roundTrip = (chunks) => {
+    st.writeUnitMarkdown('c', unit, fm, chunks);
+    return parseUnitMarkdown(st.readUnitMarkdown('c', unit)).chunks;
+  };
+  t('笔记往返：块数不变，正文和留白原样读回', () => {
+    const back = roundTrip(samples);
+    assert.equal(back.length, samples.length);
+    assert.equal(back[0].raw, samples[0].raw);
+    assert.equal(back[0].my_understanding, samples[0].my_understanding);
+    assert.equal(back[0].my_question, samples[0].my_question);
+    assert.equal(back[1].raw, samples[1].raw, '不该多出"速记块 N"标题，也不该丢空行');
+    assert.equal(back[2].raw, samples[2].raw, '--- 和各种前缀都要保留');
+    assert.equal(back[3].raw, samples[3].raw);
+    assert.equal(back[3].my_understanding, samples[3].my_understanding);
+    assert.equal(back[3].my_question, samples[3].my_question);
+    assert.equal(back[4].raw, '# 1.2 小节标题\n### 三级\n## 又一个二级\n代码 `a=b`', '只有开头的标题规整成 #，正文里的 ## 不能切出新块');
+    assert.equal(back[4].my_understanding, samples[4].my_understanding);
+  });
+  t('笔记往返：反复写盘不增长（多行留白曾经每次多复制一份进正文）', () => {
+    let cur = samples;
+    for (let i = 0; i < 4; i++) cur = roundTrip(cur);
+    assert.equal(cur[0].raw, samples[0].raw);
+    assert.equal(cur[0].my_understanding, samples[0].my_understanding);
+    assert.equal(cur[4].my_understanding, samples[4].my_understanding);
+  });
+  t('笔记往返：只有 ## 的行不切块，自带反斜杠的结构行不丢反斜杠', () => {
+    const tricky = [
+      { raw: '# 主题\n上半段\n##\n下半段', my_understanding: '', my_question: '' },
+      { raw: '转义写法示例\n\\## 这一行本来就带反斜杠\n\\[我的理解] 这行也是', my_understanding: 'a\n##\nb', my_question: '' },
+    ].map((c, seq) => ({ ...c, seq, created_at: 0 }));
+    let cur = tricky;
+    for (let i = 0; i < 3; i++) cur = roundTrip(cur);
+    assert.equal(cur.length, 2, '只有 ## 的行不能切出新块');
+    assert.equal(cur[0].raw, tricky[0].raw);
+    assert.equal(cur[1].raw, tricky[1].raw);
+    assert.equal(cur[1].my_understanding, tricky[1].my_understanding);
+  });
+  t('笔记解析：兼容旧文件（占位标题、单行同时含两个标签）', () => {
+    const old = parseUnitMarkdown('---\ncourse: C\n---\n\n## 速记块 1\n\n正文\n\n[我的理解] a [我的疑问] b\n').chunks[0];
+    assert.equal(old.raw, '正文');
+    assert.equal(old.my_understanding, 'a');
+    assert.equal(old.my_question, 'b');
+  });
+  rmSync(dir, { recursive: true, force: true });
+}
+
+
 console.log(`\n[check2.mjs] ${passed} 项断言通过`);

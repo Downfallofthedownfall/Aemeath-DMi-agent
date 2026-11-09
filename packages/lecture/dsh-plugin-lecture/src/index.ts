@@ -217,7 +217,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
       return enabledRef?.get?.() ?? true;
     },
   };
-  registerVolatileSettings('aemeath-lecture', { enabled: runtime.enabled });
+  registerVolatileSettings('aemeath-lecture', { enabled: () => runtime.enabled });
   ctx.on('loader/volatile-update', () => {
     log(`settings 已更新: enabled=${runtime.enabled}`);
   });

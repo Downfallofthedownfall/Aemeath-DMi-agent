@@ -54,7 +54,8 @@ export function checkWriteOrigin(req: IncomingMessage): boolean {
 
 export function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    let body = '';
+    // 先攒 Buffer 最后一次解码：逐块 += 会把跨块的多字节字符（中文）解成乱码
+    const parts: Buffer[] = [];
     let size = 0;
     let done = false;
     const fail = (code: number, msg: string): void => {
@@ -69,16 +70,16 @@ export function readBody(req: IncomingMessage): Promise<string> {
       const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
+        // 不 destroy：那样连接直接断，413 响应发不出去
         fail(413, 'body too large (max 1MB)');
-        req.destroy();
         return;
       }
-      body += c;
+      parts.push(chunk);
     });
     req.on('end', () => {
       if (!done) {
         done = true;
-        resolve(body);
+        resolve(Buffer.concat(parts).toString('utf-8'));
       }
     });
     req.on('error', (e) => fail(400, (e as Error).message));
