@@ -8,12 +8,12 @@
 //   5. plan_step / plan_status 工具（v2）：解题计划步骤 JSON 落 ctx.memory scratch
 //      （模型显式调用；post-execute 对无计划即验证给缺失提示）
 //   6. 工具流 = dsh 原版逻辑：tools/pre-execute 只做 allow/deny
-//      （compute_verify 会话级预算超限 → deny 并引导诚实降级；settings 开关关 → deny）。
+//      （compute_verify 每回合预算超限 → deny 并引导诚实降级；settings 开关关 → deny）。
 //      不做自研用户询问（askTools/ctx.userQuestions 已移除，2026-08-16）；
 //      S4 修复：对 mcp__control__*（键鼠/程序控制）的强制审批在 dsh-plugin-common
 //      （tools/pre-execute 返回 kind:'ask'，approval 服务缺省 fail-closed）。
 //   7. presentAs('code')（v2，config 门控默认关）：计算密集流代码呈现模式
-//   8. 爱弥斯零回归：aemeath preset 注入/工具全隔离（ctx.tools.restrict deny）
+//   8. 爱弥斯零回归：aemeath preset 不注入；工具隐藏统一在 common 插件（AEMEATH_HIDDEN_TOOLS）
 // ============================================================
 
 import type { Context } from '@deepseek-ai/cordis';
@@ -30,6 +30,7 @@ import type {} from '@deepseek-ai/dsh-subprocess';
 import type {} from '@deepseek-ai/dsh-tools';
 import { routeQuery, SOLVER_PROMPT } from './route.js';
 import { parsePlan, upsertStep, PLAN_MISSING_NOTICE } from './plan.js';
+import { SYMPY_SCRIPT, DIMENSION_SCRIPT } from './scripts.js';
 
 export const name = 'aemeath-workflow';
 export const inject = ['tools', 'subprocess', 'settings', 'agents'];
@@ -41,7 +42,7 @@ export const Config = z.object({
   enabled: z.boolean().default(true).volatile(),
   /** M6 v2：plan 步骤落 scratch（plan_step 工具 + post-execute 缺失提示）。 */
   planScratch: z.boolean(),
-  /** compute_verify 每会话调用预算，超限 deny 并引导诚实降级（dsh 原版 deny 语义）。 */
+  /** compute_verify 每回合调用预算，超限 deny 并引导诚实降级（dsh 原版 deny 语义）。 */
   verifyBudget: z.number(),
   /** M6 v2：量纲检查工具开关。 */
   dimensionCheck: z.boolean(),
@@ -67,129 +68,6 @@ function warn(msg: string): void {
   console.warn(`[aemeath-workflow] ⚠ ${msg}`);
 }
 
-/** SymPy 验证脚本（python -c 传参：expression claimed [variable]）。 */
-const SYMPY_SCRIPT = `
-import sys, json
-try:
-    from sympy import symbols, sympify, solve, N
-    expr_s = sys.argv[1]; claimed_s = sys.argv[2]; var_s = sys.argv[3] if len(sys.argv) > 3 else 'x'
-    if len(expr_s) > 500 or len(claimed_s) > 500:
-        print(json.dumps({'verified': False, 'error': 'input too long'})); sys.exit(0)
-    x = symbols(var_s)
-    expr = sympify(expr_s)
-    sols = solve(expr, x)
-    checked = []
-    for c in [t for t in claimed_s.replace(' ', '').split(',') if t]:
-        try:
-            val = N(expr.subs(x, sympify(c)), 15)
-            ok = abs(val) < 1e-6
-            checked.append({'claimed': c, 'ok': bool(ok), 'residual': float(abs(val))})
-        except Exception:
-            checked.append({'claimed': c, 'ok': False, 'residual': None})
-    # 第三关：solve 返回空（无解析解/恒等式）时，只要声称的解全部回代成立也算通过——
-    # 原实现 bool(sols) 为空时一律 verified:false，即使答案正确
-    verified = all(c['ok'] for c in checked) if checked else bool(sols)
-    print(json.dumps({'verified': verified, 'solutions': [str(s) for s in sols], 'checked': checked}))
-except Exception as e:
-    print(json.dumps({'error': str(e)}))
-`;
-
-/** 量纲检查脚本（python -c 传参：expression [expected]）。单位表：M L T I Θ N。 */
-const DIMENSION_SCRIPT = `
-import sys, json
-from sympy import Symbol
-from sympy.parsing.sympy_parser import parse_expr
-
-UNITS = {
- 'kg': (1,0,0,0,0,0), 'g': (1,0,0,0,0,0),
- 'm': (0,1,0,0,0,0), 'cm': (0,1,0,0,0,0), 'km': (0,1,0,0,0,0), 'mm': (0,1,0,0,0,0),
- 's': (0,0,1,0,0,0), 'min': (0,0,1,0,0,0), 'h': (0,0,1,0,0,0),
- 'A': (0,0,0,1,0,0), 'K': (0,0,0,0,1,0), 'mol': (0,0,0,0,0,1),
- 'N': (1,1,-2,0,0,0), 'J': (1,2,-2,0,0,0), 'W': (1,2,-3,0,0,0),
- 'Pa': (1,-1,-2,0,0,0), 'Hz': (0,0,-1,0,0,0), 'C': (0,0,1,1,0,0),
- 'V': (1,2,-3,-1,0,0), 'O': (1,2,-3,-2,0,0), 'F': (-1,-2,4,2,0,0),
- 'H': (1,2,-2,-2,0,0), 'T': (1,0,-2,-1,0,0), 'Wb': (1,2,-2,-1,0,0),
-}
-BASE = ['kg', 'm', 's', 'A', 'K', 'mol']
-# 单位名强制为 Symbol（避免 N=数值函数/C/I/E 等 sympy 内建冲突）
-LOCAL = {name: Symbol(name) for name in UNITS}
-
-def vec_add(a, b):
-    return tuple(x + y for x, y in zip(a, b))
-
-def vec_scale(a, k):
-    return tuple(x * k for x in a)
-
-def dim_of(expr_str):
-    """返回表达式各加项的量纲向量集合；含未知符号 → None。"""
-    expr = parse_expr(expr_str, local_dict=LOCAL)
-    terms = list(expr.as_ordered_terms()) if expr.is_Add else [expr]
-    out = set()
-    for t in terms:
-        v = (0,0,0,0,0,0)
-        factors = list(t.as_ordered_factors()) if t.is_Mul else [t]
-        ok = True
-        for f in factors:
-            if f.is_Number:
-                continue
-            if f.is_Symbol:
-                name = str(f)
-                if name in UNITS:
-                    v = vec_add(v, UNITS[name])
-                else:
-                    ok = False; break
-            elif f.is_Pow:
-                b, e = f.args
-                if b.is_Symbol and str(b) in UNITS:
-                    try:
-                        k = float(e)
-                    except Exception:
-                        ok = False; break
-                    v = vec_add(v, vec_scale(UNITS[str(b)], k))
-                else:
-                    ok = False; break
-            else:
-                ok = False; break
-        if not ok:
-            return None
-        out.add(v)
-    return out
-
-def render(vec):
-    parts = []
-    for i, e in enumerate(vec):
-        if e == 0: continue
-        s = BASE[i]
-        parts.append(s if e == 1 else (s + '^' + (str(int(e)) if float(e).is_integer() else str(e))))
-    return '*'.join(parts) if parts else '（无量纲）'
-
-try:
-    expr_s = sys.argv[1]
-    expected_s = sys.argv[2] if len(sys.argv) > 2 else ''
-    if len(expr_s) > 500 or len(expected_s) > 500:
-        print(json.dumps({'ok': False, 'error': 'input too long'})); sys.exit(0)
-    dims = dim_of(expr_s)
-    if dims is None:
-        print(json.dumps({'ok': False, 'error': '表达式中含无法判定的量（非单位符号），请只使用单位/数值组合' }))
-        sys.exit(0)
-    consistent = len(dims) == 1
-    expr_dim = list(dims)[0] if dims else (0,0,0,0,0,0)
-    out = {'ok': consistent, 'consistent': consistent, 'expression_dim': render(expr_dim), 'expression_vector': list(expr_dim)}
-    if expected_s:
-        ed = dim_of(expected_s)
-        if ed is None or len(ed) != 1:
-            out['expected_error'] = '期望量纲表达式无法判定'
-        else:
-            ev = list(ed)[0]
-            out['expected_dim'] = render(ev)
-            out['ok'] = out['ok'] and (ev == list(expr_dim))
-            if not (ev == list(expr_dim)):
-                out['mismatch'] = {'expression': render(expr_dim), 'expected': render(ev)}
-    print(json.dumps(out))
-except Exception as e:
-    print(json.dumps({'ok': False, 'error': str(e)}))
-`;
-
 /** scratch 里 plan 的 key（与 ctx.memory scratch 约定一致）。 */
 const PLAN_SCRATCH_KEY = 'workflow.plan';
 
@@ -207,7 +85,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     },
   };
   log(`settings 已应用: enabled=${runtime.enabled}`);
-  registerVolatileSettings('aemeath-workflow', { enabled: runtime.enabled });
+  registerVolatileSettings('aemeath-workflow', { enabled: () => runtime.enabled });
   ctx.on('loader/volatile-update', () => {
     log(`settings 已应用: enabled=${runtime.enabled}`);
   });
@@ -217,7 +95,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
   const codeMode = config.codeMode ?? false;
   const verifyBudget = Math.max(1, config.verifyBudget ?? 3);
 
-  // ---- 会话级 compute_verify 调用计数（预算 → 超限 deny 引导诚实降级） ----
+  // ---- compute_verify 每回合调用计数（预算 → 超限 deny 引导诚实降级；新回合开始时清零，见 pre-step） ----
   const verifyCounts = new Map<string, number>();
 
   /**
@@ -362,7 +240,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
           if (!memorySvc()) return { ok: false, count: 0, steps: [], error: 'plan scratch 不可用（memory 插件未加载）' };
           const next = upsertStep(readPlan(sid), args.step, args.index);
           writePlan(sid, next);
-          log(`plan_step（${sid.slice(0, 8)}）：计划 ${next.length} 步（${args.step.slice(0, 30)}…）`);
+          log(`plan_step（${sid.replace(/^session-/, '').slice(0, 8)}）：计划 ${next.length} 步（${args.step.slice(0, 30)}…）`);
           return { ok: true, count: next.length, steps: next, error: null };
         },
       }),
@@ -397,6 +275,9 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     // 只在本轮第一步注入（与 memory/worldbook/retriever 对齐，防多 step 上下文线性膨胀）
     if (payload.step !== 1) return decision;
 
+    // 新回合：验证预算清零
+    verifyCounts.delete(payload.agent.session.id);
+
     const preset = resolvePresetCompat(ctx, payload.agent.session) ?? defaultPreset;
     if (preset !== 'physicist') return decision;
 
@@ -415,6 +296,9 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     if (route.kind !== 'plan') return decision;
 
     log(`preset=physicist 分流=plan（${route.reason}）：${query.slice(0, 30)}…`);
+    // 新的解题回合从空计划开始：scratch 不清的话，上一题的步骤会混进这一题的计划
+    // （SOLVER_PROMPT 每次都要求先列计划，所以这里清掉不会丢东西）
+    if (planScratch && memorySvc()) writePlan(payload.agent.session.id, []);
     const injectMsg = createUserMessage({
       content: [{ type: 'text', text: SOLVER_PROMPT }],
       source: { kind: 'aemeath-workflow', form: 'notice', summary: `解题工作流已启用（${route.reason}）` },
@@ -450,7 +334,8 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
   log(`工具流已挂载（tools/pre-execute，dsh 原版 allow/deny，verifyBudget=${verifyBudget}）`);
 
   // 第三关：verifyCounts 随会话结束清理（防长跑无界增长）
-  ctx.on('session/flush', async (session) => {
+  // ⚠️ 不能挂 session/flush：那是每请求的持久化检查点，回合进行中也会触发，预算会被反复清零。
+  ctx.on('session/disposed', (session) => {
     verifyCounts.delete(session.id);
   });
 
@@ -469,7 +354,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
       const sid = exec.agent?.session?.id;
       if (!sid) return decision;
       if (readPlan(sid).length === 0) {
-        log(`[plan] ${sid.slice(0, 8)} 验证时 scratch 无计划，提示模型补计划`);
+        log(`[plan] ${sid.replace(/^session-/, '').slice(0, 8)} 验证时 scratch 无计划，提示模型补计划`);
         return {
           kind: 'accept',
           additionalContexts: [
@@ -500,23 +385,7 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
   });
   log('工具开关联动已挂载（tools/pre-execute，解题工具集）');
 
-  // ---- 爱弥斯零回归：aemeath preset 隐藏全部解题工具（工具集隔离） ----
-  const restrictAemeath = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
-    const preset = resolvePresetCompat(ctx, agent.session) ?? defaultPreset;
-    if (preset !== 'aemeath') return;
-    try {
-      agent.ctx.tools.restrict({ deny: WORKFLOW_TOOLS });
-      log(`preset=${preset}（${agent.id}）已隐藏解题工具（compute_verify/check_dimensions/plan_step/plan_status）`);
-    } catch (e) {
-      warn(`爱弥斯工具隔离失败: ${(e as Error).message}`);
-    }
-  };
-  for (const agent of ctx.agents.list()) restrictAemeath(agent);
-  ctx.on('agent/created', ({ agent }) => {
-    restrictAemeath(agent);
-    return undefined;
-    });
-  log('爱弥斯零回归：aemeath preset 工具隔离已挂载');
+  // 爱弥斯隐藏解题工具：统一在 common 插件做（AEMEATH_HIDDEN_TOOLS，含空白会话改选角色的情况）
 
   // ---- presentAs('ptc')（v2，config 门控默认关） ----
   // DSH 0.2.0：呈现模式由 'code' 改名为 'ptc'（native | ptc | both），且
