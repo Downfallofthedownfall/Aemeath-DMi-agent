@@ -6,7 +6,7 @@
 //   3. 触发注入：agent/pre-step 追加匹配条目（constant + hits + chain，≤maxInjectTokens，
 //      带 MessageSource form='catalog'，模型可见即已记录）
 //   4. retrieve_worldbook 工具：结构化检索（id/source/verifiable）
-//   5. 工具可见性隔离：爱弥斯（aemeath）会话不暴露检索工具（ctx.tools.restrict）
+//   5. 角色隔离：retrieve_worldbook 只读当前角色自己的馆（双角色都能用，不能跨馆）
 // 注：自传头已由 persona 承担；本插件注入"触发条目 + constant 常驻"，与 v1 行为对齐。
 // ============================================================
 
@@ -130,7 +130,7 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
     },
   };
   log(`settings 已应用: enabled=${runtime.enabled}`);
-  registerVolatileSettings('aemeath-worldbook', { enabled: runtime.enabled });
+  registerVolatileSettings('aemeath-worldbook', { enabled: () => runtime.enabled });
   ctx.on('loader/volatile-update', () => {
     log(`settings 已应用: enabled=${runtime.enabled}`);
   });
@@ -190,6 +190,7 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
     }
   }, Math.max(0.5, reloadSec) * 1000);
   if (timer.unref) timer.unref();
+  ctx.effect(() => () => clearInterval(timer));
 
   // ---- 触发注入（agent/pre-step waterfall，按 agent preset 选馆） ----
   ctx.on('agent/pre-step', async (payload, next) => {
@@ -227,18 +228,18 @@ export function apply(ctx: Context, config: WorldbookConfig): void {
   ctx.tools.register(
     defineTool({
       name: 'retrieve_worldbook',
-      description: '从 Worldbook 知识库检索知识条目（物理/数学或陪伴），返回带来源与可验证标记的条目列表与注入文本。',
+      description: '从 Worldbook 知识库检索知识条目（只查当前角色自己的知识馆），返回带来源与可验证标记的条目列表与注入文本。',
       parameters: {
         query: { type: 'string', required: true, description: '检索词（中文/英文/德文均可）' },
-        library: { type: 'string', description: '知识馆：physicist（物理）或 aemeath（陪伴）；缺省取当前角色馆' },
       },
       output: {
         schema: { type: 'json' },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
       },
-      execute: async (args: { query: string; library?: string }, exec) => {
-        // 双角色通用：缺省取本会话角色的馆（与 persona/知识注入一致）
-        const libName = args.library || resolveRole(ctx, exec.agent?.session, config.defaultPreset) || 'physicist';
+      execute: async (args: { query: string }, exec) => {
+        // 只查本会话角色的馆（与 persona/知识注入一致）。早先模型可以传 library 跨馆读，
+        // 爱弥斯能查学霸的知识库，和"两个角色知识隔离"对不上。
+        const libName = resolveRole(ctx, exec.agent?.session, config.defaultPreset) || 'physicist';
         const entries = libs.get(libName)?.entries ?? [];
         const block = matchWorldbook(args.query, entries, maxTokens);
         return {

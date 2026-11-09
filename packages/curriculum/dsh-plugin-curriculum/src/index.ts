@@ -68,7 +68,7 @@ export async function apply(ctx: Context, config: CurriculumConfig): Promise<voi
     },
   };
   log(`settings 已应用: enabled=${runtime.enabled}`);
-  registerVolatileSettings('aemeath-curriculum', { enabled: runtime.enabled });
+  registerVolatileSettings('aemeath-curriculum', { enabled: () => runtime.enabled });
   ctx.on('loader/volatile-update', () => {
     log(`settings 已应用: enabled=${runtime.enabled}`);
   });
@@ -92,9 +92,10 @@ export async function apply(ctx: Context, config: CurriculumConfig): Promise<voi
   log(`当前学期判定：${semester}（可配置覆盖）`);
 
   // ---- 常驻注入（system prompt section；动态跟随本会话角色，仅 defaultPreset=physicist 时注入） ----
+  // 始终挂载、取文本时再查开关：开关是 volatile，agent 创建后也可能改
   const mountContext = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
-    if (!runtime.enabled) return;
     const summaryText = (): string => {
+      if (!runtime.enabled) return '';
       // 会话 → 全局默认 → 配置（全局默认排前面会短路会话级，见 common 的 resolveRole）
       const role = resolveRole(ctx, agent.session, defaultPreset);
       if (role !== defaultPreset) return '';
@@ -105,7 +106,7 @@ export async function apply(ctx: Context, config: CurriculumConfig): Promise<voi
       order: 90, // persona(0) 之后、工具指引(100+) 之前
       text: summaryText,
     });
-    log(`课程上下文段已挂载（动态跟随实时角色）→ agent=${agent.id.slice(0, 8)}`);
+    log(`课程上下文段已挂载（动态跟随实时角色）→ agent=${agent.id}`);
   };
   for (const agent of ctx.agents.list()) mountContext(agent);
   ctx.on('agent/created', ({ agent }) => {
@@ -127,6 +128,7 @@ export async function apply(ctx: Context, config: CurriculumConfig): Promise<voi
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
       },
       execute: async (args: { query: string }) => {
+        if (!runtime.enabled) return { hits: [], source: '', message: '课程上下文已关闭（设置 → 功能开关）' };
         const hits = searchModules(data!, args.query, 3);
         const source = `Modulhandbuch ${data!.document_date || ''}`.trim() || 'Modulhandbuch';
         return {
