@@ -18,6 +18,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type { RoleFace } from './faces.ts';
 import { FEATURES, FeatureSwitchCell, type FeatureSwitch } from './settings.tsx';
 import { t, useLocale } from './i18n.ts';
+import { showToast } from './tts.tsx';
 
 export interface QuickSettingsDeps {
   role?: RoleFace;
@@ -97,8 +98,8 @@ function QuickSettingsLoaded({
     if (!scope) return;
     try {
       await scope.set(f.field, v);
-    } catch {
-      /* 写失败：下轮快照自动回退 */
+    } catch (e) {
+      showToast(t('settings.saveFailed', { error: (e as Error).message }));
     }
   };
 
@@ -142,7 +143,9 @@ function QuickSettingsLoaded({
             <button
               key={opt.id}
               type="button"
-              onClick={() => void role.set(opt.id)}
+              onClick={() => {
+                role.pick(opt.id).catch(() => showToast(t('modeswitch.error')));
+              }}
               aria-pressed={active}
               style={{
                 padding: '7px 8px',

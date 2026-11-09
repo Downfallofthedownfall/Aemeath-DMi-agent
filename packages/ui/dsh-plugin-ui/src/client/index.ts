@@ -27,11 +27,15 @@ import { registerMemoryWorkspace, registerMemoryLauncher } from './memory-worksp
 import { injectFluentStyles } from './styles/fluent.ts';
 import { injectDeDshStyles } from './styles/de-dsh.ts';
 import { createFaces } from './faces.ts';
+import { installAppearance } from './appearance.ts';
 export { FEATURE_NAMESPACES } from './constants.ts';
 
 export const name = 'aemeath-ui';
 // DSH 0.2.0：新增 uiWorkspace（会话/工作区导航，接管已移除的 ctx.sessions.open）。
-export const inject = ['slots', 'theme', 'connection', 'remote', 'sessions', 'workspaces', 'locale', 'uiWorkspace'];
+// ⚠️ remote.credentials 必须单独声明：cordis 把它当独立服务，只写 'remote' 时
+//   读 ctx.remote.credentials 会抛 "cannot get property ... without inject"，
+//   结果 API Key 保存必报错、徽章永远"未配置"。
+export const inject = ['slots', 'theme', 'connection', 'remote', 'remote.credentials', 'sessions', 'workspaces', 'locale', 'uiWorkspace'];
 
 export function apply(ctx: ClientContext): void {
   // 0) i18n：注册 aemeath 三语字典（zh/en/de）并绑定 t()（最先执行，供各组件使用）
@@ -44,6 +48,10 @@ export function apply(ctx: ClientContext): void {
   // 0.5) 数据 face（settings 桥 / 角色 / 凭据 / scopes）——一次构建，多处复用
   const faces = createFaces(ctx);
 
+  // 0.6) 外观设置全局生效（不依赖设置页打开过）
+  const appearanceScope = faces.scopes.get('aemeath-ui');
+  if (appearanceScope) installAppearance(ctx, appearanceScope);
+
   // 1) 主题（幂等；默认亮色映射见 theme.ts）
   registerThemes(ctx as never);
 
@@ -54,7 +62,19 @@ export function apply(ctx: ClientContext): void {
   registerSessionList(ctx);
 
   // 2.6) 欢迎屏（问候语 + 角色卡片）
-  registerHero(ctx, { role: () => faces.role });
+  registerHero(ctx, {
+    role: () => faces.role,
+    blankPreset: {
+      subscribe: (l) => ctx.sessions.list.subscribe(l),
+      get: () => {
+        const list = ctx.sessions.list.getSnapshot();
+        const id = mainSessionIdOf(list);
+        const summary = id ? list.byId[id as never] : undefined;
+        const preset = summary?.blank ? (summary.projectionValues as { agentPreset?: unknown } | undefined)?.agentPreset : undefined;
+        return typeof preset === 'string' ? preset : undefined;
+      },
+    },
+  });
 
   // 2.7) TTS 朗读按钮（assistant 消息操作区）+ 输入框 TTS 开关（conversation.input.right）
   //   resolveMessageText：按 messageId 从会话事件流取 assistant 消息原文（DOM 抓取只作兜底）。

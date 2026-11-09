@@ -119,9 +119,10 @@ function ModeSwitchLoaded({
       // 已有角色的对话改不了角色：用新角色开一个新对话（角色显式传给宿主，不依赖默认值写成功）
       sessionRole.startWith(id);
     }
-    // 写 agent-presets.default（后端真源），face notify → 默认角色更新 → 镜像写入。
+    // 写默认角色（后端真源），face notify → 默认角色更新 → 镜像写入。
+    // 打开的是空白对话时 pick 会把这条对话也换过去（上面的 startWith 已经处理了有内容的对话）。
     // 写失败时 face 不变：给出提示，不再静默"点了没反应"。
-    role.set(id).catch(() => showToast(t('modeswitch.error')));
+    (sessionPreset ? role.set(id) : role.pick(id)).catch(() => showToast(t('modeswitch.error')));
   };
 
   return (

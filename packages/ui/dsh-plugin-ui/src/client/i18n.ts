@@ -114,14 +114,23 @@ export function currentActiveLocale(): string {
  * 语言指令注入（common 插件）据此让模型回复跟随前端语言。
  * 幂等：值相同不重复写；失败静默（下次 locale 变化重试）。
  */
+let lastReportedLocale = '';
 export function reportLocaleToHost(locale: string): void {
-  if (typeof fetch === 'undefined') return;
+  if (typeof fetch === 'undefined' || locale === lastReportedLocale) return;
+  lastReportedLocale = locale;
+  // 失败（含 host 返回 4xx/5xx：fetch 不会为它抛错）就把记录清掉，下次调用再试。
+  // 只清自己这次的：期间已经上报了别的语言时不能动。
+  const retryLater = (): void => {
+    if (lastReportedLocale === locale) lastReportedLocale = '';
+  };
   void fetch('/aemeath/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ns: 'aemeath-ui', patch: { locale } }),
     signal: AbortSignal.timeout(6000),
-  }).catch(() => {
-    /* 上报失败静默：host 语言指令缺省不注入，不影响 UI */
-  });
+  })
+    .then((res) => {
+      if (!res.ok) retryLater();
+    })
+    .catch(retryLater); // 上报失败静默：host 语言指令缺省不注入，不影响 UI
 }

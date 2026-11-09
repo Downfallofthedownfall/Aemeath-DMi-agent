@@ -290,6 +290,25 @@ function SelectorLoaded({
     };
   }, [openMenu]);
 
+  // 点菜单外面或按 Esc 关闭（同 quick-settings）
+  useEffect(() => {
+    if (!openMenu) return;
+    const onDoc = (e: MouseEvent): void => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[role="menu"]') || target?.closest?.('[data-aemeath-ws="chip"]')) return;
+      setOpenMenu(false);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpenMenu(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [openMenu]);
+
   // 错误提示 6 秒后自动消失（早先常驻左上角，直到下次点开菜单才清掉）
   useEffect(() => {
     if (!error) return;

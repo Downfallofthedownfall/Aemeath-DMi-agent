@@ -8,7 +8,7 @@
 //       不伪造——v1 的 bug 就是 inject 里塞了恒等函数导致列表恒空。
 // 样式：类名 + 一次性注入的样式表（hover / 激活条 / 删除按钮都是伪类，内联写不了）。
 // ============================================================
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useState } from 'react';
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
@@ -19,6 +19,7 @@ import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controlle
 import { BrandMark } from './brand.tsx';
 import { t, useLocale, currentActiveLocale } from './i18n.ts';
 import { mainSessionIdOf } from './main-session.ts';
+import { showToast } from './tts.tsx';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -130,12 +131,14 @@ function SessionListBody({
   wide,
   open,
   archive,
+  restore,
 }: {
   useSessions: (selector: (s: unknown) => unknown) => unknown;
   useWorkspaces: (selector: (s: unknown) => unknown) => unknown;
   wide: boolean;
   open: (id: string) => void;
   archive: (id: string) => void;
+  restore: (id: string) => void;
 }): JSX.Element {
   // 状态按 dsh 的真实快照类型读：字段改名时编译即报错（`current` 就是被手写形状掩盖的）
   const idsRaw = useSessions((s: unknown) => (s as SessionListState | undefined)?.ids) as string[] | undefined;
@@ -144,7 +147,8 @@ function SessionListBody({
   const byId = useSessions((s: unknown) => (s as SessionListState | undefined)?.byId) as Record<string, SessionInfo> | undefined;
   // 归档集合只订阅 archivedSessionIds 切片（数组引用稳定，非每次全量状态变化都触发）
   const archived = useWorkspaces((s: unknown) => (s as WorkspaceSnapshot | undefined)?.archivedSessionIds) as readonly string[] | undefined;
-  useLocale(); // locale 切换时刷新分组标题/空态/删除 tooltip 等文案
+  useLocale(); // locale 切换时刷新分组标题/空态/归档 tooltip 等文案
+  const [archiveOpen, setArchiveOpen] = useState(false);
 
   // 去重：极端重连/事件累积下 ids 可能出现重复（测试环境 18 次重连后实测每会话 3-4 份）
   const archivedSet = new Set(archived ?? []);
@@ -164,6 +168,9 @@ function SessionListBody({
     if (last && last.key === key) last.items.push(row);
     else groups.push({ key, items: [row] });
   }
+
+  // 已归档的对话：×只是归档，这里能找回来（标题来自列表缓存，没加载到的不显示）
+  const archivedRows = (archived ?? []).filter((id) => byId?.[id]);
 
   return (
     <div className="aem-sl">
@@ -190,6 +197,23 @@ function SessionListBody({
             </div>
           ))
         )}
+        {wide && archivedRows.length > 0 ? (
+          <div className="aem-sl__group" role="group" aria-label={t('sessions.archived.title')}>
+            <button type="button" className="aem-sl__archive-toggle" aria-expanded={archiveOpen} onClick={() => setArchiveOpen((v) => !v)}>
+              {archiveOpen ? '▾' : '▸'} {t('sessions.archived.count', { n: archivedRows.length })}
+            </button>
+            {archiveOpen
+              ? archivedRows.map((id) => (
+                  <div key={id} className="aem-sl__archived-row">
+                    <span className="aem-sl__title-text">{byId?.[id]?.title || t('sessions.untitled')}</span>
+                    <button type="button" className="aem-sl__restore" onClick={() => restore(id)}>
+                      {t('sessions.archived.restore')}
+                    </button>
+                  </div>
+                ))
+              : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -271,11 +295,12 @@ function AemeathSessionList(props: {
   useWorkspaces?: (selector: (s: unknown) => unknown) => unknown;
   open?: (id: string) => void;
   archive?: (id: string) => void;
+  restore?: (id: string) => void;
 }): JSX.Element | null {
-  const { wide, useSessions, useWorkspaces, open, archive } = props;
-  if (!useSessions || !open || !archive) return null;
+  const { wide, useSessions, useWorkspaces, open, archive, restore } = props;
+  if (!useSessions || !open || !archive || !restore) return null;
   // M11：useWorkspaces 缺失时用稳定 no-op 兜底，保证 SessionListBody 内 hook 恒调用
-  return <SessionListBody useSessions={useSessions} useWorkspaces={useWorkspaces ?? NOOP_USE_WORKSPACES} wide={!!wide} open={open} archive={archive} />;
+  return <SessionListBody useSessions={useSessions} useWorkspaces={useWorkspaces ?? NOOP_USE_WORKSPACES} wide={!!wide} open={open} archive={archive} restore={restore} />;
 }
 
 const SESSION_LIST_CSS = `
@@ -335,7 +360,21 @@ const SESSION_LIST_CSS = `
 .aem-sl__role[data-role="physicist"]::before { background: #6aa8ff; }
 .aem-sl__time { margin-left: auto; flex: none; font-variant-numeric: tabular-nums; }
 
-/* 删除：hover/聚焦时出现在行右侧，同时让出时间的位置 */
+.aem-sl__archive-toggle {
+  display: block; width: 100%; margin-top: 10px; padding: 6px 10px; border: none; border-radius: 8px;
+  background: transparent; color: var(--dsw-alias-label-tertiary);
+  font: inherit; font-size: 11px; font-weight: 600; text-align: left; cursor: pointer;
+}
+.aem-sl__archive-toggle:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.aem-sl__archived-row { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px 4px 12px; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.aem-sl__archived-row .aem-sl__title-text { flex: 1; }
+.aem-sl__restore {
+  flex: none; height: 22px; padding: 0 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px;
+  background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 11px; cursor: pointer;
+}
+.aem-sl__restore:hover { background: var(--dsw-alias-interactive-bg-hover); }
+
+/* 归档：hover/聚焦时出现在行右侧，同时让出时间的位置 */
 .aem-sl__delete {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
   display: inline-flex; align-items: center; justify-content: center;
@@ -368,7 +407,20 @@ export function registerSessionList(ctx: ClientContext): void {
         // 注意：不提供 useSessions（框架 standard kit 注入）；只给业务回调
         inject: () => ({
           open: (id: string) => ctx.uiWorkspace.openSession(id as never),
-          archive: (id: string) => void ctx.workspaces.archiveSession(id as never),
+          archive: (id: string) => {
+            // 归档当前打开的对话后宿主只是清空主视图，留下一个没有输入框的空页面：
+            // 接着开一条新对话，用户可以马上继续。
+            const wasCurrent = mainSessionIdOf(ctx.sessions.list.getSnapshot()) === id;
+            ctx.uiWorkspace
+              .archiveSession(id as never)
+              .then(() => {
+                if (wasCurrent) ctx.uiWorkspace.startSession();
+              })
+              .catch((e: unknown) => showToast(t('sessions.archive.failed', { error: (e as Error).message })));
+          },
+          restore: (id: string) => {
+            ctx.uiWorkspace.unarchiveSession(id as never).catch((e: unknown) => showToast(t('sessions.archive.failed', { error: (e as Error).message })));
+          },
         }),
       },
       AemeathSessionList as never,

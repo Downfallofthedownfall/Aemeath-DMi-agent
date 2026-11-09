@@ -6,9 +6,10 @@
 // 注册位：conversation.input.dock（composer 卡上方的整行）——卡片浮在 composer 上方。
 // 宿主契约：模块级 composerBus（pushCard/settleCard/settleRun/settleSession/
 //   clearComposerCards）+ useComposerCards() hook，供宿主代码/其他插件推卡。
-// 真实信号（feature #6）：解题计划确认卡——只读 plan-feed.ts 的共享轮询
-//   （workflow.plan scratch，host 侧已解析），非空且未确认过即推"计划确认"卡。
-//   动作 Approve/Rerun/Dismiss 只结算/隐藏卡（无宿主动作可触发，见现状说明）。
+// 真实信号（feature #6）：解题计划提醒卡——只读 plan-feed.ts 的共享轮询
+//   （workflow.plan scratch，host 侧已解析），非空且没关掉过就显示。
+//   ⚠️ 这只是提醒，不是确认：模型调 plan_step 时已经在往下做了，host 没有暂停/重跑的能力。
+//   早先写"确认后开始执行"+「确认/重跑/忽略」三个按钮，实际三个都只是隐藏卡片。
 // 结算清除（Cyrene 式）：① 按钮动作 → settleCard(id)；② 本会话新一轮运行开始
 //   （running false→true）→ settleSession(sessionId)；③ 切换会话 → clearComposerCards()。
 // ============================================================
@@ -153,11 +154,7 @@ function planCardId(sessionId: string, hash: string): string {
 }
 
 function planConfirmActions(): ComposerCardAction[] {
-  return [
-    { id: 'approve', labelKey: 'composercards.plan.approve', kind: 'primary' },
-    { id: 'rerun', labelKey: 'composercards.plan.rerun', kind: 'default' },
-    { id: 'dismiss', labelKey: 'composercards.plan.dismiss', kind: 'ghost' },
-  ];
+  return [{ id: 'dismiss', labelKey: 'composercards.plan.dismiss', kind: 'ghost' }];
 }
 
 // —— 渲染：一张交互卡 ——
@@ -233,11 +230,9 @@ function ComposerCardHostInner({ session }: { session: SessionSnapshot }): JSX.E
   const prevRunningRef = useRef(running);
   useEffect(() => {
     if (prevSessionRef.current !== sessionId) {
-      // 切换到另一会话：清空全部卡片并重置该会话的计划去重标记
-      if (prevSessionRef.current) {
-        lastShownPlan.delete(prevSessionRef.current);
-        actedPlan.delete(prevSessionRef.current);
-      }
+      // 切换到另一会话：清空全部卡片并重置该会话的"正在展示"标记
+      // （actedPlan 留着：用户关掉过的计划，切回来不该再弹）
+      if (prevSessionRef.current) lastShownPlan.delete(prevSessionRef.current);
       composerBus.clear();
       prevSessionRef.current = sessionId;
     } else if (running && !prevRunningRef.current) {

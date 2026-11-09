@@ -22,7 +22,7 @@ import z from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-settings';
 import type {} from '@deepseek-ai/cordis-plugin-loader';
-import { buildMemoryOverview, buildTimelineView, buildGraphView, buildPlanView, type MemoryServiceFace } from './memory-view.js';
+import { buildMemoryOverview, buildTimelineView, buildGraphView, buildPlanView, buildSearchView, type MemoryServiceFace } from './memory-view.js';
 
 export const name = 'aemeath-ui';
 // ⚠️ memory **不能**放在 inject 里当硬依赖。
@@ -65,12 +65,30 @@ export const Config = z.object({
   ttsEnabled: z.boolean().default(false).volatile(),
   /** 朗读音量。 */
   ttsVolume: z.number().default(1).volatile(),
+  // —— 设置页「外观」——
+  /** 自定义字体（CSS font-family；空 = 不改）。 */
+  font: z.string().default('').volatile(),
+  /** 对话行高（0 = 用 dsh 默认）。 */
+  chatLineHeight: z.number().default(0).volatile(),
+  /** 对话段落间距，单位 em（0 = 用 dsh 默认）。 */
+  chatParaSpacing: z.number().default(0).volatile(),
+  /** 助手回复显示成气泡。 */
+  assistantBubbles: z.boolean().default(false).volatile(),
+  /** 顶栏状态 pill / 右下角浮动状态。 */
+  showStatusPill: z.boolean().default(true).volatile(),
+  showStatusFloat: z.boolean().default(true).volatile(),
 });
 
 export interface UiConfig {
   locale?: { get?: () => string };
   ttsEnabled?: { get?: () => boolean };
   ttsVolume?: { get?: () => number };
+  font?: { get?: () => string };
+  chatLineHeight?: { get?: () => number };
+  chatParaSpacing?: { get?: () => number };
+  assistantBubbles?: { get?: () => boolean };
+  showStatusPill?: { get?: () => boolean };
+  showStatusFloat?: { get?: () => boolean };
 }
 
 /** 无工作区时的自动兜底工作区：项目内空文件夹（打开即聊，用户无需选择）。 */
@@ -148,7 +166,8 @@ const MAX_BODY_BYTES = 1024 * 1024; // 1MB：settings/记忆写入均为小 body
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    let body = '';
+    // 先攒 Buffer 最后一次解码：逐块 += 会把跨块的多字节字符（中文）解成乱码
+    const parts: Buffer[] = [];
     let size = 0;
     let done = false;
     const fail = (code: number, msg: string): void => {
@@ -163,16 +182,16 @@ function readBody(req: IncomingMessage): Promise<string> {
       const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
+        // 不 destroy：那样连接直接断，调用方写的 413 响应根本发不出去
         fail(413, 'body too large (max 1MB)');
-        req.destroy();
         return;
       }
-      body += c;
+      parts.push(chunk);
     });
     req.on('end', () => {
       if (done) return;
       done = true;
-      resolve(body);
+      resolve(Buffer.concat(parts).toString('utf-8'));
     });
     req.on('error', (e) => fail(400, (e as Error).message));
   });
@@ -341,13 +360,13 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
           presetTrace.push(`readSetting threw: ${(e as Error).message}`);
         }
       }
-      out['aemeath-preset-trace'] = presetTrace;
-
       if (resolved) {
         out[AGENT_PRESET_NAMESPACE] = resolved;
         // 兼容前端既有读法：老键名 agent-presets（0.1.1）
         out['agent-presets'] = resolved;
       } else {
+        // 只有解析失败才带诊断字段（用来查"前端读不到当前角色"）
+        out['aemeath-preset-trace'] = presetTrace;
         console.warn('[aemeath-ui] 未能解析当前默认角色——前端将退回 localStorage');
       }
       json(res, 200, { ok: true, namespaces: out });
@@ -369,25 +388,6 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
         if (!patchOk && !unsetOk) {
           return json(res, 400, { ok: false, error: 'body requires {patch: object} and/or {unset: string[]}' });
         }
-        // 允许写 agent-preset-registry（角色模式切换）；其余限 aemeath-* 白名单
-        if (parsed.ns === AGENT_PRESET_NAMESPACE || parsed.ns === 'agent-presets') {
-          if (!patchOk) return json(res, 400, { ok: false, error: 'agent-presets only supports patch (no unset)' });
-          const patch = parsed.patch as Record<string, unknown>;
-          if (typeof patch.default !== 'string') return json(res, 400, { ok: false, error: 'agent-presets patch requires {default: string}' });
-          if (!['aemeath', 'physicist'].includes(patch.default)) return json(res, 400, { ok: false, error: `unsupported role: ${patch.default}` });
-          // DSH 0.2.0：默认 preset 的 volatile 字段是 selectedDefault（官方实现
-          // `defaultId = selectedDefault.get() ?? default`）。
-          await settings.update(AGENT_PRESET_NAMESPACE, { selectedDefault: patch.default });
-          json(res, 200, { ok: true });
-          return;
-        }
-        if (!FEATURE_NAMESPACES.includes(parsed.ns)) return json(res, 403, { ok: false, error: `namespace not managed by aemeath-ui: ${parsed.ns}` });
-        // DSH 0.2.0：命名空间即 profile 条目 id。除本插件自己的 'aemeath-ui' 外，
-        // 其余 aemeath-* 条目由对应引擎插件持有（其 Config 上已声明 volatile 字段），
-        // 因此这里仍按 ns 直接写——条目 id 是全局的。
-        const remapped = FEATURE_NAMESPACE_FIELD_MAP[parsed.ns];
-        const fieldFor = (f: string): string => remapped?.[f] ?? f;
-        const entryId = FEATURE_NAMESPACE_ENTRY[parsed.ns] ?? parsed.ns;
         // DSH 0.2.0 护栏：settings.update/mutate 对某些条目可能永不 resolve
         //（实测：写非本插件拥有的条目时既不 resolve 也不 reject，
         //  见文件顶部主题迁移处与 docs/DSH_0.2.0_MIGRATION.md §8）。
@@ -402,6 +402,28 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
               ),
             ),
           ]);
+        // 允许写 agent-preset-registry（角色模式切换）；其余限 aemeath-* 白名单
+        if (parsed.ns === AGENT_PRESET_NAMESPACE || parsed.ns === 'agent-presets') {
+          if (!patchOk) return json(res, 400, { ok: false, error: 'agent-presets only supports patch (no unset)' });
+          const patch = parsed.patch as Record<string, unknown>;
+          if (typeof patch.default !== 'string') return json(res, 400, { ok: false, error: 'agent-presets patch requires {default: string}' });
+          if (!['aemeath', 'physicist'].includes(patch.default)) return json(res, 400, { ok: false, error: `unsupported role: ${patch.default}` });
+          // DSH 0.2.0：默认 preset 的 volatile 字段是 selectedDefault（官方实现
+          // `defaultId = selectedDefault.get() ?? default`）。
+          const currentDefault = (ctx as unknown as { agentPresets?: { defaultId?: string } }).agentPresets?.defaultId;
+          if (currentDefault !== patch.default) {
+            await withTimeout(settings.update(AGENT_PRESET_NAMESPACE, { selectedDefault: patch.default }), 10_000, 'settings.update');
+          }
+          json(res, 200, { ok: true });
+          return;
+        }
+        if (!FEATURE_NAMESPACES.includes(parsed.ns)) return json(res, 403, { ok: false, error: `namespace not managed by aemeath-ui: ${parsed.ns}` });
+        // DSH 0.2.0：命名空间即 profile 条目 id。除本插件自己的 'aemeath-ui' 外，
+        // 其余 aemeath-* 条目由对应引擎插件持有（其 Config 上已声明 volatile 字段），
+        // 因此这里仍按 ns 直接写——条目 id 是全局的。
+        const remapped = FEATURE_NAMESPACE_FIELD_MAP[parsed.ns];
+        const fieldFor = (f: string): string => remapped?.[f] ?? f;
+        const entryId = FEATURE_NAMESPACE_ENTRY[parsed.ns] ?? parsed.ns;
         if (unsetOk) {
           // 删除字段 → settings.mutate 的 {op:'unset'}（恢复 base/默认，而非置值）
           await withTimeout(
@@ -417,7 +439,11 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
           const patchIn = parsed.patch as Record<string, unknown>;
           const patchOut: Record<string, unknown> = {};
           for (const [k, v] of Object.entries(patchIn)) patchOut[fieldFor(k)] = v;
-          await withTimeout(settings.update(entryId, patchOut), 10_000, 'settings.update');
+          // 值没变就不写：settings.update 会改写 profile 的 cordis.patch.yml（git 跟踪的文件），
+          // 前端每次打开页面都上报 locale，不该每次都动它。
+          const current = readSetting(ctx, parsed.ns);
+          const changed = Object.entries(patchIn).some(([k, v]) => current?.[k] !== v);
+          if (changed) await withTimeout(settings.update(entryId, patchOut), 10_000, 'settings.update');
         }
         json(res, 200, { ok: true });
       } catch (e) {
@@ -438,6 +464,12 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
     locale: () => uiConfig.locale.get() ?? '',
     enabled: () => uiConfig.ttsEnabled.get() ?? false,
     volume: () => uiConfig.ttsVolume.get() ?? 1,
+    font: () => config.font?.get?.() ?? '',
+    chatLineHeight: () => config.chatLineHeight?.get?.() ?? 0,
+    chatParaSpacing: () => config.chatParaSpacing?.get?.() ?? 0,
+    assistantBubbles: () => config.assistantBubbles?.get?.() ?? false,
+    showStatusPill: () => config.showStatusPill?.get?.() ?? true,
+    showStatusFloat: () => config.showStatusFloat?.get?.() ?? true,
   });
   // 兼容旧命名空间名：0.1.1 时 TTS 开关写在 'aemeath-tts' 下。
   registerVolatileSettings('aemeath-tts', {
@@ -452,6 +484,7 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
   // 拖住启动逻辑（此前正是这种悬空导致"设置开关全部失灵"）。
   let ttsResetAttempts = 0;
   const resetTtsAtBoot = (): void => {
+    if (!uiConfig.ttsEnabled.get()) return; // 本来就关着：不写 profile 文件
     if (ttsResetAttempts > 10) return;
     ttsResetAttempts++;
     void Promise.race([
@@ -550,6 +583,7 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
         await new Promise((r) => setTimeout(r, 1000));
       }
       console.error('[aemeath-ui] tts HTTP 服务 60s 未就绪');
+      ttsReadyPromise = null; // 下次再试（否则这次失败会被缓存到进程退出）
       return false;
     })();
     return ttsReadyPromise;
@@ -699,6 +733,11 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
           json(res, 200, buildPlanView(face, (url.searchParams.get('session') ?? '').slice(0, 200)));
           return;
         }
+        if (action === 'search') {
+          const k = Number(url.searchParams.get('k') ?? '10');
+          json(res, 200, buildSearchView(face, (url.searchParams.get('q') ?? '').slice(0, 400), Number.isFinite(k) ? Math.min(50, Math.max(1, k)) : 10));
+          return;
+        }
         json(res, 200, buildMemoryOverview(face));
         return;
       }
@@ -740,8 +779,9 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
       }
       jsonError(res, 405, 'memory.methodNotAllowed', 'method not allowed');
     } catch (e) {
+      // 这里接住所有记忆请求的异常（不只是删除），码不能写死 deleteFailed
       const err = e as Error & { status?: number };
-      jsonError(res, err.status ?? 400, 'memory.deleteFailed', err.message);
+      jsonError(res, err.status ?? 400, 'memory.requestFailed', err.message);
     }
   }
 }

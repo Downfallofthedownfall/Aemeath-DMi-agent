@@ -7,7 +7,7 @@
 // 数据源：plan-feed.ts 的共享轮询（host GET /aemeath/api/memory?action=plan，
 //   当前会话 workflow.plan scratch 已解析好的步骤字符串数组；与计划确认卡共用）。
 // 完成度：plan scratch 只存步骤字符串（无"完成"状态），故勾选是本地 UX 状态
-//   （localStorage 按 sessionId 持久化）；进度 = 已勾选 / 总数。
+//   （localStorage 按 sessionId + 步骤文字持久化，插入步骤 / 换题后不会勾错）；进度 = 已勾选 / 总数。
 // 持久化：卡片位置 + 折叠 + 隐藏状态均在 localStorage（UI 便捷，不写设置）。
 // 形态：仅当当前会话存在非空计划且未隐藏时才渲染（无计划 → 隐藏，诚实空态）。
 // 注册位：conversation.session.header.actions（会话作用域，获得 useSession）。
@@ -79,16 +79,41 @@ function writePos(p: { x: number; y: number }): void {
   writeJson(POS_KEY, p);
 }
 
-function readDone(sessionId: string): Set<number> {
-  const all = readJson<Record<string, number[]>>(DONE_KEY, {});
-  const arr = all[sessionId] ?? [];
-  return new Set(arr.filter((n) => typeof n === 'number'));
+/** localStorage 里最多留几个会话的记录（不然只增不减）。 */
+const MAX_REMEMBERED_SESSIONS = 50;
+
+/**
+ * 读「按会话记录」的表。存的不是普通对象时当成空表。
+ * ⚠️ HIDDEN_KEY 沿用了旧键名，旧版在这里存的是 '1' / '0'（全局隐藏开关）：
+ *   JSON.parse 出来是数字，往数字上写属性写不进去，隐藏状态永远存不下来。
+ */
+function readSessionMap<T>(key: string): Record<string, T> {
+  const raw = readJson<unknown>(key, null);
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, T>) : {};
 }
 
-function writeDone(sessionId: string, done: Set<number>): void {
-  const all = readJson<Record<string, number[]>>(DONE_KEY, {});
-  all[sessionId] = [...done];
-  writeJson(DONE_KEY, all);
+function rememberForSession<T>(key: string, sessionId: string, value: T): void {
+  const all = readSessionMap<T>(key);
+  delete all[sessionId]; // 重新插到末尾：对象键保持插入序，最旧的在前
+  all[sessionId] = value;
+  const ids = Object.keys(all);
+  for (const id of ids.slice(0, Math.max(0, ids.length - MAX_REMEMBERED_SESSIONS))) delete all[id];
+  writeJson(key, all);
+}
+
+function readDone(sessionId: string): Set<string> {
+  const arr = readSessionMap<unknown>(DONE_KEY)[sessionId];
+  return new Set((Array.isArray(arr) ? arr : []).filter((s): s is string => typeof s === 'string'));
+}
+
+function writeDone(sessionId: string, done: Set<string>): void {
+  rememberForSession(DONE_KEY, sessionId, [...done]);
+}
+
+/** 这个会话关掉的是哪份计划（计划内容变了就重新显示）。 */
+function readHiddenPlan(sessionId: string): string {
+  const plan = readSessionMap<unknown>(HIDDEN_KEY)[sessionId];
+  return typeof plan === 'string' ? plan : '';
 }
 
 function clampPos(p: { x: number; y: number }): { x: number; y: number } {
@@ -110,12 +135,16 @@ function WorkflowTodoCard({
 
   // 当前会话计划（共享轮询；plan_step 工具落 scratch 是渐进式的）
   const steps = usePlanSteps(sessionId);
-  const [done, setDone] = useState<Set<number>>(() => readDone(sessionId));
+  const [done, setDone] = useState<Set<string>>(() => readDone(sessionId));
   const [collapsed, setCollapsed] = useState<boolean>(() => readBool(COLLAPSED_KEY, false));
-  const [hidden, setHidden] = useState<boolean>(() => readBool(HIDDEN_KEY, false));
+  // ⚠️ 早先隐藏是全局开关：点一次 × 之后所有会话都不再显示，也没有地方能恢复。
+  //    现在只隐藏"这个会话的这份计划"，计划变了会重新出现。
+  const [hiddenPlan, setHiddenPlan] = useState<string>(() => readHiddenPlan(sessionId));
+  const planKey = steps.join('\n');
   const [pos, setPos] = useState<{ x: number; y: number }>(() => {
     const stored = readPos();
-    if (stored) return stored;
+    // 存的位置可能来自更大的窗口，要夹回视口内（否则卡片跑到屏幕外、再也够不着）
+    if (stored) return clampPos(stored);
     const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
     return { x: Math.max(0, vw - CARD_WIDTH - 18), y: 24 };
   });
@@ -124,10 +153,18 @@ function WorkflowTodoCard({
     posRef.current = pos;
   }, [pos]);
 
-  // sessionId 变化时重置本地勾选态（按会话隔离）
+  // sessionId 变化时重置本地状态（按会话隔离）
   useEffect(() => {
     setDone(readDone(sessionId));
+    setHiddenPlan(readHiddenPlan(sessionId));
   }, [sessionId]);
+
+  // 窗口变小时把卡片留在视口内
+  useEffect(() => {
+    const onResize = (): void => setPos((p) => clampPos(p));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // 拖动：pointerdown 于标题栏开始，window pointermove/up 驱动移动 + 落位持久化。
   // 全程用 ref 保存拖动态（不触发额外 render），跟随 Cyrene 的指针拖动手法。
@@ -157,10 +194,12 @@ function WorkflowTodoCard({
   }, []);
 
   const onHeaderPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    // 先复位再判断按钮：拖动后 movedRef 留着 true，直接点折叠按钮时这里若提前 return，
+    // 折叠就一直被当成"拖动的收尾"忽略掉
+    movedRef.current = false;
     const target = e.target as HTMLElement;
     if (target.closest('[data-todo-toggle]') || target.closest('[data-todo-hide]')) return;
     dragRef.current = { startX: e.clientX, startY: e.clientY, initialX: pos.x, initialY: pos.y };
-    movedRef.current = false;
   };
   const onHeaderClick = (): void => {
     if (movedRef.current) return;
@@ -169,22 +208,22 @@ function WorkflowTodoCard({
     writeBool(COLLAPSED_KEY, v);
   };
 
-  const toggleStep = (i: number): void => {
+  const toggleStep = (step: string): void => {
     const next = new Set(done);
-    if (next.has(i)) next.delete(i);
-    else next.add(i);
+    if (next.has(step)) next.delete(step);
+    else next.add(step);
     setDone(next);
     writeDone(sessionId, next);
   };
   const hide = (): void => {
-    setHidden(true);
-    writeBool(HIDDEN_KEY, true);
+    setHiddenPlan(planKey);
+    rememberForSession(HIDDEN_KEY, sessionId, planKey);
   };
 
-  // 无计划 / 已隐藏 / 无会话 → 诚实空态（不渲染）
-  if (hidden || !sessionId || steps.length === 0) return null;
+  // 无计划 / 这份计划被关掉了 / 无会话 → 诚实空态（不渲染）
+  if (hiddenPlan === planKey || !sessionId || steps.length === 0) return null;
 
-  const completed = steps.reduce((n, _s, i) => n + (done.has(i) ? 1 : 0), 0);
+  const completed = steps.reduce((n, s) => n + (done.has(s) ? 1 : 0), 0);
   const progress = Math.round((completed / steps.length) * 100);
 
   const cardStyle: CSSProperties = {
@@ -306,13 +345,13 @@ function WorkflowTodoCard({
 
           <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 208, overflowY: 'auto' }}>
             {steps.map((s, i) => {
-              const isDone = done.has(i);
+              const isDone = done.has(s);
               return (
                 <li key={`${i}-${s}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
                   <input
                     type="checkbox"
                     checked={isDone}
-                    onChange={() => toggleStep(i)}
+                    onChange={() => toggleStep(s)}
                     aria-label={s}
                     style={{ flex: 'none', marginTop: 2, accentColor: 'var(--dsw-alias-state-business-primary)', cursor: 'pointer' }}
                   />

@@ -5,7 +5,7 @@
 // 注：不起 HTTP 服务——这些函数就是 HTTP 处理器的全部业务逻辑（处理器只剩参数解析 + json）。
 // ============================================================
 import assert from 'node:assert/strict';
-import { buildMemoryList, buildMemoryOverview, buildTimelineView, buildGraphView, buildPlanView } from '../lib/memory-view.js';
+import { buildMemoryList, buildMemoryOverview, buildTimelineView, buildGraphView, buildPlanView, buildSearchView } from '../lib/memory-view.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -178,10 +178,11 @@ t('buildTimelineView：无任何断言的实体 → 空属性列表（面板显�
 });
 
 t('buildGraphView：节点=实体提及次数、边=同记忆内实体共现', () => {
-  // 假 service 里所有 claim 的 entity 都是「用户」（值「物理」是专业取值，不是实体）→ 单节点无边
+  // 假 service 里所有 claim 的 entity 都是「用户」→ 实体图只有一个点，退化成「实体 — 取值」图
   const single = buildGraphView(fakeService());
-  assert.deepEqual(single.nodes, [{ id: '用户', count: 2 }]);
-  assert.deepEqual(single.edges, []);
+  assert.equal(single.mode, 'values');
+  assert.equal(single.nodes.find((n) => n.id === '用户').count, 2);
+  assert.ok(single.edges.length > 0, '不能是一张空图');
   // 一条记忆里出现两个实体 → 该记忆贡献一条共现边（节点同次数，只断言集合与计数）
   const multi = buildGraphView(
     fakeService({
@@ -190,6 +191,7 @@ t('buildGraphView：节点=实体提及次数、边=同记忆内实体共现', (
       ],
     }),
   );
+  assert.equal(multi.mode, 'entities');
   assert.equal(multi.nodes.length, 2);
   assert.deepEqual(Object.fromEntries(multi.nodes.map((n) => [n.id, n.count])), { 用户: 1, 物理: 1 });
   assert.deepEqual(multi.edges, [{ a: '物理', b: '用户', weight: 1 }]); // 键归一：按码点升序
@@ -226,6 +228,15 @@ t('buildGraphView：节点上限 40 / 边上限 80（护栏，防大库把 SVG �
   assert.ok(view.edges.length <= 80);
   // 排序：节点按提及次数降序（不变量）
   for (let i = 1; i < view.nodes.length; i++) assert.ok(view.nodes[i - 1].count >= view.nodes[i].count);
+});
+
+t('buildSearchView：调服务的 searchScored，空查询不查', () => {
+  const svc = fakeService({
+    searchScored: (q, k) => [{ id: 'm1', content: q + k, category: 'user_fact', score: 0.5, bm25: 0.4, activation: 90 }],
+  });
+  assert.deepEqual(buildSearchView(svc, '汉堡', 3).hits, [{ id: 'm1', content: '汉堡3', score: 0.5, category: 'user_fact' }]);
+  assert.deepEqual(buildSearchView(svc, '   ', 3).hits, []);
+  assert.deepEqual(buildSearchView(fakeService(), '汉堡').hits, []);
 });
 
 console.log(`\n[ui-memory-view] ${passed} 项断言全部通过`);

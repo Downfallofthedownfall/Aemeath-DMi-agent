@@ -19,6 +19,8 @@ export interface MemoryServiceFace {
   timeline?(entity: string, attribute: string): Array<{ entity: string; attribute: string; value: string; valid_from: number; valid_until: number | null }>;
   currentClaim?(entity: string, attribute: string): { entity: string; attribute: string; value: string; valid_from: number; valid_until: number | null } | undefined;
   knownAttributes?(): string[];
+  /** 检索台：和注入同一套 BM25 + 激活值算法。 */
+  searchScored?(query: string, topK?: number): Array<{ id: string; content: string; category: string; score: number; bm25: number; activation: number }>;
   /** T3 洞察。 */
   currentInsights?(): unknown;
   dreamNow?(): Promise<unknown>;
@@ -49,6 +51,16 @@ export function buildPlanView(memory: MemoryServiceFace, sessionId: string): { o
     ? memory.getScratch(sessionId, 'workflow.plan')
     : memory.allScratch?.()[sessionId]?.['workflow.plan'];
   return { ok: true, steps: parsePlan(raw) ?? [] };
+}
+
+/** 检索台视图（GET ?action=search）。 */
+export function buildSearchView(memory: MemoryServiceFace, query: string, topK = 10): { ok: true; hits: Array<{ id: string; content: string; score: number; category: string }> } {
+  const q = query.trim();
+  if (!q || !memory.searchScored) return { ok: true, hits: [] };
+  return {
+    ok: true,
+    hits: memory.searchScored(q, topK).map((h) => ({ id: h.id, content: h.content.slice(0, 400), score: h.score, category: h.category })),
+  };
 }
 
 /** 时间轴视图里每个属性的断言序列。 */
@@ -170,16 +182,35 @@ export function buildTimelineView(
   return { ok: true, entity, attributes: rows, current: memory.currentClaim?.(entity, probeAttribute) ?? null };
 }
 
-/** 图谱视图（GET ?action=graph）：节点=实体（提及次数），边=同记忆共现次数。 */
+/**
+ * 图谱视图（GET ?action=graph）：节点=实体（提及次数），边=同记忆共现次数。
+ *
+ * 实际数据里断言的实体几乎都是「用户」，实体图永远只有一个点、没有边，整页都是空的。
+ * 这种时候退化成「实体 — 取值」图（用户 — 汉堡大学 / 用户 — 小明），mode='values'。
+ */
 export function buildGraphView(memory: MemoryServiceFace): {
   ok: true;
+  mode: 'entities' | 'values';
+  nodes: Array<{ id: string; count: number }>;
+  edges: Array<{ a: string; b: string; weight: number }>;
+} {
+  const entityGraph = buildCooccurrenceGraph(memory, (rec) => claimsOf(rec).map((c) => c.entity.trim()).filter(Boolean));
+  if (entityGraph.edges.length) return { ok: true, mode: 'entities', ...entityGraph };
+  const valueGraph = buildCooccurrenceGraph(memory, (rec) => claimsOf(rec).flatMap((c) => [c.entity.trim(), c.value.trim()]).filter(Boolean));
+  return { ok: true, mode: 'values', ...valueGraph };
+}
+
+function buildCooccurrenceGraph(
+  memory: MemoryServiceFace,
+  namesOf: (rec: Record<string, unknown>) => string[],
+): {
   nodes: Array<{ id: string; count: number }>;
   edges: Array<{ a: string; b: string; weight: number }>;
 } {
   const nodes = new Map<string, { id: string; count: number }>();
   const edges = new Map<string, { a: string; b: string; weight: number }>();
   for (const { rec } of memory.list()) {
-    const entities = Array.from(new Set(claimsOf(rec).map((c) => c.entity.trim()).filter(Boolean)));
+    const entities = Array.from(new Set(namesOf(rec)));
     if (!entities.length) continue;
     for (const e of entities) nodes.set(e, { id: e, count: (nodes.get(e)?.count ?? 0) + 1 });
     for (let i = 0; i < entities.length; i++) {
@@ -192,7 +223,6 @@ export function buildGraphView(memory: MemoryServiceFace): {
     }
   }
   return {
-    ok: true,
     nodes: [...nodes.values()].sort((a, b) => b.count - a.count).slice(0, 40),
     edges: [...edges.values()].sort((a, b) => b.weight - a.weight).slice(0, 80),
   };

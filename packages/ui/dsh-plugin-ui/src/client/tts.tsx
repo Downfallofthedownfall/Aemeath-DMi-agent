@@ -92,11 +92,11 @@ function showLoadingPopup(startedAt: number): void {
   loadStart = startedAt;
   loadEl = document.createElement('div');
   loadEl.setAttribute('role', 'status');
-  // 注意：cssText 必须用 CSS 属性名 z-index（zIndex 驼峰只用于 JSX 内联样式，
-  // 写在 cssText 里会被忽略 → popup 无层级 → 被输入框遮挡，2026-08-17 修复）
+  // 注意：cssText 必须用 CSS 属性名（z-index / align-items），驼峰只用于 JSX 内联样式，
+  // 写在 cssText 里会被整条忽略（层级丢失、弹窗不居中）
   loadEl.style.cssText = [
     'position:fixed', 'inset:0', 'z-index:2147483647',
-    'display:flex', 'alignItems:center', 'justifyContent:center',
+    'display:flex', 'align-items:center', 'justify-content:center',
     'background:rgba(0,0,0,0.28)',
   ].join(';');
   loadEl.innerHTML = `
@@ -237,7 +237,6 @@ async function speakText(text: string): Promise<void> {
   try {
     await ensureWarm();
     const b64 = await synthesize(text);
-    console.log('[aemeath-tts] 合成成功, base64 长度=', b64.length);
     playAudio(b64);
   } catch (err) {
     console.error('[aemeath-tts] 朗读失败:', err);
@@ -333,17 +332,17 @@ export function showToast(msg: string): void {
       'bottom:96px',
       'transform:translateX(-50%)',
       'z-index:2147483647',
-      'maxWidth:min(480px,calc(100vw - 32px))',
+      'max-width:min(480px,calc(100vw - 32px))',
       'padding:10px 16px',
-      'borderRadius:10px',
+      'border-radius:10px',
       'border:1px solid var(--dsw-alias-border-l2)',
       'background:var(--dsw-alias-bg-base)',
       'color:var(--dsw-alias-label-primary)',
-      'fontSize:13px',
-      'lineHeight:1.5',
-      'boxShadow:0 8px 24px rgba(0,0,0,0.12)',
+      'font-size:13px',
+      'line-height:1.5',
+      'box-shadow:0 8px 24px rgba(0,0,0,0.12)',
       'transition:opacity 240ms',
-      'whiteSpace:pre-wrap',
+      'white-space:pre-wrap',
     ].join(';');
     document.body.appendChild(toastEl);
   }
@@ -352,9 +351,11 @@ export function showToast(msg: string): void {
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     if (toastEl) toastEl.style.opacity = '0';
-    setTimeout(() => {
+    // 淡出期间又来一条新提示时，toastTimer 会被换掉，这里就不能再把它删了
+    toastTimer = setTimeout(() => {
       toastEl?.remove();
       toastEl = null;
+      toastTimer = null;
     }, 260);
   }, 4200);
 }
@@ -444,7 +445,6 @@ export function TtsAction({ scopes, messageId, session }: TtsDeps & { messageId?
   const busyRef = useRef(false);
   const speaking = useSyncExternalStore(subscribeSpeaking, getSpeaking);
   useLocale(); // locale 切换时刷新按钮文案
-  console.log('[aemeath-tts] 朗读按钮渲染, enabled=', enabled, 'messageId=', messageId ? messageId.slice(0, 8) : '(无)');
 
   // 卸载清理：本组件不持有音频（共享控制器），仅重置本地忙标志
   useEffect(() => {
@@ -457,19 +457,15 @@ export function TtsAction({ scopes, messageId, session }: TtsDeps & { messageId?
   if (typeof window === 'undefined') return null;
 
   const toggle = async (e: React.MouseEvent<HTMLButtonElement>): Promise<void> => {
-    console.log('[aemeath-tts] 点击朗读按钮, busy=', busyRef.current, 'speaking=', speaking);
     if (busyRef.current) return;
     // 正在朗读（含自动朗读）→ 点击即中止
     if (speaking) {
-      console.log('[aemeath-tts] 停止朗读');
       stopPlayback();
       return;
     }
     // 优先按 messageId 从本消息所在会话的事件流取原文；失败退回 DOM 抓取
     const fromSession = messageId ? resolveMessageTextFn?.(messageId, session?.sessionId) : undefined;
     const text = fromSession || readMessageText(e.currentTarget);
-    console.log('[aemeath-tts] 文本来源:', fromSession ? 'session' : 'dom');
-    console.log('[aemeath-tts] 提取文本 len=', text.length, 'text="', text.slice(0, 60), '"');
     if (!text) {
       showToast(t('tts.error.noMessage'));
       return;
@@ -534,6 +530,18 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
   const [busy, setBusy] = useState(false);
   const scope = props.scopes?.[TTS_NS];
   useLocale(); // locale 切换时刷新开关文案
+  // 音量滑块：拖动时用本地值（否则要等一次 POST + GET 才动），停下来再写
+  const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
+  const volumeTimer = useRef<number | null>(null);
+  /** 最近一次拖动的序号：只有最新那次写入完成后才把本地值交还给 store。 */
+  const volumeSeq = useRef(0);
+  useEffect(
+    () => () => {
+      if (volumeTimer.current != null) window.clearTimeout(volumeTimer.current);
+    },
+    [],
+  );
+  const shownVolume = volumeDraft ?? volume;
 
   // 同步自动朗读开关状态（关闭时停止播放）
   useEffect(() => {
@@ -548,13 +556,11 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
   if (!scope) return null;
 
   const toggle = async (): Promise<void> => {
-    console.log('[aemeath-tts] 点击开关, 当前 enabled=', enabled, 'busy=', busy);
     if (busy) return;
     const next = !enabled;
     if (next) {
       // 开启前检查后端配置；未配置 → 弹提示且不开启
       const st = await ttsStatus();
-      console.log('[aemeath-tts] 配置检查:', JSON.stringify(st));
       if (!st.configured) {
         showToast(t('tts.error.notConfigured'));
         return;
@@ -565,10 +571,8 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
       if (next) {
         // 懒加载预热（首次弹「加载模型」popup：计时 + 99% 进度条）
         await ensureWarm();
-        console.log('[aemeath-tts] 预热完成，写入 enabled=true');
       }
       await scope.set('enabled', next);
-      console.log('[aemeath-tts] 开关写入完成 enabled=', next);
     } catch (e) {
       console.error('[aemeath-tts] 开关流程失败:', e);
       showToast(t('tts.error.modelLoadFailed'));
@@ -616,10 +620,25 @@ export function TtsToggle(props: TtsDeps): JSX.Element | null {
           type="range"
           min={0}
           max={100}
-          value={Math.round((volume ?? 1) * 100)}
+          value={Math.round(shownVolume * 100)}
           aria-label={t('tts.volume.aria')}
-          title={t('tts.volume.title', { pct: Math.round((volume ?? 1) * 100) })}
-          onChange={(e) => void scope.set('volume', Number(e.target.value) / 100).catch(() => undefined)}
+          title={t('tts.volume.title', { pct: Math.round(shownVolume * 100) })}
+          onChange={(e) => {
+            const v = Number(e.target.value) / 100;
+            const seq = ++volumeSeq.current;
+            setVolumeDraft(v);
+            setTtsVolume(v); // 播放中立刻听到变化
+            if (volumeTimer.current != null) window.clearTimeout(volumeTimer.current);
+            volumeTimer.current = window.setTimeout(() => {
+              scope
+                .set('volume', v)
+                .catch((err: unknown) => showToast(t('settings.saveFailed', { error: (err as Error).message })))
+                // 这次写入期间又拖动过：本地值是更新的，不能清（否则滑块弹回上一次的值）
+                .finally(() => {
+                  if (volumeSeq.current === seq) setVolumeDraft(null);
+                });
+            }, 300);
+          }}
           style={{
             width: 64,
             height: 20,

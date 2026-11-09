@@ -10,6 +10,7 @@ import type { CredentialInfo } from '@deepseek-ai/dsh-credentials/types';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import { FEATURE_NAMESPACES, AGENT_PRESET_NAMESPACE, AGENT_PRESET_FIELD, AGENT_PRESET_READ_FIELDS } from './constants.ts';
 import { CREDENTIALS } from './settings.tsx';
+import { mainSessionIdOf } from './main-session.ts';
 
 /**
  * RemoteResult 的最小结构断言（避免强依赖 dsh-typert-protocol 的具体导出）。
@@ -29,6 +30,14 @@ export interface SettingsBridge {
 /** 角色模式 face（可订阅：useSyncExternalStore 兼容）。 */
 export interface RoleFace {
   current: string;
+  /**
+   * 用户在界面上选了角色：改默认角色；如果当前打开的是空白对话，这条对话也换成它。
+   * 欢迎屏 / 快速设置 / 顶栏共用。
+   *
+   * ⚠️ 只写默认角色是不够的（真机踩过）：空白对话在显示欢迎屏时就已经带着 preset 建好了，
+   *   选"小爱同学"后第一条消息仍然是学霸人格，侧栏也标"学霸"。
+   */
+  pick(role: string): Promise<void>;
   /** 后端真值是否已读回（refresh 读到值或 set 写成功后为 true；之前 current 只是模块初值）。 */
   loaded: boolean;
   subscribe(l: () => void): () => void;
@@ -87,11 +96,20 @@ export interface Faces {
 /** 构建全部数据 face（在 client apply 中调用一次，随后分发给各注册点）。 */
 export function createFaces(ctx: ClientContext): Faces {
   // —— 同源设置桥（GET 读 / POST 写；写支持 patch 合并与 unset 删除字段）——
+  let inflightRead: Promise<Record<string, unknown>> | null = null;
   const settingsApi: SettingsBridge = {
     read: async (): Promise<Record<string, unknown>> => {
-      const res = await fetch('/aemeath/api/settings', { signal: AbortSignal.timeout(8000) });
-      const data = (await res.json()) as { ok?: boolean; namespaces?: Record<string, unknown> };
-      return data.namespaces ?? {};
+      // 七个 scope + 角色各读一次是同一个请求：并发的读共用一个（开页面/收到更新事件时不发 8 次）
+      inflightRead ??= (async () => {
+        try {
+          const res = await fetch('/aemeath/api/settings', { signal: AbortSignal.timeout(8000) });
+          const data = (await res.json()) as { ok?: boolean; namespaces?: Record<string, unknown> };
+          return data.namespaces ?? {};
+        } finally {
+          inflightRead = null;
+        }
+      })();
+      return inflightRead;
     },
     write: async (ns: string, req: { patch?: Record<string, unknown>; unset?: string[] }): Promise<void> => {
       const body: { ns: string; patch?: Record<string, unknown>; unset?: string[] } = { ns };
@@ -101,10 +119,12 @@ export function createFaces(ctx: ClientContext): Faces {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(8000),
+        // 比 host 的 10s 写入护栏长：host 超时会给出具体原因，别被前端先掐断
+        signal: AbortSignal.timeout(12000),
       });
       const data = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !data.ok) throw new Error(data.error ?? `write failed (${res.status})`);
+      inflightRead = null; // 写之前发出的读可能是旧值，之后的读要重新发
     },
   };
 
@@ -158,6 +178,14 @@ export function createFaces(ctx: ClientContext): Faces {
       roleFace.current = role;
       roleFace.loaded = true;
       roleFace.notify();
+    },
+    pick: async (role: string): Promise<void> => {
+      const list = ctx.sessions.list.getSnapshot();
+      const main = mainSessionIdOf(list);
+      const summary = main ? list.byId[main as never] : undefined;
+      // 没有打开任何对话，或打开的是空白对话 → 让宿主用这个角色接管（它会复用空白对话）
+      if (!main || summary?.blank) ctx.uiWorkspace.startSession(undefined, { agentPreset: role });
+      await roleFace.set(role);
     },
   };
   void roleFace.refresh();

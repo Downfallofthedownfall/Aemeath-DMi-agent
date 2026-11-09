@@ -3,9 +3,9 @@
 // 「探索未至之境（预览版）」→ 爱弥斯欢迎屏 + 角色选择卡片。
 // 实现：
 //   1. CSS 隐藏原 hero headline 文字与 preview 徽章（结构选择器）；
-//   2. 注册 conversation.hero.agentPreset 槽位（root single，官方 ui-agent-preset
-//      已被禁用 → 槽位空），注入欢迎屏：问候语 + 角色卡片（小爱同学/学霸）。
-// 角色切换语义（决策 Q2）：对新会话生效（写 agent-presets.default，roleFace）。
+//   2. 注册 conversation.hero.agentPreset 槽位（root single，priority 比官方低 → 盖住官方
+//      的角色选择器），注入欢迎屏：问候语 + 角色卡片（小爱同学/学霸）。
+// 角色切换语义：欢迎屏显示的是这条还没开始的新对话，选的角色就用于它，同时设为之后新对话的默认。
 // ============================================================
 import { useSyncExternalStore } from 'react';
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
@@ -13,12 +13,21 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { RoleFace } from './faces.ts';
 import { t, useLocale } from './i18n.ts';
+import { showToast } from './tts.tsx';
 
 /** 角色卡片选项（id/glyph 静态；label/hint 随 locale 渲染时解析）。 */
 const ROLE_OPTIONS = [
   { id: 'aemeath', hintKey: 'hero.role.aemeath.hint', glyph: '✦' },
   { id: 'physicist', hintKey: 'hero.role.physicist.hint', glyph: '⚛' },
 ] as const;
+
+/** 当前空白对话的角色（index.ts 从会话列表投影读）。 */
+export interface BlankPresetSource {
+  subscribe(l: () => void): () => void;
+  get(): string | undefined;
+}
+const NOOP_SUBSCRIBE = (): (() => void) => () => undefined;
+const NO_PRESET = (): string | undefined => undefined;
 
 /** 角色卡片（选中 = 强调边框 + 淡底 + 右上角对勾；样式见 HERO_CSS）。 */
 function RoleCard({
@@ -55,8 +64,11 @@ function RoleCard({
 }
 
 /** 欢迎屏主体（hooks 全在此：角色订阅 + locale 订阅）。 */
-function HeroLoaded({ role }: { role: RoleFace }): JSX.Element {
-  const current = useSyncExternalStore(role.subscribe, role.getSnapshot);
+function HeroLoaded({ role, blankPreset }: { role: RoleFace; blankPreset?: BlankPresetSource }): JSX.Element {
+  const defaultRole = useSyncExternalStore(role.subscribe, role.getSnapshot);
+  // 高亮这条空白对话实际用的角色（和默认角色可能不同）
+  const sessionRole = useSyncExternalStore(blankPreset?.subscribe ?? NOOP_SUBSCRIBE, blankPreset?.get ?? NO_PRESET);
+  const current = sessionRole ?? defaultRole;
   useLocale(); // 订阅 locale 切换 → 重渲染以刷新文案
   const roleLabel = (id: 'aemeath' | 'physicist'): string =>
     id === 'aemeath' ? t('hero.role.aemeath') : t('hero.role.physicist');
@@ -73,7 +85,9 @@ function HeroLoaded({ role }: { role: RoleFace }): JSX.Element {
             hint={t(opt.hintKey)}
             glyph={opt.glyph}
             active={current === opt.id}
-            onPick={(id) => void role.set(id)}
+            onPick={(id) => {
+              role.pick(id).catch(() => showToast(t('modeswitch.error')));
+            }}
           />
         ))}
       </div>
@@ -129,9 +143,9 @@ const HERO_CSS = `
 `;
 
 /** 外层（零 hooks）：role face 未注入时返回 null（React #290 安全模式）。 */
-export function AemeathHero(props: { role?: RoleFace }): JSX.Element | null {
+export function AemeathHero(props: { role?: RoleFace; blankPreset?: BlankPresetSource }): JSX.Element | null {
   if (!props.role) return null;
-  return <HeroLoaded role={props.role} />;
+  return <HeroLoaded role={props.role} blankPreset={props.blankPreset} />;
 }
 
 /** 隐藏 dsh 原版 hero 文案（探索未至之境 / 预览版 / 工作区行）。 */
@@ -156,14 +170,14 @@ function injectHeroHideCss(): void {
 }
 
 /** 注册欢迎屏。 */
-export function registerHero(ctx: ClientContext, deps: { role: () => RoleFace }): void {
+export function registerHero(ctx: ClientContext, deps: { role: () => RoleFace; blankPreset?: BlankPresetSource }): void {
   injectHeroHideCss();
   ctx.slots.inject('conversation.hero.agentPreset', () =>
     ctx.slots.register(
       {
         name: 'conversation.hero.agentPreset',
         priority: -100,
-        inject: () => ({ role: deps.role() }),
+        inject: () => ({ role: deps.role(), blankPreset: deps.blankPreset }),
       },
       AemeathHero as never,
     ),

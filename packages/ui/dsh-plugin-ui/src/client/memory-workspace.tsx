@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client';
 import { t, useLocale } from './i18n.ts';
 import { injectMemoryWorkspaceStyles, MEMORY_WORKSPACE_CLASS } from './memory-tokens.ts';
+import { showToast } from './tts.tsx';
 
 // ---------- 类型 ----------
 interface ClaimRow {
@@ -77,22 +78,21 @@ const FALLBACK_ATTRS = [
 ];
 
 // ---------- 数据层 ----------
-const jsonOrNull = async <T,>(url: string, init?: RequestInit): Promise<T | null> => {
+/**
+ * 取 JSON。HTTP 错误也解析 body（后端的 {ok:false, error} 要能显示给用户，
+ * 早先一律变成 null，界面只能报一句笼统的失败）；只有网络/超时才返回 null。
+ */
+const jsonOrNull = async <T,>(url: string, init?: RequestInit, timeoutMs = 12000): Promise<T | null> => {
   try {
-    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(12000) });
-    if (!res.ok) return null;
+    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
     return (await res.json()) as T;
   } catch {
     return null;
   }
 };
 
-const postAction = <T,>(action: string) =>
-  jsonOrNull<T>('/aemeath/api/memory', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
-  });
+/** 后端整合一次最长 60s（CONSOLIDATION_TIMEOUT_MS），前端要等得更久，否则结果回来时已经放弃了。 */
+const DREAM_TIMEOUT_MS = 90_000;
 
 // ---------- 小工具 ----------
 const fmtTime = (ts: number): string => {
@@ -242,8 +242,11 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
   const [insights, setInsights] = useState<Insights | null>(null);
   const [dreaming, setDreaming] = useState(false);
   const [dreamSkipped, setDreamSkipped] = useState(false);
+  const [dreamFailed, setDreamFailed] = useState(false);
   const [cq, setCq] = useState('');
   const [hits, setHits] = useState<Array<{ id: string; content: string; score: number; category: string }> | null>(null);
+  const [searchFailed, setSearchFailed] = useState(false);
+  const [deleting, setDeleting] = useState('');
   // worldbook 桥接（从被删掉的旧设置面板迁移过来）：确认弹窗 + 进行中 + 已完成集合
   const [wbTarget, setWbTarget] = useState<MemoryItem | null>(null);
   const [wbBusy, setWbBusy] = useState(false);
@@ -270,9 +273,9 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
     if (res?.ok) setTimeline(res.attributes ?? []);
   }, [attrs]);
 
-  // 首屏：主数据 + 时间轴 + 图谱；洞察按需
-  useEffect(() => {
-    void refresh();
+  // 主数据 + 图谱 + 洞察：首屏和右上角刷新都走这里（早先刷新只更新主数据，图谱和洞察是旧的）
+  const timelineEntity = entityFilter === 'all' ? '用户' : entityFilter;
+  const reloadAll = useCallback(async (): Promise<void> => {
     void (async () => {
       const g = await jsonOrNull<{ ok: boolean; nodes: GraphData['nodes']; edges: GraphData['edges'] }>('/aemeath/api/memory?action=graph');
       if (g?.ok) setGraph({ nodes: g.nodes ?? [], edges: g.edges ?? [] });
@@ -281,19 +284,30 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
       const res = await jsonOrNull<{ ok: boolean; insights: Insights | null }>('/aemeath/api/memory?action=insights');
       if (res?.ok) setInsights(res.insights ?? null);
     })();
+    await refresh();
   }, [refresh]);
 
   useEffect(() => {
-    if (claimsOpen && !timeline.length) void loadTimeline('用户');
-  }, [claimsOpen, loadTimeline, timeline.length]);
+    void reloadAll();
+  }, [reloadAll]);
+
+  useEffect(() => {
+    if (claimsOpen) void loadTimeline(timelineEntity);
+  }, [claimsOpen, loadTimeline, timelineEntity]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      // 弹窗开着时 Esc 只关弹窗，不把整个工作区关掉
+      if (wbTarget) {
+        if (!wbBusy) setWbTarget(null);
+        return;
+      }
+      onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, wbTarget, wbBusy]);
 
   const all = useMemo(() => [...(data?.l3 ?? []), ...(data?.l2 ?? [])], [data]);
   const entityOptions = useMemo(() => {
@@ -315,11 +329,40 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
   const runDream = useCallback(async (): Promise<void> => {
     setDreaming(true);
     setDreamSkipped(false);
-    const res = await postAction<{ ok: boolean; ran: boolean; insights: Insights | null }>('dream');
+    setDreamFailed(false);
+    const res = await jsonOrNull<{ ok: boolean; ran: boolean; insights: Insights | null }>(
+      '/aemeath/api/memory',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'dream' }) },
+      DREAM_TIMEOUT_MS,
+    );
     setDreaming(false);
-    if (res?.insights) setInsights(res.insights);
-    if (res && !res.ran) setDreamSkipped(true);
+    if (!res?.ok) {
+      setDreamFailed(true);
+      return;
+    }
+    if (res.insights) setInsights(res.insights);
+    if (!res.ran) setDreamSkipped(true);
   }, []);
+
+  /** 软删一条记忆（后端可追溯）。 */
+  const deleteMemory = useCallback(
+    async (m: MemoryItem): Promise<void> => {
+      if (!window.confirm(t('memws.delete.confirm', { content: m.content.slice(0, 60) }))) return;
+      setDeleting(m.id);
+      const res = await jsonOrNull<{ ok: boolean; removed?: number; error?: string }>('/aemeath/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idPrefix: m.id }),
+      });
+      setDeleting('');
+      if (!res?.ok || !res.removed) {
+        showToast(t('memws.delete.failed', { error: res?.error ?? t('memws.offline') }));
+        return;
+      }
+      await reloadAll();
+    },
+    [reloadAll],
+  );
 
   /**
    * worldbook 桥接（纯手动）：把一条 L2/L3 记忆写入该馆的 generated_knowledge.json。
@@ -347,22 +390,17 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
   const runSearch = useCallback(async (): Promise<void> => {
     const query = cq.trim();
     if (!query) return;
+    setSearchFailed(false);
     const res = await jsonOrNull<{ ok: boolean; hits?: Array<{ id: string; content: string; score: number; category: string }> }>(
       `/aemeath/api/memory?action=search&q=${encodeURIComponent(query)}&k=10`,
     );
-    // 代理暂无 search action 时退回本地 BM25 式粗筛（前端只做展示，不改变后端语义）
     if (res?.ok && res.hits) {
       setHits(res.hits);
       return;
     }
-    const needle = query.toLowerCase();
-    setHits(
-      all
-        .filter((m) => m.content.toLowerCase().includes(needle))
-        .slice(0, 10)
-        .map((m) => ({ id: m.id, content: m.content, score: m.activation / 100, category: m.category })),
-    );
-  }, [cq, all]);
+    setHits(null);
+    setSearchFailed(true);
+  }, [cq]);
 
   const body = ((): JSX.Element => {
     if (offline) return <div className="mw-page"><div className="mw-empty">{t('memws.offline')}</div></div>;
@@ -435,6 +473,14 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
                         type="button"
                         className="mw-link"
                         style={{ marginLeft: 'auto' }}
+                        disabled={deleting === m.id}
+                        onClick={() => void deleteMemory(m)}
+                      >
+                        {t('memws.delete')}
+                      </button>
+                      <button
+                        type="button"
+                        className="mw-link"
                         title={t('memory.wb.add.title')}
                         disabled={!!wbDone[m.id]}
                         onClick={() => { setWbError(''); setWbTarget(m); }}
@@ -498,8 +544,15 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
             {(graph?.nodes.length ?? 0) > 0 && (graph?.edges.length ?? 0) > 0 ? (
               <EntityGraph
                 data={graph as GraphData}
-                onPick={(entity) => {
-                  setEntityFilter(entity);
+                onPick={(name) => {
+                  // 点的可能是实体，也可能是取值（实体 — 取值图）
+                  if (entityOptions.includes(name)) {
+                    setEntityFilter(name);
+                    setQ('');
+                  } else {
+                    setEntityFilter('all');
+                    setQ(name);
+                  }
                   setPage('memory');
                 }}
               />
@@ -527,7 +580,8 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
             <button type="button" className="mw-btn" onClick={() => void runSearch()}>{t('memws.console.run')}</button>
           </div>
           <div className="mw-scroll">
-            {hits === null && <div className="mw-empty">{t('memws.console.query')}</div>}
+            {searchFailed && <div className="mw-empty">{t('memws.console.failed')}</div>}
+            {hits === null && !searchFailed && <div className="mw-empty">{t('memws.console.query')}</div>}
             {hits?.length === 0 && <div className="mw-empty">{t('memws.console.empty')}</div>}
             {(hits ?? []).map((h) => (
               <div className="mw-row" key={h.id}>
@@ -558,6 +612,7 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
           <div className="mw-note">
             {t('memws.insights.meta', { time: insights?.last_run_at ? fmtTime(insights.last_run_at) : t('memws.insights.never') })}
             {dreamSkipped ? ` · ${t('memws.insights.skipped')}` : ''}
+            {dreamFailed ? ` · ${t('memws.insights.failed')}` : ''}
           </div>
           <div className="mw-scroll" style={{ marginTop: 10 }}>
             {!insights?.clusters.length && !insights?.conflicts.length && <div className="mw-empty">{t('memws.insights.empty')}</div>}
@@ -643,7 +698,7 @@ function WorkspaceView({ onClose }: { onClose: () => void }): JSX.Element {
         </div>
         <div className="mw-actions">
           <span className="mw-note" style={{ marginRight: 4, whiteSpace: 'nowrap' }}>{t('memws.escHint')}</span>
-          <button type="button" className="mw-icon-btn" title={t('memws.refresh')} onClick={() => { void refresh(); }} aria-label={t('memws.refresh')}>⟳</button>
+          <button type="button" className="mw-icon-btn" title={t('memws.refresh')} onClick={() => { void reloadAll(); if (claimsOpen) void loadTimeline(timelineEntity); }} aria-label={t('memws.refresh')}>⟳</button>
           <button type="button" className="mw-icon-btn" title={t('memws.close')} onClick={onClose} aria-label={t('memws.close')}>✕</button>
         </div>
       </div>

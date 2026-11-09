@@ -10,13 +10,15 @@
 //   4. 记忆 tab：指路文案（旧 MemoryPanel 已删除，能力由记忆工作区承载）。
 // 角色模式已前移：hero 欢迎屏 + 快速设置面板（quick-settings.tsx）
 // ============================================================
-import { useState, useSyncExternalStore, useEffect } from 'react';
+import { useRef, useState, useSyncExternalStore, useEffect } from 'react';
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type { FetchScope as SettingsScope, ScopeSnapshot as SettingsScopeSnapshot } from './faces.ts';
 import type { CredentialInfo } from '@deepseek-ai/dsh-credentials/types';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import { t, useLocale } from './i18n.ts';
+import { showToast } from './tts.tsx';
+import { previewAppearance } from './appearance.ts';
 
 // ===== 功能开关清单（label/hint 存 key，渲染时 t() 解析） =====
 export interface FeatureSwitch {
@@ -96,17 +98,6 @@ const GET_EMPTY_SNAPSHOT = (): SettingsScopeSnapshot => EMPTY_SNAPSHOT;
 const NOOP_SUBSCRIBE = (): (() => void) => () => void 0;
 /** appearance value 缺失时的稳定空对象（避免每次 render 生成新引用）。 */
 const EMPTY_RECORD: Record<string, unknown> = {};
-
-/** 把外观个人化值应用为根元素 CSS 变量（借 Cyrene appearance：值落地即应用）。 */
-function applyAppearanceVars(value: Record<string, unknown>): void {
-  if (typeof document === 'undefined') return;
-  const root = document.documentElement;
-  const font = typeof value.font === 'string' ? value.font.trim() : '';
-  if (font) root.style.setProperty('--aemeath-font', font);
-  else root.style.removeProperty('--aemeath-font');
-  if (typeof value.chatLineHeight === 'number') root.style.setProperty('--aemeath-line-height', String(value.chatLineHeight));
-  if (typeof value.chatParaSpacing === 'number') root.style.setProperty('--aemeath-para-spacing', String(value.chatParaSpacing));
-}
 
 // ===== 顶部 tab 定义（默认「常规」） =====
 type SettingsTab = 'general' | 'appearance' | 'memory';
@@ -433,9 +424,10 @@ function AppearanceSection({
   useLocale(); // locale 切换时刷新面板文案
 
   // —— 读取持久化值（带默认值） ——
-  const assistantBubbles = typeof value.assistantBubbles === 'boolean' ? value.assistantBubbles : true;
-  const persistedLineHeight = typeof value.chatLineHeight === 'number' ? value.chatLineHeight : 1.75;
-  const persistedParaSpacing = typeof value.chatParaSpacing === 'number' ? value.chatParaSpacing : 0.5;
+  // 0 = 没设置过（对话区用 dsh 默认样式），滑块显示一个常规值
+  const assistantBubbles = value.assistantBubbles === true;
+  const persistedLineHeight = typeof value.chatLineHeight === 'number' && value.chatLineHeight > 0 ? value.chatLineHeight : 1.75;
+  const persistedParaSpacing = typeof value.chatParaSpacing === 'number' && value.chatParaSpacing > 0 ? value.chatParaSpacing : 0.5;
   const persistedFont = typeof value.font === 'string' ? value.font : '';
 
   // —— 本地草稿（滑块拖动期间避免被快照值弹回；范围滑块不能直接绑定快照） ——
@@ -459,9 +451,36 @@ function AppearanceSection({
     if (!scope) return;
     try {
       await scope.set(field, v);
-    } catch {
-      /* 写失败：下轮快照自动回退 */
+    } catch (e) {
+      showToast(t('settings.saveFailed', { error: (e as Error).message }));
     }
+  };
+
+  // 滑块拖动时先本地预览，停下来再写：每一格都写的话会连发 POST 并反复改写配置文件。
+  // ⚠️ 每个滑块各自防抖：共用一个定时器的话，拖完行高紧接着拖段落间距，行高那次写入就被取消了。
+  //    关掉设置页时把还没发出去的写入补发，不能只清定时器（否则最后一次改动丢失）。
+  const sliderPending = useRef(new Map<string, { timer: number; value: number }>());
+  const setFieldRef = useRef(setField);
+  setFieldRef.current = setField;
+  useEffect(
+    () => () => {
+      for (const [field, { timer, value }] of sliderPending.current) {
+        window.clearTimeout(timer);
+        void setFieldRef.current(field, value);
+      }
+      sliderPending.current.clear();
+    },
+    [],
+  );
+  const setSlider = (field: 'chatLineHeight' | 'chatParaSpacing', v: number): void => {
+    previewAppearance(field, v);
+    const pending = sliderPending.current.get(field);
+    if (pending) window.clearTimeout(pending.timer);
+    const timer = window.setTimeout(() => {
+      sliderPending.current.delete(field);
+      void setField(field, v);
+    }, 300);
+    sliderPending.current.set(field, { timer, value: v });
   };
 
   const setToggle = (field: string, v: boolean): void => {
@@ -520,7 +539,7 @@ function AppearanceSection({
           display={lineHeight.toFixed(2)}
           onChange={(v) => {
             setLineHeight(v);
-            void setField('chatLineHeight', v);
+            setSlider('chatLineHeight', v);
           }}
         />
 
@@ -529,13 +548,13 @@ function AppearanceSection({
           label={t('settings.appearance.paraSpacing.label')}
           hint={t('settings.appearance.paraSpacing.hint')}
           value={paraSpacing}
-          min={0}
+          min={0.1}
           max={2}
           step={0.1}
           display={paraSpacing.toFixed(2)}
           onChange={(v) => {
             setParaSpacing(v);
-            void setField('chatParaSpacing', v);
+            setSlider('chatParaSpacing', v);
           }}
         />
 
@@ -622,8 +641,8 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
     if (!scope) return;
     try {
       await scope.set(f.field, v);
-    } catch {
-      /* 写失败：下轮快照自动回退 */
+    } catch (e) {
+      showToast(t('settings.saveFailed', { error: (e as Error).message }));
     }
   };
 
@@ -639,9 +658,6 @@ function Loaded({ scopes, credentials }: LoadedProps): JSX.Element {
     appearanceScope ? appearanceScope.getSnapshot : GET_EMPTY_SNAPSHOT,
   );
   const appearanceValue = (appearanceSnap?.value as Record<string, unknown> | undefined) ?? EMPTY_RECORD;
-  useEffect(() => {
-    applyAppearanceVars(appearanceValue);
-  }, [appearanceValue]);
 
   return (
     <div
