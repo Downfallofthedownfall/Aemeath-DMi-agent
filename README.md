@@ -24,20 +24,20 @@ knowledge, no cross-talk.
 
 | Capability | Notes |
 |---|---|
-| Dual-role, dual-agent isolation | dsh personas, per-agent settings and knowledge isolation |
+| Dual-role, dual-agent isolation | dsh personas, per-agent settings and knowledge isolation; study tools are hidden from the companion persona (`import_handoff` runs in a physicist session), and each persona reads only its own worldbook |
 | OOC rule layer | Regex pre-step interception of out-of-character replies (optional LLM judge, off by default) |
 | Worldbook knowledge base | Physik I / Math I entries in separate libraries, hot reload, `retrieve_worldbook` tool |
-| Layered memory (L1/L2/L3) | Rule-first + LLM gatekeeper, BM25 dedup, typed conflicts (preference evolution vs. direct conflict), user-fact write gate, activation-scored lifecycle, mood observer and relationship cues |
+| Layered memory (L1/L2/L3) | Rule-first + LLM gatekeeper, BM25 dedup, typed conflicts (preference evolution vs. direct conflict), user-fact write gate, activation-scored lifecycle, mood observer and relationship cues. Only the user's own declarative statements can enter L2/L3 directly; model replies cannot. If the LLM is unavailable, L1 stays buffered and is retried; leftover L1 is summarized by the LLM about 30 s after start (uses tokens) |
 | Fact timeline + idle consolidation | `entityClaims` with `valid_from` / `valid_until` intervals answer "what was true *then*"; attribute changes count as evolution, not conflict; idle consolidation writes topic clusters and suspected conflicts to a separate insights store and never rewrites memories |
 | Memory workspace | Full-screen five-page panel: Memories (browse + timeline), Graph, Console, Insights, Status |
 | Lecture retrieval + exam benchmark | SQLite FTS5 BM25 (Chinese bigram), five-metric report, headless runner |
-| Solving workflow | Plan → execute → ✅/❌ SymPy verification → conclusion + source; honest degradation on tool failure |
+| Solving workflow | Plan → execute → ✅/❌ SymPy verification → conclusion + source; `compute_verify` budget is per turn; honest degradation on tool failure |
 | Desktop UI + Electron shell | Branded light-theme UI, quick settings, workspace picker, memory panel, TTS; Electron hosts dsh and opens the app window |
 | i18n (zh/en) | UI strings via dsh locale service; personas per locale |
 | Curriculum plugin | Modulhandbuch semester summary injection and `curriculum_query` |
 | Lecture Mode | Class-note capture → backend-only processing → five-step manual review → one-way handoff (see below) |
 | Übungen | PDF homework import → editable answers → manual check → mistake book + worldbook → merged submission PDF (see below) |
-| Hardening | Guarded SymPy execution (10 s timeout, expression-size limits), loopback-only token-protected memory admin endpoint, origin-checked write endpoints, Electron navigation locked to the local app origin |
+| Hardening | Guarded SymPy execution (10 s timeout, expression-size limits, token blacklist checked before parsing), SSRF guard on `web_scraper`, loopback-only token-protected memory admin endpoint, origin-checked write endpoints, Electron navigation locked to the local app origin (same-origin documents under `/aemeath/api/` open in a locked in-app window) |
 
 ### Requirements
 
@@ -242,20 +242,20 @@ npm test -w @aemeath/dsh-plugin-common            # and worldbook / memory / ret
 
 | 能力 | 说明 |
 |---|---|
-| 双角色双 agent 隔离 | dsh persona 机制，人格、设置与知识按 agent 隔离 |
+| 双角色双 agent 隔离 | dsh persona 机制，人格、设置与知识按 agent 隔离；陪伴人格看不到学习类工具（`import_handoff` 请在 physicist 会话里跑），每个人格只读自己的世界书 |
 | OOC 规则层 | pre-step 正则拦截越界回复（可选的 LLM 判定层，默认关闭） |
 | Worldbook 知识库 | Physik I / Math I 双馆隔离、热重载、`retrieve_worldbook` 工具 |
-| 分层记忆 L1/L2/L3 | 规则层优先 + LLM 守门员、BM25 查重、typed 冲突（偏好演化 / 直接冲突）、用户事实写入门禁、激活分三态生命周期、情绪观察器与关系线索 |
+| 分层记忆 L1/L2/L3 | 规则层优先 + LLM 守门员、BM25 查重、typed 冲突（偏好演化 / 直接冲突）、用户事实写入门禁、激活分三态生命周期、情绪观察器与关系线索。只有用户自己的陈述句能直接进 L2/L3，模型回复不能；LLM 不可用时 L1 留在缓冲区稍后重试；启动约 30 秒后用 LLM 总结遗留 L1（会消耗 token） |
 | 事实时间轴 + 空闲整合 | `entityClaims` 带 `valid_from` / `valid_until` 区间，能回答「**当时**是什么」；属性取值变化=演进不是矛盾；空闲整合把主题簇与疑似矛盾写入独立洞察存储，绝不改写原记忆 |
 | 记忆工作区 | 全屏五页：记忆（浏览 + 时间轴）/ 图谱 / 检索台 / 洞察 / 状态 |
 | 讲义检索 + Altklausur 基准 | SQLite FTS5 BM25（中文 bigram）、五项指标报告、headless 驱动 |
-| 解题工作流 | 计划 → 执行 → ✅/❌ SymPy 验证 → 结论 + 来源；工具故障时诚实降级 |
+| 解题工作流 | 计划 → 执行 → ✅/❌ SymPy 验证 → 结论 + 来源；`compute_verify` 预算按轮计算；工具故障时诚实降级 |
 | 前端 + Electron 桌宠壳 | 品牌亮色界面、快速设置、工作区选择、记忆面板、TTS；Electron 托管 dsh 并打开品牌窗口 |
 | i18n（中/英） | UI 文案走 locale 服务；人格按 locale 加载 |
 | curriculum 课程插件 | Modulhandbuch 学期摘要注入 + `curriculum_query` |
 | Lecture Mode 课堂记录 | 课堂速记 → 只落后端的 LLM 加工 → 五步人工复盘 → 单向握手（见下） |
 | Übungen 习题模式 | PDF 作业导入 → 可编辑答案 → 手动检查 → 错题本 + worldbook → 合并提交 PDF（见下） |
-| 安全加固 | SymPy 执行加护栏（10s 超时、表达式规模限制）、记忆管理端点仅回环 + token、写端点校验 Origin、Electron 导航锁定本地源 |
+| 安全加固 | SymPy 执行加护栏（10s 超时、表达式规模限制、解析前过 token 黑名单）、`web_scraper` 防 SSRF、记忆管理端点仅回环 + token、写端点校验 Origin、Electron 导航锁定本地源（`/aemeath/api/` 下的同源文档开在锁定的应用内窗口） |
 
 ### 环境要求
 
