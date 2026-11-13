@@ -43,19 +43,34 @@ if %errorlevel% neq 0 (
 echo [OK] Plugins built
 
 echo [5/7] Installing profile dependencies (aemeath / aemeath-run, --legacy-peer-deps)...
-cd profiles\aemeath
-call npm install --legacy-peer-deps --cache ..\..\.npm-cache
-set PROFILE_ERR=%errorlevel%
-cd ..\..
+rem Re-run guard. Once a profile's node_modules\@deepseek-ai is a junction to the repo root
+rem (scripts\dsh.ps1 and scripts\link-profile.ps1 create it), running npm install inside that
+rem profile makes npm follow the junction and empty the ROOT node_modules\@deepseek-ai.
+rem A linked profile needs no install of its own, so it is skipped. First-time setup is unchanged.
+rem (single-line "if" on purpose: %errorlevel% inside a parenthesised block is expanded too early)
+set PROFILE_ERR=0
+set PROFILE_LINKED=0
+dir /AL "profiles\aemeath\node_modules" 2>nul | find /I "@deepseek-ai" >nul
+if not errorlevel 1 set PROFILE_LINKED=1
+if "%PROFILE_LINKED%"=="1" echo [SKIP] profiles\aemeath already links @deepseek-ai to the repo root - nothing to install
+if "%PROFILE_LINKED%"=="0" cd profiles\aemeath
+if "%PROFILE_LINKED%"=="0" call npm install --legacy-peer-deps --cache ..\..\.npm-cache
+if "%PROFILE_LINKED%"=="0" set PROFILE_ERR=%errorlevel%
+if "%PROFILE_LINKED%"=="0" cd ..\..
 if %PROFILE_ERR% neq 0 (
     echo [FAIL] aemeath profile install failed
     pause
     exit /b 1
 )
-cd profiles\aemeath-run
-call npm install --legacy-peer-deps --cache ..\..\.npm-cache
-set PROFILE_ERR=%errorlevel%
-cd ..\..
+set PROFILE_ERR=0
+set PROFILE_LINKED=0
+dir /AL "profiles\aemeath-run\node_modules" 2>nul | find /I "@deepseek-ai" >nul
+if not errorlevel 1 set PROFILE_LINKED=1
+if "%PROFILE_LINKED%"=="1" echo [SKIP] profiles\aemeath-run already links @deepseek-ai to the repo root - nothing to install
+if "%PROFILE_LINKED%"=="0" cd profiles\aemeath-run
+if "%PROFILE_LINKED%"=="0" call npm install --legacy-peer-deps --cache ..\..\.npm-cache
+if "%PROFILE_LINKED%"=="0" set PROFILE_ERR=%errorlevel%
+if "%PROFILE_LINKED%"=="0" cd ..\..
 if %PROFILE_ERR% neq 0 (
     echo [FAIL] aemeath-run profile install failed
     pause

@@ -1,13 +1,15 @@
-# ============================================================
+﻿# ============================================================
 # scripts/dsh.ps1 — Aemeath v2 的 dsh 包装脚本
 #   1) 固定 DSH_HOME = 仓库 .dsh-home（项目内隔离，不碰全局 web profile）
 #   2) 固定 cwd = 仓库根（配置文件里的相对路径依赖它）
-#   3) 同步 agent presets（profiles/aemeath/agent-presets/ → .dsh-home/.agent-presets/，
-#      dsh-agent-presets 的 includeUserRoot 默认扫描该目录，user trust）
+#   3) profile 还没接到 DSH_HOME 时，先把链接建好（scripts\link-profile.ps1）
 #   4) 自动定位 dsh CLI（项目内 node_modules → npx 缓存 → PATH），
 #      不依赖用户终端的 PATH 配置
 # 用法：.\scripts\dsh.ps1 --profile aemeath --port 3081
 #       .\scripts\dsh.ps1 --profile aemeath-run "问题"
+#
+# ⚠️ 本文件必须带 UTF-8 BOM（与其它 .ps1 一致）：Windows PowerShell 5.1 把没有 BOM
+#    的脚本按系统 ANSI 代码页读，里面的中文提示会变成乱码。
 # ============================================================
 
 # —— 1) 解析脚本所在目录（多级兜底，兼容 -File / 后台 / 沙箱 / 嵌套调用）——
@@ -18,15 +20,32 @@ if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
 $root = Split-Path -Parent $scriptDir
 $env:DSH_HOME = Join-Path $root '.dsh-home'
 
-# —— 2) 同步 agent presets（先删旧再复制，保证与 git 内容一致）——
-$srcPresets = Join-Path $root 'profiles\aemeath\agent-presets'
-$dstPresets = Join-Path $env:DSH_HOME '.agent-presets'
-if (Test-Path $srcPresets) {
-  if (Test-Path $dstPresets) { Remove-Item $dstPresets -Recurse -Force -ErrorAction SilentlyContinue }
-  Copy-Item $srcPresets $dstPresets -Recurse -Force -ErrorAction Stop
-  Write-Host "[dsh.ps1] agent presets 已同步: $((Get-ChildItem $dstPresets -Directory | ForEach-Object { $_.Name }) -join ', ')"
-} else {
-  Write-Warning "[dsh.ps1] agent presets 源目录不存在: $srcPresets（跳过同步）"
+# —— 2) profile 还没接到 DSH_HOME 时先建链接 ——
+# dsh 只从 $DSH_HOME\profiles\<name> 找 profile，**不读**仓库里的 profiles\。
+# 链接缺失（新克隆的机器 / 新加的 profile）时不补上，dsh 直接报
+#     profile "exercise" does not exist
+# 只在链接**不存在**时才动手：已经接好的环境完全不碰（修复仍由下面 3.5 负责）。
+#
+# （这里原先是"同步 agent presets 到 .dsh-home\.agent-presets"。那是 DSH 0.1.1 的
+#   机制：0.2.x 的 preset 是 profile patch 里的 `@deepseek-ai/dsh-agent-preset` 条目，
+#   运行时和本仓库里都已经没有任何东西读那个目录，所以这一步删掉了。）
+$profileName = $null
+for ($i = 0; $i -lt $args.Count; $i++) {
+  $a = [string]$args[$i]
+  if ($a -eq '--profile' -and ($i + 1) -lt $args.Count) { $profileName = [string]$args[$i + 1]; break }
+  if ($a -like '--profile=*') { $profileName = $a.Substring('--profile='.Length); break }
+}
+if ($profileName -and $profileName -match '^[A-Za-z0-9._-]+$') {
+  $repoProfile = Join-Path $root "profiles\$profileName"
+  $homeProfile = Join-Path $env:DSH_HOME "profiles\$profileName"
+  if ((Test-Path $repoProfile) -and -not (Test-Path $homeProfile)) {
+    Write-Host "[dsh.ps1] profile '$profileName' 还没接到 DSH_HOME，现在建立链接"
+    try {
+      & (Join-Path $scriptDir 'link-profile.ps1') -Profile $profileName -Quiet
+    } catch {
+      Write-Warning "[dsh.ps1] 建立 profile 链接失败：$($_.Exception.Message)"
+    }
+  }
 }
 
 # —— 3) 定位 dsh CLI：项目内 → npx 缓存 → PATH（C10：npx 缓存可能命中其他项目

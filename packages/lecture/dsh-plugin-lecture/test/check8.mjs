@@ -396,8 +396,16 @@ console.log('\n[启动脚本必须能察觉"源码更新了但 bundle 没重建"
 //     只比 src/client → lib/client.js 的话，改 **host**（src/index.ts）不会被发现，
 //     而那次的修复恰恰在 host（webserver/index-inject 注入）——
 //     于是"改了、pull 了、重启了，还是老样子"再来一遍。
-t('lecture-mac.sh 用时间戳判断是否需要重建（不是"文件存在就跳过"）', () => {
-  const sh = readFileSync(join(REPO_ROOT, 'scripts/lecture-mac.sh'), 'utf-8');
+// 装配逻辑现在只有一份：scripts/profile-mac.sh（lecture / exercise 共用），
+// scripts/lecture-mac.sh 只是把 profile 名传进去的薄入口。
+// 所以这些断言盯的是 profile-mac.sh，外加"入口确实转到了它"。
+t('lecture-mac.sh 把装配交给共用的 profile-mac.sh', () => {
+  const entry = readFileSync(join(REPO_ROOT, 'scripts/lecture-mac.sh'), 'utf-8');
+  assert.match(entry, /profile-mac\.sh" lecture "\$@"/, '入口应以 lecture 调 profile-mac.sh 并透传参数');
+});
+
+t('mac 装配脚本用时间戳判断是否需要重建（不是"文件存在就跳过"）', () => {
+  const sh = readFileSync(join(REPO_ROOT, 'scripts/profile-mac.sh'), 'utf-8');
   assert.match(sh, /needs_build/, '应有 needs_build 判断');
   assert.match(sh, /-newer/, '应比对新旧时间戳');
   // 旧写法必须消失：只判断"文件不存在"
@@ -408,7 +416,7 @@ t('lecture-mac.sh 用时间戳判断是否需要重建（不是"文件存在就�
 });
 
 t('mac 脚本遍历所有 workspace 包，且**同时比 host 与 client**', () => {
-  const sh = readFileSync(join(REPO_ROOT, 'scripts/lecture-mac.sh'), 'utf-8');
+  const sh = readFileSync(join(REPO_ROOT, 'scripts/profile-mac.sh'), 'utf-8');
   // 遍历 packages/*/*
   assert.match(sh, /for pkg in "\$ROOT"\/packages\/\*\/\*/, '应遍历所有 workspace 包');
   // host 产物
@@ -423,10 +431,32 @@ t('mac 脚本遍历所有 workspace 包，且**同时比 host 与 client**', () 
 });
 
 t('launcher 也做同样的判断（Windows 路径，含 host）', () => {
-  const ps = readFileSync(join(REPO_ROOT, 'lecture-launch.ps1'), 'utf-8');
+  // Windows 的启动器同样合并成了一份：scripts/launch-profile.ps1（-Mode lecture|exercise）
+  const ps = readFileSync(join(REPO_ROOT, 'scripts/launch-profile.ps1'), 'utf-8');
   assert.match(ps, /needsBuild/i, '应按时间戳判断是否需要构建');
   assert.match(ps, /lib\\index\.js/, 'Windows 也要比 host 产物 lib\\index.js');
   assert.match(ps, /packages\\\*\\\*/, 'Windows 也要遍历所有 workspace 包');
+});
+
+// 真 bug：Windows 启动器早先只装依赖 + 构建，**没有把 profile 接到 DSH_HOME**。
+// dsh 只从 $DSH_HOME\profiles\<name> 找 profile，新克隆的机器上直接报
+// `profile "lecture" does not exist` —— 开发机上链接早就手工建好了，所以发现不了。
+t('Windows 启动器会把 profile 接到 DSH_HOME（调 link-profile.ps1）', () => {
+  const ps = readFileSync(join(REPO_ROOT, 'scripts/launch-profile.ps1'), 'utf-8');
+  assert.match(ps, /link-profile\.ps1'\) -Profile \$Mode/, '启动前必须建立 profile 链接');
+  for (const mode of ['lecture', 'exercise']) {
+    const bat = readFileSync(join(REPO_ROOT, `${mode}-launch.bat`), 'utf-8');
+    assert.match(bat, new RegExp(`scripts\\\\launch-profile\\.ps1" -Mode ${mode} `), `${mode}-launch.bat 应调共用启动器`);
+    assert.ok(!/[^\x00-\x7F]/.test(bat), `${mode}-launch.bat 必须保持纯 ASCII（cmd 按代码页读 .bat）`);
+  }
+});
+
+// 真 bug：dsh 默认自己开一次浏览器，启动器抓到地址后又开一次 → 每次启动两个标签页。
+t('两个平台的启动器都带 --no-open（浏览器只由启动器开一次）', () => {
+  const ps = readFileSync(join(REPO_ROOT, 'scripts/launch-profile.ps1'), 'utf-8');
+  assert.match(ps, /--port \$Port --no-open/, 'Windows 启动器应带 --no-open');
+  const sh = readFileSync(join(REPO_ROOT, 'scripts/launch-mac.sh'), 'utf-8');
+  assert.match(sh, /--port "\$PORT" --no-open/, 'mac 启动器应带 --no-open');
 });
 
 console.log('\n[独立界面模式必须有 boot 标记的生产者]');
@@ -490,10 +520,19 @@ t('aemeath-ui 的 inject 里没有 memory（它是可选的）', () => {
 console.log('\n[launcher 必须显式设置 DSH_HOME]');
 
 t('lecture-launch.command 启动 dsh 时带上 DSH_HOME', () => {
-  const cmd = readFileSync(join(REPO_ROOT, 'lecture-launch.command'), 'utf-8');
+  // .command 现在是薄入口，双击流程在 scripts/launch-mac.sh（两个模式共用）
+  const entry = readFileSync(join(REPO_ROOT, 'lecture-launch.command'), 'utf-8');
+  assert.match(entry, /scripts\/launch-mac\.sh" lecture/, '.command 应以 lecture 调 launch-mac.sh');
+  const cmd = readFileSync(join(REPO_ROOT, 'scripts/launch-mac.sh'), 'utf-8');
   // 干净 shell 下不设 DSH_HOME → dsh 读 ~/.dsh，那里没有 lecture profile
   assert.match(cmd, /DSH_HOME=/, '应显式设置 DSH_HOME');
   assert.match(cmd, /export DSH_HOME/, '应 export 出去（子进程要能看到）');
+  // 而且必须在**装配之前**就定下来：装配脚本会沿用环境里已有的 DSH_HOME，
+  // 晚设的话 profile 链到一处、却从另一处启动。
+  assert.ok(
+    cmd.indexOf('export DSH_HOME') < cmd.indexOf('--setup-only'),
+    'DSH_HOME 要在调装配脚本（--setup-only）之前 export',
+  );
 });
 
 console.log('\n[删除功能（真机反馈：测试笔记删不掉）]');

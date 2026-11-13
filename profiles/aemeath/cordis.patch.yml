@@ -1,7 +1,7 @@
 # ============================================================
 # profiles/aemeath/cordis.patch.yml — Aemeath 主 profile（Web UI）
-# 双角色由 agent presets 承载（.dsh-home/.agent-presets/{aemeath,physicist}，
-# 由 scripts/dsh.ps1 同步）；本层只插入公共/世界书插件。
+# 双角色由 agent presets 承载：每个 preset 是下面的一个 `@deepseek-ai/dsh-agent-preset` 条目
+# （DSH 0.2.x 的机制；.dsh-home/.agent-presets/ 目录早已没人读）；本层另外插入公共/世界书插件。
 # 注：路径相对仓库根（scripts/dsh.ps1 固定 cwd）
 # ============================================================
 # —— 插入 Aemeath 插件 ——
@@ -258,8 +258,8 @@
 #   所以**潜伏了很久** —— 直到某个会话缓存里钉了 `physicist` 才暴露：
 #       agent-preset/not-found: Unknown agent preset: physicist
 #
-#   注意 `.dsh-home/.agent-presets/` 目录和 `scripts/dsh.ps1` 的同步逻辑
-#   **现在都是死代码**（0.2.0 没人读那个目录），保留只是为了不破坏其他引用。
+#   `.dsh-home/.agent-presets/` 目录在 0.2.x 里没人读；`scripts/dsh.ps1` 里往它同步的那一步
+#   已于 2026-11-13 删除（核对过：dsh 运行时与本仓库都没有任何引用）。本机残留的目录可以直接删。
 #
 #   正确做法（照 dsh-web-app/presets/*.patch.yml 的写法）：
 #   每个 preset 一个 `@deepseek-ai/dsh-agent-preset` 条目。

@@ -23,7 +23,10 @@ param(
   [string[]]$Profile,
 
   # 可选：DSH_HOME（缺省 = 仓库内 .dsh-home，与 dsh.ps1 一致）
-  [string]$DshHome
+  [string]$DshHome,
+
+  # 被启动器调用时用：不打印结尾那句"接下来怎么启动"（启动器自己会启动）
+  [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,17 +35,34 @@ if (-not $DshHome) { $DshHome = Join-Path $root '.dsh-home' }
 $dshProfiles = Join-Path $DshHome 'profiles'
 
 function Ensure-Junction {
-  param([string]$Path, [string]$Target, [string]$Label)
+  # -KeepRealDirectory：目标位置若是**真实目录**（不是链接）就只告警、不替换。
+  #   用在 $DSH_HOME/profiles/<name> 上 —— 那里的真实目录是一份 profile 副本，
+  #   里面可能有只存在于副本里的改动（在界面里改过的配置就写在那儿）。
+  #   本脚本现在会被启动器每次启动都调用，不能悄悄把它删了。
+  #   node_modules 下的链接则照旧替换：真实目录只可能是误跑 npm install 留下的副本。
+  param([string]$Path, [string]$Target, [string]$Label, [switch]$KeepRealDirectory)
 
   $full = [System.IO.Path]::GetFullPath($Path)
   if (Test-Path $full) {
     $item = Get-Item $full -Force
-    if ($item.LinkType -eq 'Junction' -and ([string]$item.Target).TrimEnd('\') -eq $Target.TrimEnd('\')) {
+    $isLink = [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+    # junction 和目录符号链接都算：指向对了就不动
+    if ($isLink -and ([string]$item.Target).TrimEnd('\') -eq $Target.TrimEnd('\')) {
       Write-Host "  ✓ $Label 已就绪"
       return
     }
-    Write-Host "  ↻ $Label 指向别处，重建"
-    Remove-Item $full -Recurse -Force
+    if ($isLink) {
+      Write-Host "  ↻ $Label 指向别处，重建"
+      # 非递归删除 = 只摘掉链接本身，不碰它指向的目录
+      [System.IO.Directory]::Delete($full, $false)
+    } elseif ($KeepRealDirectory) {
+      Write-Warning "  $Label 是真实目录而不是链接：dsh 读的是这份副本，在仓库里改 profile 不会生效。"
+      Write-Warning "  确认里面没有要保留的改动后，删掉 $full 再重跑本脚本。"
+      return
+    } else {
+      Write-Host "  ↻ $Label 是真实目录（误跑 npm install 留下的副本），替换为链接"
+      Remove-Item $full -Recurse -Force
+    }
   }
   New-Item -ItemType Junction -Path $full -Target $Target | Out-Null
   Write-Host "  + $Label → $Target"
@@ -62,7 +82,7 @@ foreach ($name in $Profile) {
   Write-Host "profile: $name"
 
   # 1) $DSH_HOME/profiles/<name> → 仓库（必须是链接：副本会让"改了不生效"）
-  Ensure-Junction -Path (Join-Path $dshProfiles $name) -Target $src -Label "profiles/$name"
+  Ensure-Junction -Path (Join-Path $dshProfiles $name) -Target $src -Label "profiles/$name" -KeepRealDirectory
 
   # 2) @deepseek-ai 整目录链接
   $nm = Join-Path $src 'node_modules'
@@ -95,5 +115,7 @@ foreach ($name in $Profile) {
     Ensure-Junction -Path (Join-Path $aeScope $pkgName) -Target $target -Label "$name/@aemeath/$pkgName"
   }
 }
-Write-Host ''
-Write-Host "完成。启动：.\scripts\dsh.ps1 --profile $($Profile[0]) --port 3084"
+if (-not $Quiet) {
+  Write-Host ''
+  Write-Host "完成。启动：.\scripts\dsh.ps1 --profile $($Profile[0]) --port 3084"
+}
