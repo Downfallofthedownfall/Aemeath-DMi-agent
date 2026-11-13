@@ -337,7 +337,7 @@ await asyncT('POST build_submission 透传 order/include_source', async () => {
   assert.equal(input.includeSource, false);
 });
 
-await asyncT('POST build_submission 不传 include_source → 默认 false（只出解答页）', async () => {
+await asyncT('POST build_submission 不传 include_source / order → undefined（交给配置默认）', async () => {
   const calls = [];
   const res = makeRes();
   await handleExerciseHttp(
@@ -350,7 +350,31 @@ await asyncT('POST build_submission 不传 include_source → 默认 false（只
     fakeDeps(calls),
   );
   const [, input] = calls[0];
-  assert.equal(input.includeSource, false, '2026-10-24 起默认不合并原卷');
+  // 2026-10-24 起默认不合并原卷 —— 这个默认由**配置**保证
+  // （includeSourcePdf 缺省 false，两个 profile 里也是 false），而不是在 HTTP 层折成 false：
+  // 折成 false 的话下游 `input.includeSource ?? 配置` 永远走不到配置，
+  // 界面上想合并原卷就没有任何办法（界面从不传这个字段）。
+  assert.equal(input.includeSource, undefined, '没传就不替调用方做决定');
+  assert.equal(input.order, undefined, '没传就不替调用方做决定');
+});
+
+await asyncT('POST build_submission 显式传 include_source:true 仍然透传', async () => {
+  const calls = [];
+  const res = makeRes();
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', {
+      action: 'build_submission',
+      course_id: 'physik-1',
+      sheet_id: 'ub03',
+      include_source: true,
+      order: 'sheet-first',
+    }),
+    res,
+    fakeDeps(calls),
+  );
+  const [, input] = calls[0];
+  assert.equal(input.includeSource, true);
+  assert.equal(input.order, 'sheet-first');
 });
 await asyncT('POST 未知 action → 400；GET 未知 action → 400', async () => {
   let res = makeRes();

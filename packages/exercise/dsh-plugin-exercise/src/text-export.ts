@@ -23,7 +23,7 @@
 // 纯函数部分（renderTextExport）不碰 fs → 可单测（test/check11.mjs）。
 // ============================================================
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, isAbsolute, relative, sep } from 'node:path';
 import { sheetProgress, type CourseIndex, type Mistake, type Sheet } from './types.js';
 
@@ -67,6 +67,22 @@ const cell = (s: string): string => (s ?? '').replace(/\|/g, '\\|').replace(/\r?
 
 /** 文件名安全化（课程/套题 id 已受限，但导出层再兜一层）。 */
 const safe = (s: string): string => s.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'unnamed';
+
+/** 某门课在导出目录里的子目录名（与 renderTextExport 用的是同一个规则）。 */
+export const courseExportDir = (courseId: string): string => safe(courseId);
+
+/**
+ * 「只导出某一门课」时的同步范围：这门课自己的目录 + 两个全库视图（总览 / 错题本）。
+ *
+ * 为什么需要它：清理逻辑是"上次清单里有、这次没产出 → 删"。只渲染一门课再去同步，
+ * 其它课程的 md 全都"这次没产出"，会被当成已删除的套题清掉。
+ * 所以单课程导出照样渲染**全库**（总览和错题本才不会缩水成一门课），
+ * 再用这个范围限定"只动这门课的文件"。
+ */
+export function courseExportScope(courseId: string): (rel: string) => boolean {
+  const prefix = `${courseExportDir(courseId)}/`;
+  return (rel) => rel === 'README.md' || rel === 'mistakes.md' || rel.startsWith(prefix);
+}
 
 const VERDICT_LABEL: Record<string, string> = {
   correct: 'Richtig',
@@ -283,21 +299,33 @@ export function readManifest(rootDir: string): string[] {
   }
 }
 
+export interface SyncOptions {
+  /**
+   * 只同步命中的相对路径（缺省 = 全部）。
+   * 范围之外的文件**既不写也不删**，它们在清单里的旧条目原样保留 ——
+   * 下一次全量导出仍然能清理掉那些已经不存在的套题。
+   */
+  only?: (rel: string) => boolean;
+}
+
 /**
  * 把渲染结果同步到磁盘。
  *
  * @param rootDir 绝对路径（调用方负责解析配置里的相对路径）
+ * @param options.only 限定同步范围（单课程导出用，见 courseExportScope）
  * @returns 写了哪些、哪些没变、删了哪些（给界面/工具回显）
  */
-export function syncTextExport(rootDir: string, files: TextExportFiles): SyncResult {
+export function syncTextExport(rootDir: string, files: TextExportFiles, options: SyncOptions = {}): SyncResult {
   const root = isAbsolute(rootDir) ? rootDir : join(process.cwd(), rootDir);
   if (!existsSync(root)) mkdirSync(root, { recursive: true });
 
+  const inScope = options.only ?? ((): boolean => true);
   const previous = readManifest(root);
   const written: string[] = [];
   const unchanged: string[] = [];
 
   for (const [rel, content] of files) {
+    if (!inScope(rel)) continue;
     const abs = join(root, rel);
     const dir = dirname(abs);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -315,9 +343,10 @@ export function syncTextExport(rootDir: string, files: TextExportFiles): SyncRes
     written.push(rel);
   }
 
-  // 只清理"上次导出写过、这次不再产出"的文件
+  // 只清理"上次导出写过、这次不再产出"的文件（且只在本次同步范围内）
   const removed: string[] = [];
   for (const rel of previous) {
+    if (!inScope(rel)) continue;
     if (files.has(rel)) continue;
     const abs = join(root, rel);
     if (!existsSync(abs)) continue;
@@ -332,18 +361,25 @@ export function syncTextExport(rootDir: string, files: TextExportFiles): SyncRes
   }
 
   // 清掉空目录（只往下删一层，避免误删深层结构）
+  //
+  // ⚠️ 必须用 rmdirSync：`rmSync(dir, { recursive: false })` 对目录直接抛
+  //    ERR_FS_EISDIR（force 只吞"不存在"），被下面的 catch 吃掉后空目录永远留着。
+  //    rmdirSync 只删得掉空目录，所以这里即使判断有竞态也删不到有内容的目录。
   for (const dir of readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory())) {
     const abs = join(root, dir.name);
     try {
-      if (readdirSync(abs).length === 0) rmSync(abs, { recursive: false, force: true });
+      if (readdirSync(abs).length === 0) rmdirSync(abs);
     } catch {
       /* ignore */
     }
   }
 
+  // 清单 = 范围外的旧条目（没动过，照旧记着）+ 范围内这次产出的文件
+  const manifest = new Set<string>(previous.filter((rel) => !inScope(rel)));
+  for (const rel of files.keys()) if (inScope(rel)) manifest.add(rel);
   writeFileSync(
     join(root, EXPORT_MANIFEST),
-    `${JSON.stringify({ version: 1, files: [...files.keys()].sort() }, null, 2)}\n`,
+    `${JSON.stringify({ version: 1, files: [...manifest].sort() }, null, 2)}\n`,
     'utf-8',
   );
 

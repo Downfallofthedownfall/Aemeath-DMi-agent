@@ -22,7 +22,7 @@
 // ============================================================
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -226,6 +226,27 @@ function ensureDir(dir: string): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
+/**
+ * 把校验过的中间文件换到正式位置。
+ *
+ * 同目录 rename 是原子替换；Windows 上遇 EPERM/EBUSY（杀软 / OneDrive 同步
+ * 短暂占着句柄）小睡重试几次 —— 与 store 的原子写同一个理由。
+ * 重试后仍失败就抛，由调用方报"无法覆盖"（**不**退化成先删后写：那会在失败时
+ * 把旧的提交件也弄丢）。
+ */
+function moveIntoPlace(from: string, to: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (attempt >= 4 || (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES')) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60 * (attempt + 1));
+    }
+  }
+}
+
 /** 合并若干个 PDF，**保持每页原始尺寸**（原卷常是 A4，解答也是 A4，但不假设）。 */
 export async function mergePdfs(parts: string[], outPdf: string): Promise<{ pages: number; bytes: number }> {
   if (!Array.isArray(parts) || parts.length === 0) {
@@ -298,9 +319,14 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
     warn(`[aemeath-exercise] 原卷 PDF 不存在，改为只输出解答：${sheetAbs}`);
   }
 
-  // 需要合并时先打到中间文件：直接打到 outAbs 再读回来合并，会在 save 时
-  // 覆盖掉正要读的输入（而且是同一个路径 → 读到空文件）。
-  const printTarget = hasSheet ? `${outAbs}.solutions.pdf` : outAbs;
+  // **始终**先打到中间文件，校验通过后才落到 outAbs。
+  //
+  //   · 合并时必须如此：直接打到 outAbs 再读回来合并，会在 save 时覆盖掉正要读的输入。
+  //   · 不合并时同样必须如此（早先这条路径直接打到 outAbs）：outAbs 上通常躺着
+  //     **上一次**的提交件，而浏览器"退出码 0 但没写文件"是真实存在的 ——
+  //     旧文件能通过下面"存在 / 够大 / 可解析"全部校验，于是把旧答案当成这次的
+  //     结果报成功。中间文件每次开打前都会清掉，就不存在"残留的旧产物"。
+  const printTarget = `${outAbs}.solutions.pdf`;
 
   try {
     ensureDir(dirname(outAbs));
@@ -332,11 +358,22 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
 
     // 清掉上一轮的中间产物：Chromium 写失败时会**保留旧文件**，
     // 不清掉就会把上次的 PDF 当成这次的结果提交上去（静默错文件，最坏的一种 bug）。
-    if (printTarget !== outAbs) {
-      try {
-        unlinkSync(printTarget);
-      } catch {
-        /* 不存在就算了 */
+    try {
+      unlinkSync(printTarget);
+    } catch (err) {
+      // 不存在是常态；**存在却删不掉**（被别的程序占着）就不能往下走 ——
+      // 否则这份删不掉的旧文件又会冒充这次的产物。
+      if (existsSync(printTarget)) {
+        return {
+          ok: false,
+          merged: false,
+          renderer: chrome.name,
+          command,
+          error: tr(
+            `无法清理上一次的中间文件（可能正被其它程序打开）：${printTarget}：${errText(err)}`,
+            `Could not remove the previous intermediate file (it may be open in another program): ${printTarget}: ${errText(err)}`,
+          ),
+        };
       }
     }
 
@@ -496,6 +533,27 @@ export async function renderSubmissionPdf(opts: RenderOptions): Promise<RenderRe
         unlinkSync(printTarget);
       } catch (err) {
         warn(`[aemeath-exercise] 中间文件删除失败（不影响结果）：${printTarget}：${errText(err)}`);
+      }
+    } else {
+      // 不合并：把校验过的中间文件换到正式位置（同目录 rename = 原子替换）。
+      try {
+        moveIntoPlace(printTarget, outAbs);
+      } catch (err) {
+        // 典型原因：旧的提交 PDF 正被阅读器打开（Windows 上打开的文件不能被替换）。
+        // 新 PDF 留在中间文件里 —— 用户手上有可用产物，且绝不把旧文件报成新的。
+        return {
+          ok: false,
+          merged: false,
+          pdfPath: printTarget,
+          bytes: rawSize,
+          pages,
+          renderer: chrome.name,
+          command,
+          error: tr(
+            `无法覆盖旧的提交 PDF（可能正被其它程序打开）：${errText(err)}（新生成的 PDF 已保留在 ${printTarget}）`,
+            `Could not replace the previous submission PDF (it may be open in another program): ${errText(err)} (the new PDF is kept at ${printTarget})`,
+          ),
+        };
       }
     }
 

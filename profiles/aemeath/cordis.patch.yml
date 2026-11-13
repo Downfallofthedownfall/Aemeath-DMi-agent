@@ -155,7 +155,8 @@
         lectureDataDir: 'packages/library/physicist/lectures'
         autoCollectMistakes: true
         studentName: ''
-        includeSourcePdf: true
+        # 2026-10-24 定案：提交件只含自己生成的页面。想合并原卷就改成 true（界面和工具都认这个值）
+        includeSourcePdf: false
         submissionOrder: 'sheet-first'
         chromePath: ''
     # —— M5 前端 UI 插件（browser 半区经 dsh.client 声明进入 __DSH_BOOT__）——

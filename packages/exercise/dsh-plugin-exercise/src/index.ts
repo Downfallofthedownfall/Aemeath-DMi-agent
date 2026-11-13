@@ -20,6 +20,7 @@
 // ============================================================
 
 import { join, isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import type { Context } from '@deepseek-ai/cordis';
@@ -47,7 +48,7 @@ import { renderPdfPages, type RenderedPage } from './pdf-image.js';
 import { segmentWithVision, type AskVision, type VisionPage } from './vision.js';
 import { collectMathIssuesInText } from './mathlive-compat.js';
 import { imageFileName, sniffImageType } from './images.js';
-import { renderTextExport, syncTextExport, type CourseSnapshot } from './text-export.js';
+import { courseExportScope, renderTextExport, syncTextExport, type CourseSnapshot } from './text-export.js';
 import {
   buildProgressDigest,
   daysUntil,
@@ -1963,24 +1964,31 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (!course || !sheet) return { ok: false, error: tr('课程或题集不存在', 'Course or sheet not found') } as const;
     if (!sheet.problems.length) return { ok: false, error: tr('这套题还没有题目', 'This sheet has no problems yet') } as const;
 
-    const built = printHtmlOf(input.courseId, input.sheetId, { draft: input.draft ?? false });
+    // 草稿（自查用，多一页"经验"）与正式提交件**分开落盘、互不影响**：
+    // 草稿不算"已提交"，也绝不能盖掉已经生成好的正式 PDF（见下方 outPdf）。
+    const draft = input.draft ?? false;
+    const built = printHtmlOf(input.courseId, input.sheetId, { draft });
     if (!built.ok) return { ok: false, error: built.error } as const;
 
     // 打印页落到 temp/（gitignored），file:// 打开时不需要 dsh 认证 cookie
-    const tmpDir = isAbsolute('temp/exercise') ? 'temp/exercise' : join(process.cwd(), 'temp', 'exercise');
+    const tmpDir = join(process.cwd(), 'temp', 'exercise');
     try {
       if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
     } catch {
       /* 忽略：后面写文件会报错 */
     }
-    const htmlFile = join(tmpDir, `${input.courseId}-${input.sheetId}.html`);
+    // ⚠️ 文件名必须用**净化后的** id。store 查找时会自己净化入参，所以
+    //    `course_id: "../../foo"` 也能查到课程 foo；直接拿入参拼路径的话，
+    //    打印页就写到 temp/exercise 外面去了。
+    const htmlFile = join(tmpDir, `${safeCourseId(input.courseId) || 'course'}-${safeSheetId(input.sheetId)}${draft ? '.draft' : ''}.html`);
     try {
       writeFileSync(htmlFile, built.html, 'utf-8');
     } catch (e) {
       return { ok: false, error: tr(`写打印页失败：${(e as Error).message}`, `Failed to write the print page: ${(e as Error).message}`) } as const;
     }
 
-    const outPdf = store.submissionFile(input.courseId, input.sheetId, sheet);
+    const submissionPdf = store.submissionFile(input.courseId, input.sheetId, sheet);
+    const outPdf = draft ? submissionPdf.replace(/(\.pdf)?$/i, '.draft.pdf') : submissionPdf;
     const includeSource = input.includeSource ?? includeSourceDefault;
     const sheetPdf = includeSource && store.hasSourcePdf(input.courseId, input.sheetId)
       ? store.sourcePdfFile(input.courseId, input.sheetId)
@@ -1999,7 +2007,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
 
     const res = await renderSubmissionPdf({
-      url: `file:///${htmlFile.replace(/\\/g, '/')}`,
+      // pathToFileURL 而不是手拼 `file:///`：路径里的 `#` `?` `%` 会被当成片段/查询/转义，
+      // 浏览器找不到文件就打印它自己的**错误页**，而错误页也是一份合法 PDF。
+      url: pathToFileURL(htmlFile).href,
       outPdf,
       sheetPdf,
       order: input.order ?? (submissionOrder as 'sheet-first' | 'solutions-first'),
@@ -2017,11 +2027,14 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       } as const;
     }
 
-    sheet.submitted_at = Date.now();
-    sheet.submission_pdf = outPdf.split(/[\\/]/).pop() ?? submissionFileName(input.courseId, sheet);
-    sheet.submission_pages = res.pages ?? 0;
-    store.writeSheet(input.courseId, sheet);
-    store.writeSheetMarkdown(input.courseId, sheet);
+    // 只有正式提交件才记"已提交"：草稿若也写 submitted_at，握手包会把这套题报成已交。
+    if (!draft) {
+      sheet.submitted_at = Date.now();
+      sheet.submission_pdf = outPdf.split(/[\\/]/).pop() ?? submissionFileName(input.courseId, sheet);
+      sheet.submission_pages = res.pages ?? 0;
+      store.writeSheet(input.courseId, sheet);
+      store.writeSheetMarkdown(input.courseId, sheet);
+    }
 
     // 公式里有没有 KaTeX 不认识的命令（讲义 MathLive 宏已在渲染期归一，
     // 这里抓的是"归一之后仍然解析不了"的）：PDF 会和预览一样显示红字，
@@ -2042,9 +2055,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
 
     log(
-      `提交包已生成：${outPdf}（${res.pages} 页 / ${Math.round((res.bytes ?? 0) / 1024)} KB）` +
+      `${draft ? '草稿 PDF' : '提交包'}已生成：${outPdf}（${res.pages} 页 / ${Math.round((res.bytes ?? 0) / 1024)} KB）` +
         `renderer=${res.renderer ?? chrome.name} merged=${res.merged}`,
     );
+    const query = `course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}`;
     return {
       ok: true,
       file: outPdf,
@@ -2052,8 +2066,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       bytes: res.bytes ?? 0,
       renderer: res.renderer ?? chrome.name,
       math_warnings: mathWarnings,
-      url: `/aemeath/api/exercise/submission?course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}&download=1`,
-      print_url: `/aemeath/api/exercise/print?course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}`,
+      draft,
+      // `submission` 端点只发正式提交件，所以草稿不给下载地址（用返回的 file 路径）
+      ...(draft ? {} : { url: `/aemeath/api/exercise/submission?${query}&download=1` }),
+      print_url: `/aemeath/api/exercise/print?${query}${draft ? '&draft=1' : ''}`,
     } as const;
   };
 
@@ -2068,24 +2084,42 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
    * 确定性（内容不变就不产生 diff）+ 只清理自己写过的文件（见 text-export.ts）。
    */
   const exportText = async (input: { courseId?: string } = {}) => {
-    const ids = input.courseId ? [input.courseId] : store.listCourses();
+    // ⚠️ 始终渲染**全库**，「只导出某一门课」靠同步范围来限定（见 courseExportScope）。
+    //    早先只渲染那一门课再同步：其它课程的 md 都成了"这次没产出"，被清理逻辑
+    //    当作已删除的套题删掉，根目录的总览和错题本也缩水成一门课。
     const courses: CourseSnapshot[] = [];
-    for (const id of ids) {
+    for (const id of store.listCourses()) {
       const index = store.readIndex(id);
       if (!index) continue;
       courses.push({ index, sheets: store.listSheets(id) });
     }
     if (!courses.length) return { ok: false, error: tr('还没有课程（先导入或新建一套题）', 'No courses yet (import or create a sheet first)') } as const;
 
-    const mistakes = store.readMistakes().filter((m) => !input.courseId || m.course_id === input.courseId);
-    const files = renderTextExport({ courses, mistakes });
+    let only: ((rel: string) => boolean) | undefined;
+    if (input.courseId) {
+      const wanted = safeCourseId(input.courseId);
+      const target = courses.find((c) => c.index.course_id === input.courseId || safeCourseId(c.index.course_id) === wanted);
+      if (!target) {
+        return {
+          ok: false,
+          error: tr(
+            `没有课程 "${input.courseId}"。可用的 course_id：${courses.map((c) => c.index.course_id).join('、')}`,
+            `No course "${input.courseId}". Available course_id values: ${courses.map((c) => c.index.course_id).join(', ')}`,
+          ),
+        } as const;
+      }
+      only = courseExportScope(target.index.course_id);
+    }
+
+    const files = renderTextExport({ courses, mistakes: store.readMistakes() });
     try {
-      const r = syncTextExport(textExportDir, files);
+      const r = syncTextExport(textExportDir, files, { only });
       log(
         `文本导出：${r.dir}（写 ${r.written.length} · 未变 ${r.unchanged.length}` +
           `${r.removed.length ? ` · 删 ${r.removed.length}` : ''}）`,
       );
-      return { ok: true, ...r, files: [...files.keys()].sort() } as const;
+      const exported = [...files.keys()].filter((rel) => !only || only(rel)).sort();
+      return { ok: true, ...r, files: exported } as const;
     } catch (e) {
       return { ok: false, error: tr(`写导出目录失败：${(e as Error).message}`, `Failed to write the export directory: ${(e as Error).message}`) } as const;
     }
@@ -2641,7 +2675,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       parameters: {
         course_id: { type: 'string', required: true, description: '课程标识' },
         sheet_id: { type: 'string', required: true, description: '套题标识' },
-        include_source: { type: 'boolean', description: '是否合并原卷 PDF（缺省 false：只输出生成的解答页）' },
+        include_source: { type: 'boolean', description: '是否合并原卷 PDF（缺省取配置 includeSourcePdf，其默认值为 false：只输出生成的解答页）' },
       },
       output: { schema: { type: 'json' }, render: renderJson },
       execute: async (args: { course_id: string; sheet_id: string; include_source?: boolean }) => {
@@ -2777,9 +2811,12 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       description:
         '把习题库导出成**纯文本 markdown**（题干/答案/检查/经验/错题），方便 git 管理：' +
         '确定性输出（内容没变不产生 diff），套题删除后重新导出会移除对应文件。' +
-        '目录由 config.textExportDir 决定（默认数据目录同级的 exercises-md/）。',
+        '目录由 config.textExportDir 决定（默认 packages/library/physicist-md/）。',
       parameters: {
-        course_id: { type: 'string', description: '只导出某一门课（缺省 = 全部）' },
+        course_id: {
+          type: 'string',
+          description: '只更新某一门课的文件（缺省 = 全部）；其它课程已导出的文件原样保留，总览与错题本照常按全库刷新',
+        },
       },
       output: { schema: { type: 'json' }, render: renderJson },
       execute: async (args: { course_id?: string }) => {

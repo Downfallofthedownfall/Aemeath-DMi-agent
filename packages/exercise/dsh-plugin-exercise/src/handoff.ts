@@ -177,8 +177,11 @@ export function readExerciseHandoff(file: string): ExerciseHandoff | null {
  * 扫描目录下的习题握手包。
  *
  * 文件名刻意用 `*-exercise-handoff.json` 而不是 lecture 的 `*-handoff.json`：
- * 主 agent 的 `lecture_import_handoff` 用 `*-handoff.json` 做 glob，
  * 两边同名会让同一批数据被两个工具各导一次（记忆重复、审计噪音）。
+ *
+ * ⚠️ 光靠这个名字并不够 —— `x-exercise-handoff.json` 同样以 `-handoff.json` 结尾，
+ *    所以 lecture 的 `findHandoffFiles` 里有一条对应的**显式排除**
+ *    （lecture/src/import-handoff.ts）。两处要一起改。
  */
 export function findExerciseHandoffs(dir: string): string[] {
   const abs = isAbsolute(dir) ? dir : join(process.cwd(), dir);

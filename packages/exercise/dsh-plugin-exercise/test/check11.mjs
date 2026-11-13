@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   EXPORT_HEADER,
+  courseExportScope,
   readManifest,
   renderCourseText,
   renderIndexText,
@@ -229,6 +230,90 @@ await asyncT('syncTextExport：删掉套题后移除对应 md，且不碰手工�
     assert.ok(!existsSync(join(dir, 'physik-1', 'ub02.md')));
     assert.ok(existsSync(keep), '手工文件不能被删');
     assert.ok(existsSync(join(dir, 'physik-1', 'ub01.md')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- 只导出某一门课 ----
+//
+// 真 bug：早先「只导出某一门课」是只渲染那一门课再同步，而清理逻辑是
+// "上次清单里有、这次没产出 → 删" —— 于是其它课程的 md 被当成已删除的套题清掉，
+// 根目录的总览和错题本也缩水成一门课。
+const course2 = { ...course, course_id: 'mathe-1', title: 'Mathematik I', module_code: 'MAT-1' };
+const sheetM = { ...sheet1, id: 'ub01', number: 1, title: 'Folgen' };
+const twoCourses = {
+  courses: [
+    { index: course, sheets: [sheet1, sheet2] },
+    { index: course2, sheets: [sheetM] },
+  ],
+  mistakes: [mistake],
+};
+
+await asyncT('syncTextExport(only)：只导出一门课时，其它课程的文件和清单条目原样保留', async () => {
+  const dir = tmpRoot();
+  try {
+    const all = renderTextExport(twoCourses);
+    syncTextExport(dir, all);
+    const otherFile = join(dir, 'mathe-1', 'ub01.md');
+    const otherBefore = readFileSync(otherFile, 'utf-8');
+
+    // physik-1 改了一套题，然后只导出 physik-1（渲染仍是全库，范围限定在这门课）
+    const edited = renderTextExport({
+      ...twoCourses,
+      courses: [{ index: course, sheets: [{ ...sheet1, title: '改过的标题' }, sheet2] }, twoCourses.courses[1]],
+    });
+    const r = syncTextExport(dir, edited, { only: courseExportScope('physik-1') });
+
+    assert.deepEqual(r.removed, [], '别的课程一个文件都不能删');
+    assert.ok(r.written.includes('physik-1/ub01.md'));
+    assert.ok(!r.written.some((f) => f.startsWith('mathe-1/')), '范围外的文件不重写');
+    assert.equal(readFileSync(otherFile, 'utf-8'), otherBefore);
+    // 总览仍然是全库视图（两门课都在）
+    const readme = readFileSync(join(dir, 'README.md'), 'utf-8');
+    assert.ok(readme.includes('Mathematik I') && readme.includes('Physik I'), '总览不能缩水成一门课');
+    // 清单：范围外的旧条目还记着 → 之后的全量导出仍能清理它们
+    assert.deepEqual(readManifest(dir), [...all.keys()].sort());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await asyncT('syncTextExport(only)：范围内删掉的套题照样清理；范围外的不动', async () => {
+  const dir = tmpRoot();
+  try {
+    syncTextExport(dir, renderTextExport(twoCourses));
+    // 两门课各少一套题，但只导出 physik-1
+    const shrunk = renderTextExport({
+      courses: [
+        { index: course, sheets: [sheet1] },
+        { index: course2, sheets: [] },
+      ],
+      mistakes: [mistake],
+    });
+    const r = syncTextExport(dir, shrunk, { only: courseExportScope('physik-1') });
+    assert.deepEqual(r.removed, ['physik-1/ub02.md']);
+    assert.ok(existsSync(join(dir, 'mathe-1', 'ub01.md')), '范围外的文件留给下一次全量导出处理');
+    assert.ok(readManifest(dir).includes('mathe-1/ub01.md'));
+
+    // 随后的全量导出把它清掉，并且**连空目录一起**清掉
+    const full = syncTextExport(dir, renderTextExport({ courses: [{ index: course, sheets: [sheet1] }], mistakes: [mistake] }));
+    assert.deepEqual(full.removed, ['mathe-1/README.md', 'mathe-1/ub01.md']);
+    assert.ok(!existsSync(join(dir, 'mathe-1')), '空目录要删掉（曾用 rmSync 删目录：抛错被吞，目录永远留着）');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await asyncT('syncTextExport：有手工文件的目录不算空，不会被删', async () => {
+  const dir = tmpRoot();
+  try {
+    syncTextExport(dir, renderTextExport(twoCourses));
+    const keep = join(dir, 'mathe-1', 'notes-by-hand.md');
+    writeFileSync(keep, '我自己写的\n', 'utf-8');
+    syncTextExport(dir, renderTextExport({ courses: [twoCourses.courses[0]], mistakes: [mistake] }));
+    assert.ok(existsSync(keep), '手工文件和它所在的目录都要留着');
+    assert.ok(!existsSync(join(dir, 'mathe-1', 'ub01.md')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

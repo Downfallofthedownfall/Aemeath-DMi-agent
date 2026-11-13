@@ -86,7 +86,8 @@
         lectureDataDir: 'packages/library/physicist/lectures'
         autoCollectMistakes: true
         studentName: ''
-        includeSourcePdf: true
+        # 2026-10-24 定案：提交件只含自己生成的页面。想合并原卷就改成 true（界面和工具都认这个值）
+        includeSourcePdf: false
         submissionOrder: 'sheet-first'
         # 空 = 自动发现 Chrome/Edge/Chromium（Windows Edge 一定在）
         chromePath: ''

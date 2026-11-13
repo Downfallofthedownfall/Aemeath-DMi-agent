@@ -14,7 +14,7 @@
 // 用法：node test/check4.mjs（需先 npm run build，lib/ 是可执行产物）
 // ============================================================
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -51,13 +51,15 @@ function resetTmp() {
   mkdirSync(TMP, { recursive: true });
 }
 
-async function makeOnePagePdf(file) {
+async function makePdf(file, pages) {
   const doc = await PDFDocument.create();
   // A4，与真实原卷/解答页同尺寸
-  doc.addPage([595.28, 841.89]);
+  for (let i = 0; i < pages; i++) doc.addPage([595.28, 841.89]);
   const bytes = await doc.save({ useObjectStreams: false });
   writeFileSync(file, bytes);
 }
+
+const makeOnePagePdf = (file) => makePdf(file, 1);
 
 // ============================================================
 // 测试固定数据
@@ -483,6 +485,66 @@ await t('renderSubmissionPdf：无原卷时 merged 为 false（失败结果也�
   assert.equal(res.ok, false);
   assert.equal(res.merged, false);
   assert.equal(typeof res.error, 'string');
+});
+
+// ---- 假浏览器：退出码 0，但什么都不写 ----
+//
+// 这是真机上真实出现过的情况（Windows：浏览器正常退出、PDF 没生成）。
+// Windows 用 cmd.exe 顶替：拿到一串它不认识的参数、stdin 是 NUL → 直接以 0 退出；
+// 其它平台写一个 `exit 0` 的脚本。找不到就跳过（不让测试因环境而红）。
+function silentBrowser() {
+  if (process.platform === 'win32') {
+    const cmd = process.env.ComSpec;
+    return cmd && existsSync(cmd) ? cmd : null;
+  }
+  const script = join(TMP, 'fake-browser.sh');
+  writeFileSync(script, '#!/bin/sh\nexit 0\n', 'utf-8');
+  chmodSync(script, 0o755);
+  return script;
+}
+
+await t('renderSubmissionPdf：浏览器退出码 0 却没写文件 → 不能把上一次的 PDF 报成成功', async () => {
+  const browser = silentBrowser();
+  if (!browser) {
+    console.log('    （跳过：没有可用的假浏览器）');
+    return;
+  }
+  // 上一次的提交件：5 页、大于 1KB、可解析 —— 足以通过"存在 / 够大 / 可解析"三项校验。
+  // 修复前不合并原卷时直接打印到这个路径，这份旧文件就被当成了本次产物。
+  const out = join(TMP, 'stale-submission.pdf');
+  await makePdf(out, 5);
+  const before = readFileSync(out);
+  assert.ok(before.byteLength > 1024, '夹具要大于 MIN_PDF_BYTES，否则测不到这个 bug');
+
+  const res = await renderSubmissionPdf({
+    url: 'file:///nowhere.html',
+    outPdf: out,
+    chromePath: browser,
+    timeoutMs: 15_000,
+  });
+  assert.equal(res.ok, false, '没生成新 PDF 就必须报失败');
+  assert.match(res.error, /没有生成 PDF|produced no PDF/);
+  assert.ok(readFileSync(out).equals(before), '失败时旧的提交件要原样留着');
+  assert.ok(!existsSync(`${out}.solutions.pdf`), '不该留下中间文件');
+});
+
+await t('renderSubmissionPdf：上一轮残留的中间文件开打前就被清掉（不会冒充本次产物）', async () => {
+  const browser = silentBrowser();
+  if (!browser) {
+    console.log('    （跳过：没有可用的假浏览器）');
+    return;
+  }
+  const out = join(TMP, 'leftover.pdf');
+  // 模拟上一轮异常中断留下的中间文件：同样是一份完全合法的 PDF
+  await makePdf(`${out}.solutions.pdf`, 5);
+  const res = await renderSubmissionPdf({
+    url: 'file:///nowhere.html',
+    outPdf: out,
+    chromePath: browser,
+    timeoutMs: 15_000,
+  });
+  assert.equal(res.ok, false);
+  assert.ok(!existsSync(out), '不能把残留的中间文件搬成正式提交件');
 });
 
 await t('katexCssInlined：真的找到了 katex.min.css（分数线/上下标靠它）', () => {

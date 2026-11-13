@@ -751,11 +751,15 @@ export async function handleExerciseHttp(
             jsonError(res, 400, 'course_id/sheet_id required');
             return;
           }
-          const order = parsed.order === 'solutions-first' ? 'solutions-first' : 'sheet-first';
+          // ⚠️ 没传就是 undefined，**不要**在这里折成 false / 'sheet-first'：
+          //    下游是 `input.includeSource ?? 配置默认`，折成具体值会让配置里的
+          //    includeSourcePdf / submissionOrder 对界面永远不生效（界面从不传这两个字段）。
+          //    "默认不合并原卷"由配置默认值（false）保证，不靠这一层。
+          const order = parsed.order === 'solutions-first' || parsed.order === 'sheet-first' ? parsed.order : undefined;
           const r = await deps.onBuildSubmission({
             courseId,
             sheetId,
-            includeSource: parsed.include_source === true,
+            includeSource: typeof parsed.include_source === 'boolean' ? parsed.include_source : undefined,
             order,
             draft: parsed.draft === true,
           });
