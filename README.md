@@ -42,7 +42,9 @@ knowledge, no cross-talk.
 ### Requirements
 
 - **Windows 10/11** for the main app (physicist + Aemeath, Electron shell): Node.js ≥ 22.13, Python ≥ 3.10.
-- **macOS** for Lecture Mode and Übungen only (no desktop shell, no Python): Node.js ≥ 20.
+- **macOS** for Lecture Mode and Übungen only (no desktop shell, no Python): Node.js ≥ 22.13
+  (same as the repo's `engines`; session search uses `node:sqlite` and PDF import needs it).
+  The launchers refuse anything below 20 and print a warning for 20 – 22.12.
 - A DeepSeek API key (or another provider configured in dsh).
 
 ### Quick start (Windows)
@@ -73,6 +75,8 @@ npm start
 
 # Übungen — exercise workbench as its own app (PDF in, submission PDF out)
 .\scripts\dsh.ps1 --profile exercise --port 3084  # → http://127.0.0.1:3084
+# …or just double-click exercise-launch.bat / lecture-launch.bat in the repo root:
+# they install, build, link the profile into .dsh-home and open the browser once it is up.
 
 # Headless smoke test (no browser)
 .\scripts\dsh.ps1 --profile aemeath-run "Hi, introduce yourself"
@@ -260,7 +264,9 @@ npm test -w @aemeath/dsh-plugin-common            # and worldbook / memory / ret
 ### 环境要求
 
 - **Windows 10/11**（主程序：physicist + 爱弥斯 + Electron 壳）：Node.js ≥ 22.13，Python ≥ 3.10。
-- **macOS**（仅课堂模式与习题模式，无桌宠壳、无需 Python）：Node.js ≥ 20。
+- **macOS**（仅课堂模式与习题模式，无桌宠壳、无需 Python）：Node.js ≥ 22.13
+  （与仓库根 `engines` 一致；会话搜索用 `node:sqlite`，PDF 导入也依赖它）。
+  启动脚本只拦 20 以下，20 – 22.12 会放行并给出警告。
 - DeepSeek API Key（或在 dsh 中配置其他服务商）。
 
 ### 快速开始（Windows）
@@ -291,6 +297,8 @@ npm start
 
 # Übungen 习题模式（独立 app：PDF 进 → 提交 PDF 出）
 .\scripts\dsh.ps1 --profile exercise --port 3084  # → http://127.0.0.1:3084
+# …或者直接双击仓库根的 exercise-launch.bat / lecture-launch.bat：
+# 自动装依赖、构建、把 profile 接到 .dsh-home，服务就绪后打开浏览器。
 
 # headless 冒烟测试（无需浏览器）
 .\scripts\dsh.ps1 --profile aemeath-run "你好，自我介绍"

@@ -56,16 +56,19 @@ AEMEATH_LECTURE_PORT=4000 ./lecture-launch.command   # 入口也支持换端口
 | 1 | 已在 PATH 里的 `node` | 如果终端能用，就直接用 |
 | 2 | `/opt/homebrew/bin` | **Apple Silicon 的 Homebrew** |
 | 3 | `/usr/local/bin` | Intel Mac 的 Homebrew / 官网安装包 |
-| 4 | `~/.nvm/versions/node/*/bin` | nvm（取任意一个版本） |
+| 4 | `~/.nvm/versions/node/*/bin` | nvm（装了多个版本时取**最新**的） |
 | 5 | `~/.volta/bin`、`~/.fnm/...` | 其他版本管理器 |
 
 **都找不到**会明确报错并告诉你去哪装，不会静默失败。
 
-要求 **Node 20 或更新**。检查：
+要求 **Node 22.13 或更新**（与仓库根 `package.json` 的 `engines` 一致）。检查：
 
 ```bash
-node -v      # 应输出 v20.x 或更高
+node -v      # 应输出 v22.13 或更高
 ```
+
+低于 20 脚本直接拒绝；20 – 22.12 会放行但给出警告 —— 会话搜索用的 `node:sqlite`
+要 22.13 才免 flag 可用。遇到看不懂的报错，先升级 Node。
 
 没装的话：官网 https://nodejs.org 下 LTS 双击安装，或 `brew install node`。
 

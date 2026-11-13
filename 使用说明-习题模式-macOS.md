@@ -9,7 +9,7 @@
 
 | 需要 | 说明 |
 |---|---|
-| **Node 20+** | 唯一的硬依赖。脚本会自己找（Homebrew / nvm / volta / fnm 都试） |
+| **Node 22.13+** | 唯一的硬依赖。脚本会自己找（Homebrew / nvm / volta / fnm 都试）。20 – 22.12 会放行但给警告：会话搜索和 PDF 导入依赖 22.13 |
 | **Chrome 或 Edge**（可选） | 用来把提交页打印成 PDF。没有也能用：界面会给「打开打印页」，你按 **⌘P → 存储为 PDF** 一样出文件 |
 | **DeepSeek API Key**（可选） | 只有「让爱弥斯检查」需要。**不用单独填**：用的是主 agent 那把全局 key（界面「设置 → Models」或 `$DSH_HOME/.credentials.yaml`）。不填也能导入/做题/生成 PDF/记错题 |
 | 不需要 Python | 习题模式不调 sympy / vision / tts / control（那是 Windows 主 agent 的事） |
@@ -59,7 +59,7 @@ AEMEATH_EXERCISE_PORT=4000 ./scripts/exercise-mac.sh
 
 按顺序，全部自动：
 
-1. **找 Node**（并按 `node -p process.versions.node` 检查 ≥ 20）
+1. **找 Node**（低于 20 直接拒绝；20 – 22.12 放行并警告；nvm 装了多个版本时取最新的）
 2. **检查 shell 可移植性**（macOS 自带 bash 3.2 对 `$VAR` 紧跟中文的写法会解析错，
    脚本里已有自检，改了脚本也能立刻发现）
 3. **装依赖**（仓库根 `npm install`，缺 `node_modules` 时）
@@ -271,7 +271,7 @@ packages/library/physicist/exercises/
 | `lectureDataDir` | `packages/library/physicist/lectures` | 只读，用于"开题时附课堂进度" |
 | `autoCollectMistakes` | `true` | 检查判错时自动进错题本（仍可手删/标掌握） |
 | `studentName` | 空 | 填了就印在提交 PDF 抬头（空着印签名线） |
-| `includeSourcePdf` | `true` | 提交包是否合并原卷 |
+| `includeSourcePdf` | `false` | 提交包是否合并原卷（界面和工具都认这个值；工具调用可用 `include_source` 单次覆盖） |
 | `submissionOrder` | `sheet-first` | `solutions-first` 则解答在前 |
 | `chromePath` | 空 | 空 = 自动找 Chrome/Edge；填绝对路径可指定 |
 | `llm.provider` / `llm.model` | 空 | **一般不用填**：留空就走全局 dsh 的 LLM（与主 agent 同一个 provider/模型/凭据）。只有想单独指定检查模型时才填 |
