@@ -418,13 +418,23 @@ export async function importHandoff(
 // 文件扫描：找出待导入的 handoff 包
 // ============================================================
 
-/** 列出目录下所有 `*-handoff.json`（按文件名排序）。 */
+/** 习题握手包的文件名后缀（exercise 插件写出的就是 `<course>-exercise-handoff.json`）。 */
+const EXERCISE_HANDOFF_SUFFIX = '-exercise-handoff.json';
+
+/**
+ * 列出目录下所有课堂握手包 `*-handoff.json`（按文件名排序）。
+ *
+ * ⚠️ 明确排除 `*-exercise-handoff.json`：它**同样以 `-handoff.json` 结尾**，
+ *    只按后缀筛会把习题包也扫进来。习题包有自己的导入工具（exercise_import_handoff），
+ *    两个握手目录一旦指向同一个共享文件夹，同一批数据就会被两个工具各导一次
+ *    （记忆重复、审计噪音）。想用本工具导习题包的通用字段，用 file 参数显式指定。
+ */
 export function findHandoffFiles(dir: string): string[] {
   const abs = isAbsolute(dir) ? dir : join(process.cwd(), dir);
   if (!existsSync(abs)) return [];
   try {
     return readdirSync(abs)
-      .filter((f) => f.endsWith('-handoff.json') || f === 'handoff.json')
+      .filter((f) => (f.endsWith('-handoff.json') && !f.endsWith(EXERCISE_HANDOFF_SUFFIX)) || f === 'handoff.json')
       .map((f) => join(abs, f))
       .sort();
   } catch {

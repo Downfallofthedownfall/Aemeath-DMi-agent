@@ -6,7 +6,7 @@
 //   D12 第 3 步引导不得直接给答案
 // ============================================================
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -390,6 +390,10 @@ t('writeHandoff / readHandoff 往返', () => {
   const h = buildHandoff({ index, candidatesByUnit: new Map([['u01', null]]), reviewByUnit: new Map([['u01', null]]) });
   const f = writeHandoff(h, tmp, 'c-handoff.json');
   assert.ok(existsSync(f));
+  // 原子写：先写临时文件再 rename —— 成功后不能留下 .tmp（同步盘会把它也传走）
+  assert.deepEqual(readdirSync(tmp).filter((n) => n.endsWith('.tmp')), []);
+  // 覆盖写同一个文件也要成立（每次复盘后都会重新导出）
+  assert.equal(writeHandoff(h, tmp, 'c-handoff.json'), f);
   const back = readHandoff(f);
   assert.ok(back);
   assert.equal(back.course.id, 'physik-1');

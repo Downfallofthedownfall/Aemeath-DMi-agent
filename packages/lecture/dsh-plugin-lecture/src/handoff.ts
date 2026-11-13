@@ -12,11 +12,12 @@
 //    （其注释写明「守门员已判定后调用」，service.ts:134）。
 // ============================================================
 
-import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import type { Candidates, CourseIndex, ReviewState, UnitMeta } from './types.js';
 import { tr } from './locale.js';
+import { writeFileAtomicSync } from './store.js';
 
 /** 握手包 schema（版本化：接收侧据 version 决定兼容策略）。 */
 export const handoffSchema = z.object({
@@ -169,12 +170,19 @@ export function filterReviewed(handoff: Handoff): Handoff {
   };
 }
 
-/** 写握手文件（默认落盘到 targetDir/handoff.json）。返回绝对路径。 */
+/**
+ * 写握手文件（默认落盘到 targetDir/handoff.json）。返回绝对路径。
+ *
+ * 原子写（先写同目录临时文件再 rename）：这个文件就是要被**搬到另一台机器**的那个，
+ * 目录常常是 OneDrive / 局域网共享。直接 writeFileSync 的话，同步客户端可能在
+ * 写到一半时把半截 JSON 传走，接收侧读到的是畸形文件（readHandoff 返回 null，
+ * 表现为"导入没反应"）。
+ */
 export function writeHandoff(handoff: Handoff, targetDir: string, filename = 'handoff.json'): string {
   const abs = isAbsolute(targetDir) ? targetDir : join(process.cwd(), targetDir);
   if (!existsSync(abs)) mkdirSync(abs, { recursive: true });
   const out = join(abs, filename);
-  writeFileSync(out, JSON.stringify(handoff, null, 2), 'utf-8');
+  writeFileAtomicSync(out, JSON.stringify(handoff, null, 2));
   return out;
 }
 

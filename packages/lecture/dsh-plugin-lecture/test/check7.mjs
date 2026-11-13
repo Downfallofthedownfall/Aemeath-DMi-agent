@@ -337,6 +337,21 @@ t('findHandoffFiles 找到 *-handoff.json', () => {
   assert.ok(files.some((f) => f.endsWith('physik-1-handoff.json')));
 });
 
+t('findHandoffFiles 不扫习题握手包（*-exercise-handoff.json 也以 -handoff.json 结尾）', () => {
+  // 习题包有自己的导入工具。两个握手目录指向同一个共享文件夹时，
+  // 只按后缀筛会让同一批数据被 lecture 和 exercise 各导一次。
+  const dir = mkdtempSync(join(tmpdir(), 'lec-handoff-mix-'));
+  try {
+    writeHandoff(mkHandoff(), dir, 'physik-1-handoff.json');
+    writeHandoff(mkHandoff(), dir, 'physik-1-exercise-handoff.json');
+    writeHandoff(mkHandoff(), dir, 'handoff.json');
+    const names = findHandoffFiles(dir).map((f) => f.split(/[\\/]/).pop());
+    assert.deepEqual(names, ['handoff.json', 'physik-1-handoff.json']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 t('findHandoffFiles 目录不存在 → 空数组（不抛）', () => {
   assert.deepEqual(findHandoffFiles(join(tmp, 'nope')), []);
 });
