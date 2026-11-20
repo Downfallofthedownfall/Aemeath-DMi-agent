@@ -1590,4 +1590,18 @@ t('导入到记忆的内容要能被读回来（跨 preset）', () => {
   assert.match(status[0], /catch \{\s*\n\s*\/\* 拿不到记忆就不报/, '取记忆失败要静默降级');
 });
 
+t('插带占位框的符号后，光标落进第一个框（∫ 上下限 / ∂f/∂x）', () => {
+  // 占位框在 textarea 里剥成空组；光标若落在整段之后，得自己退回花括号里。
+  const mc = readFileSync(join(root, 'src/client/math-composer.tsx'), 'utf-8');
+  assert.match(mc, /export function firstSlotOffset/, '应有「第一个占位框偏移」');
+  const fn = mc.match(/export function firstSlotOffset[\s\S]{0,300}/);
+  assert.match(fn[0], /indexOf\('\\\\placeholder\{\}'\)/, '按第一个 \\placeholder{} 定位');
+  assert.match(fn[0], /trimStart\(\)/, '要扣掉 latexBody 的前导 trim');
+  const seg = mc.match(/const insertInto = useCallback\([\s\S]{0,2600}/);
+  assert.match(seg[0], /firstSlotOffset\(latex\)/, 'insertInto 应使用它');
+  // 包了 $ 时要跳过开头那个 $，前导空格也要算上
+  assert.match(seg[0], /start \+ lead\.length \+ \(wrap \? 1 : 0\) \+ slot/, '偏移要算上前导空格与开头的 $');
+  assert.match(seg[0], /setSelectionRange\(pos, pos\)/);
+});
+
 console.log(`\n[check8.mjs] ${passed} 项断言通过`);

@@ -452,4 +452,18 @@ t('完整还原一次 bra-ket 输入流程', () => {
   assert.equal(text, '⟨φ|ψ⟩ ');
 });
 
+t('偏导 del（∂）在微积分组，且有字母可自定义的写法', () => {
+  // 真机反馈：「符号键盘加上分部微分的 del」—— 单独的 ∂ 以前藏在「物理常用」里。
+  const calculus = SYMBOL_GROUPS.find((g) => g.id === 'calculus');
+  const labels = calculus.symbols.map((s) => s.label);
+  for (const need of ['∂', '∂f/∂x 偏导', '∂ₓ 下标', '∂/∂x']) {
+    assert.ok(labels.includes(need), `微积分组缺少: ${need}`);
+  }
+  assert.equal(findSymbol('∂').insert, '∂');
+  // 同 a⃗ 矢量：字母不能写死，要有可填的占位框
+  const frac = findSymbol('∂f/∂x 偏导').insert;
+  assert.match(frac, /^\\frac\{\\partial \\placeholder\{\}\}\{\\partial \\placeholder\{\}\}/);
+  assert.match(findSymbol('∂ₓ 下标').insert, /^\\partial_\{\\placeholder\{\}\}/);
+});
+
 console.log(`\n[check5.mjs] ${passed} 项断言通过`);

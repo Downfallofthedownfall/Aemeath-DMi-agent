@@ -58,18 +58,34 @@ async function copyText(text: string): Promise<boolean> {
     /* 降级 */
   }
   // 降级：临时 textarea + execCommand（老浏览器 / 无权限时）
+  return copyViaTextarea(text);
+}
+
+/**
+ * execCommand 降级复制，**复制完把焦点和光标还回去**。
+ *
+ * 临时 textarea 要 select() 才能复制，焦点就被它拿走；删掉它之后焦点落到 body ——
+ * 刚插进输入框的符号光标还在，可键盘输入哪儿也去不了（实测：剪贴板权限被拒时，
+ * 点完 ∂f/∂x 接着打字没反应）。
+ */
+function copyViaTextarea(text: string): boolean {
+  const prev = document.activeElement;
+  const field = prev instanceof HTMLTextAreaElement || prev instanceof HTMLInputElement ? prev : null;
+  const sel = field ? [field.selectionStart, field.selectionEnd] : null;
+  const ta = document.createElement('textarea');
   try {
-    const ta = document.createElement('textarea');
     ta.value = text;
     ta.style.position = 'fixed';
     ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
+    return document.execCommand('copy');
   } catch {
     return false;
+  } finally {
+    ta.remove();
+    if (prev instanceof HTMLElement && prev !== document.body) prev.focus({ preventScroll: true });
+    if (field && sel?.[0] != null) field.setSelectionRange(sel[0], sel[1] ?? sel[0]);
   }
 }
 

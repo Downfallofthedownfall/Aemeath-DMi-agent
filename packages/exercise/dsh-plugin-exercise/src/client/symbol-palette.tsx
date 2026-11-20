@@ -34,18 +34,33 @@ async function copyText(text: string): Promise<boolean> {
   } catch {
     /* 降级 */
   }
+  return copyViaTextarea(text);
+}
+
+/**
+ * execCommand 降级复制，**复制完把焦点和光标还回去**（同 lecture）。
+ *
+ * 临时 textarea 要 select() 才能复制，焦点就被它拿走；删掉它之后焦点落到 body ——
+ * 符号刚插进答案框，光标也放好了，可键盘输入哪儿也去不了（剪贴板权限被拒时必现）。
+ */
+function copyViaTextarea(text: string): boolean {
+  const prev = document.activeElement;
+  const field = prev instanceof HTMLTextAreaElement || prev instanceof HTMLInputElement ? prev : null;
+  const sel = field ? [field.selectionStart, field.selectionEnd] : null;
+  const ta = document.createElement('textarea');
   try {
-    const ta = document.createElement('textarea');
     ta.value = text;
     ta.style.position = 'fixed';
     ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
+    return document.execCommand('copy');
   } catch {
     return false;
+  } finally {
+    ta.remove();
+    if (prev instanceof HTMLElement && prev !== document.body) prev.focus({ preventScroll: true });
+    if (field && sel?.[0] != null) field.setSelectionRange(sel[0], sel[1] ?? sel[0]);
   }
 }
 

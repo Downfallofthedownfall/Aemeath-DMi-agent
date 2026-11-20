@@ -13,6 +13,8 @@ import {
 } from '../lib/vision.js';
 import { pageFromImageName, pageImageName } from '../lib/pdf-image.js';
 import { applyInsertion, symbolInsertion } from '../lib/symbol-insert.js';
+import katex from 'katex';
+import { SYMBOL_GROUPS as LECTURE_SYMBOLS } from '@aemeath/dsh-plugin-lecture/symbols';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -256,6 +258,79 @@ t('applyInsertion：在选区处替换并给出绝对光标位', () => {
   assert.equal(r.text, 'a + \\int_{}^{} ');
   assert.equal(r.caret, 4 + '\\int_{'.length);
   assert.equal(r.text[r.caret], '}', '光标在 {} 内部');
+});
+
+t('symbolInsertion：∂f/∂x 偏导 → 两个空组，光标先进分子', () => {
+  const { text, caret } = symbolInsertion({ insert: '\\frac{\\partial \\placeholder{}}{\\partial \\placeholder{}} ' });
+  assert.equal(text, '\\frac{\\partial {}}{\\partial {}} ');
+  assert.equal(caret, '\\frac{\\partial {'.length, '光标落在分子的 {} 里');
+  const sub = symbolInsertion({ insert: '\\partial_{\\placeholder{}} ' });
+  assert.equal(sub.text, '\\partial_{} ');
+  assert.equal(sub.caret, '\\partial_{'.length);
+});
+
+t('symbolInsertion：纯文本函数名换成 LaTeX 算子（不再排成斜体 s·i·n）', () => {
+  const sin = symbolInsertion({ insert: 'sin(', caret: 'parens' });
+  assert.equal(sin.text, '\\sin()');
+  assert.equal(sin.caret, '\\sin('.length, '光标落在括号里');
+  assert.equal(symbolInsertion({ insert: 'sin²(', caret: 'parens' }).text, '\\sin^2()');
+  assert.equal(symbolInsertion({ insert: 'log₂(', caret: 'parens' }).text, '\\log_2()');
+  assert.equal(symbolInsertion({ insert: 'arsinh(', caret: 'parens' }).text, '\\operatorname{arsinh}()');
+  const lim = symbolInsertion({ insert: 'lim', template: 'lim_{$1} ' });
+  assert.equal(lim.text, '\\lim_{} ');
+  assert.equal(lim.caret, '\\lim_{'.length);
+  assert.equal(symbolInsertion({ insert: 'lim sup', template: 'lim sup_{$1} ' }).text, '\\limsup_{} ');
+  // 不是函数名的照旧（单位 / 普通字母）
+  assert.equal(symbolInsertion({ insert: 'nm' }).text, 'nm');
+});
+
+t('symbolInsertion：根号换成 \\sqrt，括号里有内容就搬进去', () => {
+  const r = symbolInsertion({ insert: '√(', caret: 'parens' });
+  assert.equal(r.text, '\\sqrt{}');
+  assert.equal(r.caret, '\\sqrt{'.length);
+  assert.equal(symbolInsertion({ insert: '∛(', caret: 'parens' }).text, '\\sqrt[3]{}');
+  assert.equal(symbolInsertion({ insert: '√(2π)', caret: 'end' }).text, '\\sqrt{2π}');
+});
+
+t('symbolInsertion：Unicode 上下标 → ^ / _，收尾的 ^ 给空组，差集 → \\setminus', () => {
+  assert.equal(symbolInsertion({ insert: '₀' }).text, '_0');
+  assert.equal(symbolInsertion({ insert: 'ᵢ' }).text, '_i');
+  assert.equal(symbolInsertion({ insert: '⁻¹' }).text, '^{-1}');
+  assert.equal(symbolInsertion({ insert: '·10⁻³' }).text, '·10^{-3}');
+  assert.equal(symbolInsertion({ insert: 'µ₀' }).text, 'µ_0');
+  const e = symbolInsertion({ insert: 'e^' });
+  assert.equal(e.text, 'e^{}');
+  assert.equal(e.caret, 'e^{'.length, '光标进指数的花括号');
+  assert.equal(symbolInsertion({ insert: '\\' }).text, '\\setminus ');
+});
+
+t('symbolInsertion：insert 有可填框时优先于旧 template（∑ 仅下 → \\sum_{}）', () => {
+  const r = symbolInsertion({ insert: '\\sum_{\\placeholder{}} ', template: '∑_{$1} ' });
+  assert.equal(r.text, '\\sum_{} ');
+  // insert 没有可填框 → 仍用 template（bra-ket 这类）
+  assert.equal(symbolInsertion({ insert: '⟨', template: '⟨$1|$2⟩ ' }).text, '⟨{}|{}⟩ ');
+});
+
+t('讲义符号表的每个键插进答案框后 KaTeX 都能解析', () => {
+  const bad = [];
+  // 生僻字形（µ ℃ □ …）KaTeX 会 console.warn「No character metrics」——能渲染，只是没度量，不算错
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    for (const g of LECTURE_SYMBOLS) {
+      for (const s of g.symbols) {
+        const { text } = symbolInsertion(s);
+        try {
+          katex.renderToString(text, { throwOnError: true, strict: 'ignore' });
+        } catch (e) {
+          bad.push(`${s.label} → ${text}（${e.message.slice(0, 60)}）`);
+        }
+      }
+    }
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(bad, []);
 });
 
 console.log(`\n[exercise-vision] ${passed} 项断言通过`);

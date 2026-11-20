@@ -125,6 +125,27 @@ export const SYMBOL_DATA: readonly SymbolGroup[] = [
       { label: '∯', insert: '\\oiint ', caret: 'end', hint: '闭合曲面积分（高斯定理）' },
       { label: 'd/dx', insert: 'd/dx ', caret: 'end', hint: '常导数（本校约定）' },
       { label: 'd/dt', insert: 'd/dt ', caret: 'end', hint: '对时间求导（写不出点号时用）' },
+      /**
+       * 偏导 del（∂）—— 真机反馈：「符号键盘加上分部微分的 del」。
+       * 单独的 ∂ 以前放在「物理常用」里，记偏导的时候找不到，挪到这里；
+       * 另加两个**字母可自定义**的写法（同 a⃗ 矢量：∂/∂x 是写死的 x，
+       * 上课要写 ∂ψ/∂t、∂_μ 就只能手打）。
+       */
+      { label: '∂', insert: '∂', caret: 'end', hint: '偏导符号 del（单独用）' },
+      {
+        label: '∂f/∂x 偏导',
+        insert: '\\frac{\\partial \\placeholder{}}{\\partial \\placeholder{}} ',
+        caret: 'end',
+        kind: 'structured',
+        hint: '偏导数 —— 分子、分母的字母都可自定义（∂ψ/∂t、∂V/∂r…）',
+      },
+      {
+        label: '∂ₓ 下标',
+        insert: '\\partial_{\\placeholder{}} ',
+        caret: 'end',
+        kind: 'structured',
+        hint: '下标式偏导（∂ₓ、∂_μ）—— 下标可自定义',
+      },
       { label: '∂/∂x', insert: '∂/∂x ', caret: 'end', hint: '偏导数' },
       { label: '∂²/∂x²', insert: '∂²/∂x² ', caret: 'end', hint: '二阶偏导' },
       { label: '∂²/∂x∂y', insert: '∂²/∂x∂y ', caret: 'end', hint: '混合偏导' },
@@ -510,7 +531,6 @@ export const SYMBOL_DATA: readonly SymbolGroup[] = [
       { label: 'µ', insert: 'µ', caret: 'end', hint: '微（10⁻⁶，注意是 U+00B5）' },
       { label: 'Å', insert: 'Å', caret: 'end', hint: '埃（10⁻¹⁰ m）' },
       { label: '℃', insert: '℃', caret: 'end', hint: '摄氏度' },
-      { label: '∂', insert: '∂', caret: 'end', hint: '偏导符号（单独用）' },
       { label: '⊤', insert: '⊤', caret: 'end', hint: '转置 / 真' },
       { label: '†', insert: '†', caret: 'end', hint: '厄米共轭' },
       { label: '*', insert: '*', caret: 'end', hint: '复共轭 / 卷积' },

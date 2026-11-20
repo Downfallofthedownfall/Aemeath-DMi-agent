@@ -82,6 +82,22 @@ function isLatex(latex: string): boolean {
   return /\\[a-zA-Z]/.test(latex.replace(/\\placeholder\{\}/g, ''));
 }
 
+/**
+ * 第一个占位框在 latexBody() 结果里的偏移；没有占位框 → -1。
+ *
+ * 为什么需要：占位框在 textarea 里会被剥成空组（`\int_{}^{}`、`\vec{}`），
+ * 光标若落在整段之后，就得自己按方向键退回花括号里 —— 点 ∫ 上下限、
+ * ∂f/∂x 之后应该能**直接打**下限 / 分子（和 exercise 的答案框一致）。
+ *
+ * 第一个占位框之前没有别的占位框被剥掉，所以它在原串里的下标
+ * 减去 trim 掉的前导空白，就是它在 latexBody() 里的位置。
+ */
+export function firstSlotOffset(latex: string): number {
+  const at = latex.indexOf('\\placeholder{}');
+  if (at < 0) return -1;
+  return Math.max(0, at - (latex.length - latex.trimStart().length));
+}
+
 export function MathComposer({
   disabled,
   onSubmit,
@@ -140,9 +156,11 @@ export function MathComposer({
     const patch = lead + core + tail;
     const next = value.slice(0, start) + patch + value.slice(end);
     setText(next);
+    // 3) 光标：有占位框 → 落进第一个框（`$\int_{|}^{}$`）；
+    //    没有 → 落在插入内容之后（tail 之后，方便接着打字）
+    const slot = isLatex(latex) ? firstSlotOffset(latex) : -1;
+    const pos = slot >= 0 ? start + lead.length + (wrap ? 1 : 0) + slot : start + patch.length;
     requestAnimationFrame(() => {
-      // 光标落在插入内容之后（tail 之后，方便接着打字）
-      const pos = start + patch.length;
       el.focus();
       el.setSelectionRange(pos, pos);
     });
