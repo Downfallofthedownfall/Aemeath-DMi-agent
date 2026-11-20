@@ -138,9 +138,12 @@
           model: 'deepseek-v4-flash'
     # —— Übungen 习题模式（主 agent 内也可用：侧栏「Übungen」胶囊 → overlay）——
     #    与独立 exercise profile **同一份插件、同一份数据目录**。
-    #    挂进主 profile 后多了 13 个 exercise_* 工具 + 一个 overlay 界面；
-    #    它不注入任何上下文（不碰 worldbook/retriever 的注入链），
-    #    唯一与主记忆的交互是显式的 exercise_import_handoff（握手接收侧）。
+    #    挂进主 profile 后多了 exercise_* 工具 + 一个 overlay 界面（enabled=false 时只摘掉工具）；
+    #    它不注入任何上下文（不碰 worldbook/retriever 的注入链）。
+    #    写主 agent 数据的只有两个显式动作：
+    #      · exercise_import_handoff（握手接收侧）→ 过守门员写主记忆 + 世界书
+    #      · exercise_sync_worldbook / 界面「同步世界书」→ 写 worldbook 馆的 generated_exercise.json
+    #        （另外：删错题 / 标已掌握 / 删经验时会把对应条目从该文件撤回）
     #    LLM（检查用）不在这里配：走全局 dsh 的 provider / model / 凭据。
     - id: aemeath-exercise
       name: '@aemeath/dsh-plugin-exercise'
@@ -151,7 +154,7 @@
         standalone: false
         dataDir: 'packages/library/physicist/exercises'
         handoffDir: 'packages/library/physicist/exercises/handoff'
-        worldbookLibraryDir: 'packages/worldbook/data/physicist'
+        # worldbookLibraryDir 不填：跟随上面 aemeath-worldbook 的 libraries[preset]（C8：单一来源）
         lectureDataDir: 'packages/library/physicist/lectures'
         autoCollectMistakes: true
         studentName: ''

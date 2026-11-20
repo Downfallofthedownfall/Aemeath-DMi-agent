@@ -47,7 +47,8 @@ export function MistakesPanel({
   }, [mistakes, onlyOpen]);
 
   const openCount = mistakes.filter((m) => !m.mastered).length;
-  const unsynced = mistakes.filter((m) => !m.in_worldbook && (m.lesson || m.issues.length)).length;
+  // 已掌握的错题不进世界书（同步时会撤回），不算"待同步"
+  const unsynced = mistakes.filter((m) => !m.mastered && !m.in_worldbook && (m.lesson || m.issues.length)).length;
 
   const saveLesson = async (m: MistakeView): Promise<void> => {
     const text = drafts[m.id] ?? m.lesson;

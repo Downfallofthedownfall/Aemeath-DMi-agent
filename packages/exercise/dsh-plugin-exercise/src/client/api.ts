@@ -88,6 +88,29 @@ export interface ProblemView {
   status: ProblemStatus;
   last_check: CheckView | null;
   check_count: number;
+  /** 所属大题 id（空 = 独立题）；见 parts.ts */
+  group?: string;
+  /** 小题标记（a / b / ii） */
+  part?: string;
+}
+
+/** 大题：共用题干；小题是 problems 里 group 指向它的那几道 */
+export interface ProblemGroupView {
+  id: string;
+  label: string;
+  title: string;
+  text: string;
+  points: number | null;
+  page: number;
+  has_figure: boolean;
+  figure_note: string;
+}
+
+/** 提问（苏格拉底式提示）的一轮问答：只在前端内存里 */
+export interface AskTurnView {
+  question: string;
+  reply: string;
+  questions: string[];
 }
 
 export interface LessonView {
@@ -126,6 +149,7 @@ export interface SheetView {
   progress_digest: string;
   progress_digest_at: number;
   problems: ProblemView[];
+  groups?: ProblemGroupView[];
   lessons: LessonView[];
   submitted_at: number;
   submission_pdf: string;

@@ -209,6 +209,37 @@ try {
     assert.equal(a1.answer, 'F = 10 N（检查期间改的）');
   });
 
+  await t('重新分块跨越"整题 ↔ 小题"：答案按 a) b) 分过去，再并回来也不丢', async () => {
+    // 先是一整道题，答案里写了 a) b)
+    store.writeSourceText(C, S, 'Aufgabe 1 (3 Punkte)\nBerechnen Sie x.\n\nAufgabe 2 (4 Punkte)\nZeigen Sie y.\n');
+    let r = await call('exercise_resplit', { course_id: C, sheet_id: S, use_llm: false });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const s = store.readSheet(C, S);
+    const a1 = s.problems.find((p) => p.label === 'Aufgabe 1');
+    a1.answer = 'a) x = 1\nb) y = 2';
+    store.writeSheet(C, s);
+    // 原卷里其实有小题 → 重新分块后拆开，答案跟着分
+    store.writeSourceText(C, S, 'Aufgabe 1 (3 Punkte)\nBerechnen Sie x.\na) erstens\nb) zweitens\n\nAufgabe 2 (4 Punkte)\nZeigen Sie y.\n');
+    r = await call('exercise_resplit', { course_id: C, sheet_id: S, use_llm: false });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    let after = store.readSheet(C, S);
+    assert.equal(after.groups.length, 1);
+    const parts = after.problems.filter((p) => p.group === after.groups[0].id);
+    assert.deepEqual(parts.map((p) => [p.label, p.answer]), [
+      ['Aufgabe 1 a)', 'x = 1'],
+      ['Aufgabe 1 b)', 'y = 2'],
+    ]);
+    const kept = after.problems.find((p) => p.label === 'Aufgabe 2');
+    assert.equal(kept.checks.length, 1, '没拆的题照旧带回检查');
+    // 再分一次、小题不见了（比如改了原文）→ 并回一道题
+    store.writeSourceText(C, S, 'Aufgabe 1 (3 Punkte)\nBerechnen Sie x.\n\nAufgabe 2 (4 Punkte)\nZeigen Sie y.\n');
+    r = await call('exercise_resplit', { course_id: C, sheet_id: S, use_llm: false });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    after = store.readSheet(C, S);
+    assert.equal(after.groups.length, 0);
+    assert.equal(after.problems.find((p) => p.label === 'Aufgabe 1').answer, 'a) x = 1\n\nb) y = 2');
+  });
+
   assert.equal(pending.length, 0, '还有没放行的 LLM 请求');
   console.log(`\n[exercise-concurrency] ${passed} 项断言通过`);
 } finally {

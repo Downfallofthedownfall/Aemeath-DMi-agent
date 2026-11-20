@@ -45,6 +45,11 @@ export interface SubmissionProblem {
   images?: Array<{ name: string; caption?: string; dataUri: string }>;
   /** 题干截图（极简模式上传的题目图片） */
   statementImages?: Array<{ name: string; caption?: string; dataUri: string }>;
+  /**
+   * 大题的第一个小题带上大题本身（题号 + 共用题干），印在这个小题前面一次；
+   * 后面的小题只印自己（"Aufgabe 1 a)"、"Aufgabe 1 b)"）。
+   */
+  groupHead?: { label: string; title: string; text: string; points: number | null };
 }
 
 export interface SubmissionHtmlInput {
@@ -524,6 +529,14 @@ h1, h2, h3 { font-family: var(--sans); line-height: 1.3; }
 
 .problem-head { margin-bottom: 2.5mm; }
 
+/* 大题：共用题干印一次，紧跟它的第一个小题（不和它分页） */
+.group-head {
+  margin: 2mm 0 2.5mm;
+  padding: 0 1mm;
+  break-after: avoid;
+  page-break-after: avoid;
+}
+
 .problem-meta {
   display: flex;
   flex-wrap: wrap;
@@ -760,7 +773,7 @@ export function buildSubmissionHtml(input: SubmissionHtmlInput): string {
       ? `<div class="note"><span class="note-label">${t.note}</span>${renderFragment(noteRaw, renderMath)}</div>`
       : '';
 
-    return [
+    const body = [
       `<article class="${cls}" data-label="${escapeHtml(label)}">`,
       '<div class="problem-head">',
       '<div class="problem-meta">',
@@ -782,6 +795,26 @@ export function buildSubmissionHtml(input: SubmissionHtmlInput): string {
     ]
       .filter((s) => s !== '')
       .join('\n');
+    if (!p.groupHead) return body;
+    const g = p.groupHead;
+    const gPoints =
+      typeof g.points === 'number' && Number.isFinite(g.points)
+        ? `<span class="points">${escapeHtml(formatPoints(g.points))} ${t.points}</span>`
+        : '';
+    const gTitle = String(g.title ?? '').trim();
+    const head = [
+      `<section class="group-head" data-label="${escapeHtml(g.label)}">`,
+      '<div class="problem-meta">',
+      `<span class="label">${escapeHtml(g.label)}</span>`,
+      gPoints,
+      '</div>',
+      gTitle ? `<h2 class="problem-title">${inlineToHtml(escapeHtml(gTitle), renderMath)}</h2>` : '',
+      g.text.trim() ? `<div class="statement">${renderFragment(g.text, renderMath)}</div>` : '',
+      '</section>',
+    ]
+      .filter((x) => x !== '')
+      .join('\n');
+    return `${head}\n${body}`;
   });
 
   const lessonsHtml = lessons.length

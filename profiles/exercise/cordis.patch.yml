@@ -80,7 +80,9 @@
         dataDir: 'packages/library/physicist/exercises'
         # 握手导出目录（改成局域网共享目录即可；空 = dataDir/handoff）
         handoffDir: 'packages/library/physicist/exercises/handoff'
-        # 错题/经验写进 worldbook 物理馆（热重载 ≤3s 生效）
+        # 错题/经验写进 worldbook 物理馆（热重载 ≤3s 生效）。
+        # 这个 profile 没挂 worldbook 插件，拿不到它的 libraries 映射，所以显式写上；
+        # 与主 profile 同时开着也没关系：两边写 generated_exercise.json / 错题本都走跨进程锁
         worldbookLibraryDir: 'packages/worldbook/data/physicist'
         # 只读 lecture 数据，用于"开新题时附学习进度"
         lectureDataDir: 'packages/library/physicist/lectures'

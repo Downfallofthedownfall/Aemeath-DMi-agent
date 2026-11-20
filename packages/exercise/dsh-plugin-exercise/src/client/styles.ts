@@ -1135,6 +1135,99 @@ const CSS = `
 }
 .aem-launcher[data-open] { border-color: var(--dsw-alias-state-business-primary); }
 .aem-launcher__dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+/* ============================================================
+   2026-11-20 精简布局：「⋯」菜单 / 原卷开关 / 一行操作栏 / 提问 / 大题
+   ============================================================ */
+.${EX_CLASS} .lec-menu { position: relative; display: inline-flex; flex: none; }
+.${EX_CLASS} .lec-menu-btn {
+  width: 28px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: var(--aem-radius-ctl);
+  background: transparent; color: var(--aem-ink-soft);
+  font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+}
+.${EX_CLASS} .lec-menu-btn:hover,
+.${EX_CLASS} .lec-menu-btn[aria-expanded="true"] { border-color: var(--aem-line); color: var(--aem-accent); background: var(--aem-accent-soft); }
+.${EX_CLASS} .lec-menu-list {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 30;
+  min-width: 180px; padding: 4px;
+  display: flex; flex-direction: column;
+  background: var(--aem-surface); border: 1px solid var(--aem-line);
+  border-radius: 10px; box-shadow: var(--aem-shadow-pop);
+}
+.${EX_CLASS} .lec-menu-list[data-align="left"] { right: auto; left: 0; }
+.${EX_CLASS} .lec-menu-item {
+  text-align: left; padding: 7px 10px; border: none; border-radius: 7px;
+  background: transparent; color: var(--aem-ink); font: inherit; font-size: 12.5px;
+  cursor: pointer; white-space: nowrap;
+}
+.${EX_CLASS} .lec-menu-item:hover:not(:disabled) { background: var(--aem-accent-soft); color: var(--aem-accent); }
+.${EX_CLASS} .lec-menu-item:disabled { opacity: 0.45; cursor: default; }
+.${EX_CLASS} .lec-menu-item[data-danger="1"] { color: light-dark(#c0453f, #f08080); }
+
+.${EX_CLASS} .lec-chip {
+  padding: 3px 9px; border: 1px solid var(--aem-line); border-radius: var(--aem-radius-pill);
+  background: transparent; color: var(--aem-ink-soft); font: inherit; font-size: 11.5px; cursor: pointer;
+}
+.${EX_CLASS} .lec-chip:hover,
+.${EX_CLASS} .lec-chip[data-open="1"] { border-color: var(--aem-accent-2); color: var(--aem-accent); }
+.${EX_CLASS} .lec-problem-actions { align-items: center; }
+.${EX_CLASS} .lec-problem-actions .lec-btn { padding: 5px 12px; font-size: 12px; box-shadow: none; }
+.${EX_CLASS} .lec-sheethead .lec-menu { align-self: center; }
+
+/* 一行操作栏：检查 · 思路 · 提问 */
+.${EX_CLASS} .lec-tools { margin-top: 8px; }
+.${EX_CLASS} .lec-actionbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.${EX_CLASS} .lec-actionbar .lec-btn { padding: 6px 14px; box-shadow: none; }
+.${EX_CLASS} .lec-actionbar .lec-btn-ghost { padding: 6px 12px; }
+.${EX_CLASS} .lec-actionbar .lec-btn-ghost[data-open="1"] { border-color: var(--aem-accent-2); color: var(--aem-accent); background: var(--aem-accent-soft); }
+.${EX_CLASS} .lec-linkbtn {
+  padding: 2px 4px; border: none; background: transparent; color: var(--aem-ink-soft);
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+.${EX_CLASS} .lec-linkbtn:hover:not(:disabled) { color: var(--aem-accent); }
+.${EX_CLASS} .lec-approach { margin-top: 8px; }
+.${EX_CLASS} .lec-approach-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.${EX_CLASS} .lec-notes-input { flex: 1; min-width: 0; }
+.${EX_CLASS} .lec-answer-head .lec-tab { flex: none; padding: 3px 9px; font-size: 11.5px; border-radius: 7px; }
+.${EX_CLASS} .lec-answer-head .lec-toolrow { gap: 2px; }
+
+/* 提问（苏格拉底式提示） */
+.${EX_CLASS} .lec-ask {
+  margin-top: 8px; padding: 8px 10px; border: 1px solid var(--aem-line);
+  border-radius: 10px; background: light-dark(#fffafc, rgba(255, 255, 255, 0.02));
+}
+.${EX_CLASS} .lec-ask-title { font-weight: 600; color: var(--aem-accent); }
+.${EX_CLASS} .lec-ask-list { max-height: 320px; overflow-y: auto; margin: 6px 0; display: flex; flex-direction: column; gap: 8px; }
+.${EX_CLASS} .lec-ask-turn { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.${EX_CLASS} .lec-ask-q {
+  align-self: flex-end; max-width: 85%; padding: 6px 10px; border-radius: 10px 10px 2px 10px;
+  background: var(--aem-accent-soft); color: var(--aem-ink); white-space: pre-wrap;
+}
+.${EX_CLASS} .lec-ask-a { align-self: flex-start; max-width: 92%; padding: 6px 10px; border-radius: 10px 10px 10px 2px; border: 1px solid var(--aem-line); }
+.${EX_CLASS} .lec-ask-guides { margin: 4px 0 0; padding-left: 18px; }
+.${EX_CLASS} .lec-ask-guides li { margin: 2px 0; }
+.${EX_CLASS} .lec-ask-row { display: flex; gap: 6px; align-items: flex-end; margin-top: 6px; }
+.${EX_CLASS} .lec-ask-input { flex: 1; min-height: 40px; }
+.${EX_CLASS} .lec-ask-row .lec-btn { padding: 7px 14px; box-shadow: none; }
+
+/* 大题：共用题干 + 一串小题（小题卡缩进、去掉外框阴影） */
+.${EX_CLASS} .lec-group {
+  background: var(--aem-surface); border: 1px solid var(--aem-line);
+  border-radius: var(--aem-radius-card); box-shadow: var(--aem-shadow-card);
+  padding: 14px 16px 6px; margin-bottom: 14px;
+}
+.${EX_CLASS} .lec-group[data-state="checked"] { border-color: light-dark(#bfe3c8, rgba(110, 200, 140, 0.34)); }
+.${EX_CLASS} .lec-group-parts { margin-top: 10px; }
+.${EX_CLASS} .lec-group .lec-problem[data-part="1"] {
+  box-shadow: none; border-radius: 10px; padding: 10px 12px; margin: 0 0 10px;
+  border-left: 3px solid var(--aem-line);
+}
+.${EX_CLASS} .lec-group .lec-problem[data-part="1"][data-state="checked"] { border-left-color: light-dark(#7cc48f, rgba(110, 200, 140, 0.6)); }
+.${EX_CLASS} .lec-group .lec-problem[data-part="1"][data-state="needs_fix"] { border-left-color: light-dark(#e9958a, rgba(230, 120, 100, 0.7)); }
+.${EX_CLASS} .lec-problem[data-part="1"] .lec-problem-no { font-size: 14px; }
+.${EX_CLASS} .lec-problem[data-part="1"] .lec-statement { max-height: 22vh; }
+
+
 .aem-launcher__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 `;
 

@@ -21,12 +21,18 @@ import {
   apiGet,
   apiPost,
   type CourseView,
+  type AskTurnView,
   type DigestView,
   type MistakeView,
+  type ProblemGroupView,
+  type ProblemView,
   type SheetMetaView,
   type SheetView,
 } from './api.ts';
 import { ProblemCard } from './problem-card.tsx';
+import { GroupCard, partsToCheck } from './group-card.tsx';
+import { Menu } from './menu.tsx';
+import type { AskResult } from './problem-tools.tsx';
 import { MistakesPanel } from './mistakes-panel.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { ImportDialog } from './import-dialog.tsx';
@@ -51,6 +57,24 @@ function dueText(t: Translate, m: SheetMetaView): string {
   if (m.due_in_days < 0) return t('exercise.wb.due.overdue', { n: -m.due_in_days });
   if (m.due_in_days === 0) return t('exercise.wb.due.today');
   return t('exercise.wb.due.inDays', { n: m.due_in_days });
+}
+
+type ProblemBlock =
+  | { kind: 'single'; problem: ProblemView }
+  | { kind: 'group'; group: ProblemGroupView; parts: ProblemView[] };
+
+/** 按题目顺序排成"独立题 / 大题（一串小题）"；找不到大题的小题当独立题显示，别丢。 */
+function problemBlocks(sheet: SheetView): ProblemBlock[] {
+  const groups = new Map((sheet.groups ?? []).map((g) => [g.id, g]));
+  const out: ProblemBlock[] = [];
+  for (const p of sheet.problems) {
+    const g = p.group ? groups.get(p.group) : undefined;
+    const last = out.at(-1);
+    if (g && last?.kind === 'group' && last.group.id === g.id) last.parts.push(p);
+    else if (g) out.push({ kind: 'group', group: g, parts: [p] });
+    else out.push({ kind: 'single', problem: p });
+  }
+  return out;
 }
 
 /** File → base64（不带 data: 前缀；后端自己嗅探格式）。 */
@@ -96,7 +120,16 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
   const [digest, setDigest] = useState<DigestView | null>(null);
   const [tab, setTab] = useState<Tab>('symbols');
   const [toast, setToast] = useState('');
-  const [busyProblem, setBusyProblem] = useState('');
+  /** 正在检查 / 答辩 / 上传的题（小题会并行检查，所以是集合） */
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const setBusyFor = useCallback((id: string, on: boolean): void => {
+    setBusyIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   const [busy, setBusy] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -233,7 +266,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
 
   const checkProblem = async (problemId: string): Promise<void> => {
     if (!courseId || !sheet) return;
-    setBusyProblem(problemId);
+    setBusyFor(problemId, true);
     try {
       const r = await apiPost<{ sheet: SheetView; check: { verdict: string } }>('check', {
         course_id: courseId,
@@ -246,8 +279,96 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     } catch (e) {
       showToast(t('exercise.wb.toast.checkFailed', { error: (e as Error).message }));
     } finally {
-      setBusyProblem('');
+      setBusyFor(problemId, false);
     }
+  };
+
+  /**
+   * 「检查未通过的小题」：只查有答案、还没判 correct 的小题（已经 correct 且答案没改过的跳过）。
+   * 两个一组并行，结果陆续回来；全部完成后汇总一句。
+   */
+  const checkGroupParts = async (groupId: string): Promise<void> => {
+    if (!courseId || !sheet) return;
+    const sid = sheet.id;
+    const todo = partsToCheck(sheet.problems.filter((p) => p.group === groupId));
+    if (!todo.length) {
+      showToast(t('exercise.group.nothingToCheck'));
+      return;
+    }
+    for (const p of todo) setBusyFor(p.id, true);
+    const verdicts: string[] = [];
+    let failed = 0;
+    const queue = [...todo];
+    const worker = async (): Promise<void> => {
+      for (let p = queue.shift(); p; p = queue.shift()) {
+        try {
+          const r = await apiPost<{ sheet: SheetView; check: { verdict: string } }>('check', {
+            course_id: courseId,
+            sheet_id: sid,
+            problem_id: p.id,
+          });
+          verdicts.push(r.check.verdict);
+          if (viewRef.current.courseId === courseId && viewRef.current.sheetId === sid) setSheet(r.sheet);
+        } catch {
+          failed++;
+        } finally {
+          setBusyFor(p.id, false);
+        }
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    await loadMistakes().catch(() => undefined);
+    const ok = verdicts.filter((v) => v === 'correct').length;
+    showToast(
+      t('exercise.group.checked', {
+        n: todo.length,
+        ok,
+        fix: verdicts.length - ok,
+        failed: failed ? t('exercise.group.checkedFailed', { n: failed }) : '',
+      }),
+    );
+  };
+
+  const splitParts = async (problemId: string, quiet = false): Promise<boolean> => {
+    if (!courseId || !sheet) return false;
+    try {
+      const r = await apiPost<{ sheet: SheetView }>('split_parts', { course_id: courseId, sheet_id: sheet.id, problem_id: problemId });
+      setSheet(r.sheet);
+      if (!quiet) showToast(t('exercise.group.split'));
+      return true;
+    } catch (e) {
+      if (!quiet) showToast((e as Error).message);
+      return false;
+    }
+  };
+
+  /** 整套题里能拆的都拆（每道独立题各试一次；拆不开的不动）。 */
+  const splitAllParts = async (): Promise<void> => {
+    if (!sheet) return;
+    setBusy(true);
+    let n = 0;
+    try {
+      for (const p of sheet.problems.filter((x) => !x.group)) if (await splitParts(p.id, true)) n++;
+    } finally {
+      setBusy(false);
+    }
+    showToast(n ? t('exercise.group.splitAll', { n }) : t('exercise.group.splitNone'));
+  };
+
+  const mergeParts = async (groupId: string): Promise<void> => {
+    if (!courseId || !sheet) return;
+    try {
+      const r = await apiPost<{ sheet: SheetView }>('merge_parts', { course_id: courseId, sheet_id: sheet.id, group_id: groupId });
+      setSheet(r.sheet);
+    } catch (e) {
+      showToast((e as Error).message);
+    }
+  };
+
+  const saveGroup = async (groupId: string, patch: { text?: string; title?: string }): Promise<void> => {
+    if (!courseId || !sheet) return;
+    const r = await apiPost<{ sheet: SheetView }>('update_group', { course_id: courseId, sheet_id: sheet.id, group_id: groupId, patch });
+    setSheet(r.sheet);
   };
 
   const collectMistake = async (problemId: string): Promise<void> => {
@@ -439,7 +560,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
   const syncWorldbook = async (): Promise<void> => {
     setBusy(true);
     try {
-      const r = await apiPost<{ written: number; skipped: number; failed: number }>('sync_worldbook', {
+      const r = await apiPost<{ written: number; skipped: number; failed: number; removed?: number }>('sync_worldbook', {
         course_id: courseId || undefined,
       });
       await loadMistakes();
@@ -448,7 +569,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
         t('exercise.wb.toast.worldbook', {
           written: r.written,
           skipped: r.skipped,
-          failed: r.failed,
+          removed: r.removed ?? 0,
         }),
       );
     } catch (e) {
@@ -584,6 +705,102 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
 
   // ---------- 渲染 ----------
 
+  /** 题卡（独立题或小题）。 */
+  const renderCard = (p: ProblemView): JSX.Element | null => {
+    if (!sheet) return null;
+    return (
+                  <ProblemCard
+                    key={`${courseId}/${sheet.id}/${p.id}`}
+                    problem={p}
+                    pageImageUrl={pageUrlOf(p.page)}
+                    busy={busyIds.has(p.id)}
+                    mistakeCount={p.mistakes.length}
+                    onSave={(patch) => saveProblem(p.id, patch)}
+                    onCheck={() => void checkProblem(p.id)}
+                    isPart={!!p.group}
+                    onSplitParts={p.group ? undefined : () => void splitParts(p.id)}
+                    onAsk={(question: string, history: AskTurnView[]) =>
+                      apiPost<AskResult>('ask', { course_id: courseId, sheet_id: sheet.id, problem_id: p.id, question, history })
+                    }
+            onApproach={() =>
+              apiPost<ApproachResult & { ok: boolean; error?: string }>('approach', {
+                course_id: courseId,
+                sheet_id: sheet.id,
+                problem_id: p.id,
+              })
+            }
+                    imageUrl={(name) =>
+                      `${API_BASE}?action=attachment&course=${encodeURIComponent(courseId)}&sheet=${encodeURIComponent(sheet.id)}&name=${encodeURIComponent(name)}`
+                    }
+                    onAttachImage={async (file) => {
+                      setBusyFor(p.id, true);
+                      try {
+                        const base64 = await readFileAsBase64(file);
+                        const r = await apiPost<{ sheet: SheetView }>('add_attachment', {
+                          course_id: courseId,
+                          sheet_id: sheet.id,
+                          problem_id: p.id,
+                          base64,
+                          caption: file.name.replace(/\.[a-z0-9]+$/i, ''),
+                        });
+                        setSheet(r.sheet);
+                        showToast(t('exercise.wb.toast.imageAttached', { name: file.name }));
+                      } catch (e) {
+                        showToast(t('exercise.wb.toast.uploadFailed', { error: (e as Error).message }));
+                      } finally {
+                        setBusyFor(p.id, false);
+                      }
+                    }}
+                    onDeleteImage={async (imageId) => {
+                      try {
+                        const r = await apiPost<{ sheet: SheetView }>('delete_attachment', {
+                          course_id: courseId,
+                          sheet_id: sheet.id,
+                          problem_id: p.id,
+                          image_id: imageId,
+                        });
+                        setSheet(r.sheet);
+                      } catch (e) {
+                        showToast(t('exercise.common.deleteFailed', { error: (e as Error).message }));
+                      }
+                    }}
+                    onRebuttal={async (text) => {
+                      setBusyFor(p.id, true);
+                      try {
+                        const r = await apiPost<{ sheet: SheetView }>('rebut', {
+                          course_id: courseId,
+                          sheet_id: sheet.id,
+                          problem_id: p.id,
+                          text,
+                        });
+                        setSheet(r.sheet);
+                        const last = r.sheet.problems.find((x) => x.id === p.id)?.rebuttals.at(-1);
+                        showToast(
+                          last?.outcome === 'conceded'
+                            ? t('exercise.wb.toast.rebuttalConceded')
+                            : last?.outcome === 'upheld'
+                              ? t('exercise.wb.toast.rebuttalUpheld')
+                              : t('exercise.wb.toast.rebuttalPartial'),
+                        );
+                      } catch (e) {
+                        showToast(t('exercise.wb.toast.rebuttalFailed', { error: (e as Error).message }));
+                      } finally {
+                        setBusyFor(p.id, false);
+                      }
+                    }}
+                    onCollectMistake={() => void collectMistake(p.id)}
+                    onDelete={() => void deleteProblem(p.id)}
+                    onToast={showToast}
+                  />
+    );
+  };
+
+  const pageUrlOf = (page: number): string | undefined =>
+    sheet?.has_page_images && courseId
+      ? `${API_BASE}?action=page&course=${encodeURIComponent(courseId)}&sheet=${encodeURIComponent(sheet.id)}&page=${page || 1}`
+      : undefined;
+
+
   if (loading) {
     return (
       <div className={EX_CLASS} data-standalone={standalone ? '1' : '0'}>
@@ -625,18 +842,19 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
             <button type="button" className="lec-btn-tiny" onClick={() => setImportOpen(true)}>
               {t('exercise.wb.importPdf')}
             </button>
-            <button type="button" className="lec-btn-tiny" onClick={() => void newSheet()} disabled={!courseId}>
-              {t('exercise.wb.newSheet')}
-            </button>
-            <button type="button" className="lec-btn-tiny" onClick={() => void exportHandoff()} disabled={busy}>
-              {t('exercise.wb.exportHandoff')}
-            </button>
-            <button type="button" className="lec-btn-tiny" onClick={() => void importHandoff()} disabled={busy}>
-              {t('exercise.wb.importHandoff')}
-            </button>
             <button type="button" className="lec-btn" onClick={() => void buildSubmission()} disabled={busy || !sheet}>
               {busy ? t('exercise.wb.processing') : t('exercise.wb.buildSubmission')}
             </button>
+            {/* 不常用的进「⋯」（2026-11-20 精简：顶栏原来一排 6 个按钮） */}
+            <Menu
+              title={t('exercise.common.more')}
+              items={[
+                { label: t('exercise.wb.newSheet'), onSelect: () => void newSheet(), disabled: !courseId },
+                { label: t('exercise.wb.exportText'), title: t('exercise.wb.exportTextTitle'), onSelect: () => void exportText(), disabled: busy },
+                { label: t('exercise.wb.exportHandoff'), onSelect: () => void exportHandoff(), disabled: busy },
+                { label: t('exercise.wb.importHandoff'), onSelect: () => void importHandoff(), disabled: busy },
+              ]}
+            />
           </>
         )}
         <button
@@ -753,38 +971,6 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
               );
             })}
 
-            <div className="lec-wb-navhead" style={{ marginTop: 10 }}>
-              {t('exercise.wb.tools')}
-            </div>
-            <div style={{ padding: '0 8px 8px' }}>
-              <button type="button" className="lec-btn" style={{ width: '100%', marginBottom: 6 }} onClick={() => sheet && openPdf('source_pdf')} disabled={!sheet?.source_pdf}>
-                {t('exercise.wb.openSourcePdf')}
-              </button>
-              <button type="button" className="lec-btn" style={{ width: '100%', marginBottom: 6 }} onClick={() => void resplit(true)} disabled={!sheet || busy}>
-                {t('exercise.wb.resplitLlm')}
-              </button>
-              <button type="button" className="lec-btn lec-btn-ghost" style={{ width: '100%', marginBottom: 6 }} onClick={() => void resplit(false)} disabled={!sheet || busy}>
-                {t('exercise.wb.resplitRules')}
-              </button>
-              <button type="button" className="lec-btn lec-btn-ghost" style={{ width: '100%', marginBottom: 6 }} onClick={() => void addProblem()} disabled={!sheet}>
-                {t('exercise.wb.addProblem')}
-              </button>
-              {sheet?.submitted_at ? (
-                <button type="button" className="lec-btn lec-btn-ghost" style={{ width: '100%', marginBottom: 6 }} onClick={() => openPdf('submission', true)}>
-                  {t('exercise.wb.downloadSubmission')}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="lec-btn lec-btn-ghost"
-                style={{ width: '100%' }}
-                onClick={() => void exportText()}
-                disabled={busy}
-                title={t('exercise.wb.exportTextTitle')}
-              >
-                {t('exercise.wb.exportText')}
-              </button>
-            </div>
             {error ? <div className="lec-warn" style={{ padding: '0 10px' }}>{error}</div> : null}
           </aside>
         ) : null}
@@ -811,6 +997,18 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                     Übungsblatt {sheet.number}
                     {sheet.title ? ` — ${sheet.title}` : ''}
                   </h1>
+                  <Menu
+                    title={t('exercise.wb.sheetTools')}
+                    align="left"
+                    items={[
+                      { label: t('exercise.wb.openSourcePdf'), onSelect: () => openPdf('source_pdf'), disabled: !sheet.source_pdf },
+                      sheet.submitted_at ? { label: t('exercise.wb.downloadSubmission'), onSelect: () => openPdf('submission', true) } : null,
+                      { label: t('exercise.wb.addProblem'), onSelect: () => void addProblem() },
+                      { label: t('exercise.group.splitAllMenu'), title: t('exercise.problem.splitPartsTitle'), onSelect: () => void splitAllParts(), disabled: busy },
+                      { label: t('exercise.wb.resplitLlm'), onSelect: () => void resplit(true), disabled: busy },
+                      { label: t('exercise.wb.resplitRules'), onSelect: () => void resplit(false), disabled: busy },
+                    ]}
+                  />
                   <span className="lec-hint">
                     {t('exercise.wb.summary', {
                       answered: progress?.answered ?? 0,
@@ -854,90 +1052,25 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                   <div className="lec-empty">{t('exercise.wb.noProblems')}</div>
                 )}
 
-                {sheet.problems.map((p) => (
-                  <ProblemCard
-                    key={`${courseId}/${sheet.id}/${p.id}`}
-                    problem={p}
-                    pageImageUrl={
-                      sheet.has_page_images && courseId
-                        ? `${API_BASE}?action=page&course=${encodeURIComponent(courseId)}&sheet=${encodeURIComponent(sheet.id)}&page=${p.page || 1}`
-                        : undefined
-                    }
-                    busy={busyProblem === p.id}
-                    mistakeCount={p.mistakes.length}
-                    onSave={(patch) => saveProblem(p.id, patch)}
-                    onCheck={() => void checkProblem(p.id)}
-            onApproach={() =>
-              apiPost<ApproachResult & { ok: boolean; error?: string }>('approach', {
-                course_id: courseId,
-                sheet_id: sheet.id,
-                problem_id: p.id,
-              })
-            }
-                    imageUrl={(name) =>
-                      `${API_BASE}?action=attachment&course=${encodeURIComponent(courseId)}&sheet=${encodeURIComponent(sheet.id)}&name=${encodeURIComponent(name)}`
-                    }
-                    onAttachImage={async (file) => {
-                      setBusyProblem(p.id);
-                      try {
-                        const base64 = await readFileAsBase64(file);
-                        const r = await apiPost<{ sheet: SheetView }>('add_attachment', {
-                          course_id: courseId,
-                          sheet_id: sheet.id,
-                          problem_id: p.id,
-                          base64,
-                          caption: file.name.replace(/\.[a-z0-9]+$/i, ''),
-                        });
-                        setSheet(r.sheet);
-                        showToast(t('exercise.wb.toast.imageAttached', { name: file.name }));
-                      } catch (e) {
-                        showToast(t('exercise.wb.toast.uploadFailed', { error: (e as Error).message }));
-                      } finally {
-                        setBusyProblem('');
-                      }
-                    }}
-                    onDeleteImage={async (imageId) => {
-                      try {
-                        const r = await apiPost<{ sheet: SheetView }>('delete_attachment', {
-                          course_id: courseId,
-                          sheet_id: sheet.id,
-                          problem_id: p.id,
-                          image_id: imageId,
-                        });
-                        setSheet(r.sheet);
-                      } catch (e) {
-                        showToast(t('exercise.common.deleteFailed', { error: (e as Error).message }));
-                      }
-                    }}
-                    onRebuttal={async (text) => {
-                      setBusyProblem(p.id);
-                      try {
-                        const r = await apiPost<{ sheet: SheetView }>('rebut', {
-                          course_id: courseId,
-                          sheet_id: sheet.id,
-                          problem_id: p.id,
-                          text,
-                        });
-                        setSheet(r.sheet);
-                        const last = r.sheet.problems.find((x) => x.id === p.id)?.rebuttals.at(-1);
-                        showToast(
-                          last?.outcome === 'conceded'
-                            ? t('exercise.wb.toast.rebuttalConceded')
-                            : last?.outcome === 'upheld'
-                              ? t('exercise.wb.toast.rebuttalUpheld')
-                              : t('exercise.wb.toast.rebuttalPartial'),
-                        );
-                      } catch (e) {
-                        showToast(t('exercise.wb.toast.rebuttalFailed', { error: (e as Error).message }));
-                      } finally {
-                        setBusyProblem('');
-                      }
-                    }}
-                    onCollectMistake={() => void collectMistake(p.id)}
-                    onDelete={() => void deleteProblem(p.id)}
-                    onToast={showToast}
-                  />
-                ))}
+                {problemBlocks(sheet).map((b) =>
+                  b.kind === 'single' ? (
+                    renderCard(b.problem)
+                  ) : (
+                    <GroupCard
+                      key={`${courseId}/${sheet.id}/group/${b.group.id}`}
+                      group={b.group}
+                      parts={b.parts}
+                      pageImageUrl={pageUrlOf(b.group.page)}
+                      checking={b.parts.filter((x) => busyIds.has(x.id)).length}
+                      onCheckParts={() => void checkGroupParts(b.group.id)}
+                      onSaveGroup={(patch) => saveGroup(b.group.id, patch)}
+                      onMerge={() => void mergeParts(b.group.id)}
+                      onToast={showToast}
+                    >
+                      {b.parts.map((x) => renderCard(x))}
+                    </GroupCard>
+                  ),
+                )}
                 <div style={{ height: 40 }} />
               </>
             )}

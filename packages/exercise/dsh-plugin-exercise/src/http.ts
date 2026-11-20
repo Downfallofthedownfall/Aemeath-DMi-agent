@@ -198,7 +198,16 @@ export interface ExerciseHttpDeps {
   onLesson(input: { op: 'add' | 'update' | 'delete'; courseId: string; sheetId: string; lessonId?: string; text?: string; tags?: string[] }): Promise<{ ok: boolean; error?: string; sheet?: unknown }>;
 
   /** POST sync_worldbook */
-  onSyncWorldbook(input: { courseId?: string; sheetId?: string }): Promise<{ ok: boolean; error?: string; written?: number; skipped?: number; failed?: number; details?: string[] }>;
+  onSyncWorldbook(input: { courseId?: string; sheetId?: string }): Promise<{
+    ok: boolean;
+    error?: string;
+    written?: number;
+    skipped?: number;
+    failed?: number;
+    /** 撤回的条目（错题已掌握 / 经验已删 / 本地已没有） */
+    removed?: number;
+    details?: string[];
+  }>;
 
   /** POST build_submission */
   onBuildSubmission(input: {
@@ -243,6 +252,29 @@ export interface ExerciseHttpDeps {
 
   /** GET scratch：极简工作区（临时做题；必要时自动创建） */
   onScratch(): { ok: boolean; error?: string; sheet?: unknown };
+
+  /** POST ask：做题时提问（苏格拉底式提示，不给答案；临时，不落盘） */
+  onAsk(input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+    question: string;
+    history: Array<{ question: string; reply: string; questions: string[] }>;
+  }): Promise<{ ok: boolean; error?: string; reply?: string; questions?: string[]; provider?: string }>;
+
+  /** POST split_parts：按 a) b) 把一道题拆成小题 */
+  onSplitParts(input: { courseId: string; sheetId: string; problemId: string }): Promise<{ ok: boolean; error?: string; sheet?: unknown }>;
+
+  /** POST merge_parts：把一个大题的小题并回一道题 */
+  onMergeParts(input: { courseId: string; sheetId: string; groupId: string }): Promise<{ ok: boolean; error?: string; sheet?: unknown }>;
+
+  /** POST update_group：改大题的共用题干 / 标题 */
+  onUpdateGroup(input: {
+    courseId: string;
+    sheetId: string;
+    groupId: string;
+    patch: { text?: unknown; title?: unknown };
+  }): Promise<{ ok: boolean; error?: string; sheet?: unknown }>;
 
   /** POST approach：思路检查（可重复、临时，不落盘） */
   onApproach(input: {
@@ -778,6 +810,74 @@ export async function handleExerciseHttp(
             courseId,
             sheetId,
             problemId: str(parsed.problem_id, 40),
+          });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'ask': {
+          const courseId = str(parsed.course_id ?? '', 120);
+          const sheetId = str(parsed.sheet_id ?? '', 40);
+          const question = str(parsed.question ?? '', 2000).trim();
+          if (!courseId || !sheetId || !parsed.problem_id || !question) {
+            jsonError(res, 400, 'course/sheet/problem/question required');
+            return;
+          }
+          // 历史由前端拿着（临时），这里只收形状对的、最近几轮
+          const history = (Array.isArray(parsed.history) ? parsed.history : [])
+            .slice(-6)
+            .map((h) => {
+              const o = (h ?? {}) as Record<string, unknown>;
+              return {
+                question: str(o.question ?? '', 2000),
+                reply: str(o.reply ?? '', 4000),
+                questions: (Array.isArray(o.questions) ? o.questions : []).slice(0, 3).map((q) => str(q ?? '', 600)),
+              };
+            })
+            .filter((h) => h.question);
+          const r = await deps.onAsk({ courseId, sheetId, problemId: str(parsed.problem_id, 40), question, history });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'split_parts': {
+          const courseId = str(parsed.course_id ?? '', 120);
+          const sheetId = str(parsed.sheet_id ?? '', 40);
+          if (!courseId || !sheetId || !parsed.problem_id) {
+            jsonError(res, 400, 'course/sheet/problem required');
+            return;
+          }
+          const r = await deps.onSplitParts({ courseId, sheetId, problemId: str(parsed.problem_id, 40) });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'merge_parts': {
+          const courseId = str(parsed.course_id ?? '', 120);
+          const sheetId = str(parsed.sheet_id ?? '', 40);
+          if (!courseId || !sheetId || !parsed.group_id) {
+            jsonError(res, 400, 'course/sheet/group required');
+            return;
+          }
+          const r = await deps.onMergeParts({ courseId, sheetId, groupId: str(parsed.group_id, 40) });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'update_group': {
+          const courseId = str(parsed.course_id ?? '', 120);
+          const sheetId = str(parsed.sheet_id ?? '', 40);
+          const patch = (parsed.patch ?? {}) as Record<string, unknown>;
+          if (!courseId || !sheetId || !parsed.group_id || typeof patch !== 'object') {
+            jsonError(res, 400, 'course/sheet/group/patch required');
+            return;
+          }
+          // 题干不 trim（str 会 trim）：保留用户的换行和缩进
+          const r = await deps.onUpdateGroup({
+            courseId,
+            sheetId,
+            groupId: str(parsed.group_id, 40),
+            patch: { text: typeof patch.text === 'string' ? patch.text : undefined, title: typeof patch.title === 'string' ? patch.title : undefined },
           });
           json(res, r.ok ? 200 : 400, r);
           return;

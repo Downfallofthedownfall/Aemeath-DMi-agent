@@ -21,6 +21,7 @@
 
 import { join, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import type { Context } from '@deepseek-ai/cordis';
@@ -57,6 +58,7 @@ import {
   type LectureProgress,
 } from './digest.js';
 import { buildCheckPrompt, parseCheckOutput, runApproach, runCheck, runRebuttal, type AskLlm } from './checker.js';
+import { runAsk, type AskTurn } from './ask.js';
 import { answerFingerprint } from './hash.js';
 import {
   buildExerciseHandoff,
@@ -67,13 +69,23 @@ import {
 import {
   importExerciseHandoff,
   describeExerciseOutcome,
+  fileLedger,
   loadExerciseHandoff,
   findExerciseHandoffFiles,
   type ExerciseGatekeeper,
   type GateDecision,
   type WriteGateResult,
 } from './import-handoff.js';
-import { lessonToEntry, mistakeToEntry, appendWorldbookEntries } from './worldbook.js';
+import {
+  applyWorldbookChanges,
+  entryInScope,
+  lessonRef,
+  lessonToEntry,
+  mistakeRef,
+  mistakeToEntry,
+  scopeOf,
+  type WorldbookEntry,
+} from './worldbook.js';
 import { buildSubmissionHtml, type SubmissionProblem } from './pdf-html.js';
 import { katexCssInlined, renderMathToHtml } from './pdf-math.js';
 import { findChromium, renderSubmissionPdf } from './pdf-render.js';
@@ -100,6 +112,16 @@ import {
   type Rebuttal,
   type Sheet,
 } from './types.js';
+import {
+  distributeIntoParts,
+  groupFreshProblems,
+  mergeGroupInSheet,
+  mergePartsInto,
+  partsNeedingCheck,
+  pruneEmptyGroups,
+  splitProblemInSheet,
+  statementFor,
+} from './parts.js';
 
 export const name = 'aemeath-exercise';
 // webServer 可选：headless profile 里没有它，故用 reflect.get 惰性取（见 HTTP 桥）。
@@ -117,8 +139,12 @@ export const Config = z.object({
   dataDir: z.string(),
   /** 握手导出目录（空 = 数据根目录下的 handoff/）。 */
   handoffDir: z.string().default(''),
-  /** worldbook 的 physicist 馆目录（写经验/教训条目）。 */
-  worldbookLibraryDir: z.string().default('packages/worldbook/data/physicist'),
+  /**
+   * worldbook 馆目录（写经验/教训条目）。空 = 跟随 worldbook 插件的 `libraries[preset]`
+   * （与 memory 的桥接同一处来源，避免两份配置漂移）；worldbook 没挂（独立 profile）时
+   * 退回 `packages/worldbook/data/<preset>`。填了就是显式覆盖。
+   */
+  worldbookLibraryDir: z.string().default(''),
   /** lecture 的数据目录（只读：算学习进度摘要用）。 */
   lectureDataDir: z.string().default('packages/library/physicist/lectures'),
   /** 检查结果 wrong/partial 时自动进错题本（仍可手动改/删）。 */
@@ -207,15 +233,73 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     },
   };
   registerVolatileSettings('aemeath-exercise', { enabled: () => runtime.enabled });
+
+  // ============================================================
+  // `enabled` 开关真正控制工具（早先只打日志：设置页关掉后 13 个工具照样在模型面前）。
+  // 关 = 把 exercise_* 从工具表里拿掉；开 = 放回去。界面（侧栏 / HTTP 桥）不受影响。
+  // ============================================================
+  type ToolDef = Parameters<typeof ctx.tools.register>[0];
+  const toolDefs: ToolDef[] = [];
+  let toolDisposers: Array<() => void> = [];
+  const registerTool = (def: ToolDef): void => {
+    toolDefs.push(def);
+  };
+  const syncTools = (): void => {
+    if (runtime.enabled && !toolDisposers.length && toolDefs.length) {
+      toolDisposers = toolDefs.map((d) => ctx.tools.register(d));
+      log(`工具已挂载（${toolDefs.length} 个）`);
+    } else if (!runtime.enabled && toolDisposers.length) {
+      for (const dispose of toolDisposers) {
+        try {
+          dispose();
+        } catch {
+          /* 服务可能已卸载 */
+        }
+      }
+      toolDisposers = [];
+      log('设置已关闭习题工具：exercise_* 已从工具表移除');
+    }
+  };
   ctx.on('loader/volatile-update', () => {
     log(`settings 已更新: enabled=${runtime.enabled}`);
+    syncTools();
+  });
+  // 精简宿主（headless 测试 / 自建 ctx）可能没有 effect：没有就靠 tools 服务随上下文回收
+  (ctx as unknown as { effect?: (fn: () => () => void) => void }).effect?.(() => () => {
+    for (const dispose of toolDisposers) {
+      try {
+        dispose();
+      } catch {
+        /* 已随上下文卸载 */
+      }
+    }
+    toolDisposers = [];
   });
 
   // 测试/多实例隔离：EXERCISE_DATA_DIR 可以覆盖数据目录（e2e 用独立目录，避免动到真实题库）
   const dataDir = (process.env.EXERCISE_DATA_DIR ?? '').trim() || config.dataDir || 'packages/library/physicist/exercises';
   const store = new ExerciseStore({ rootDir: dataDir } satisfies StoreOptions);
   const handoffDir = config.handoffDir || join(dataDir, 'handoff');
-  const worldbookDir = config.worldbookLibraryDir ?? 'packages/worldbook/data/physicist';
+  const defaultPreset = config.defaultPreset || 'physicist';
+  /**
+   * 世界书馆目录：显式配置 → worldbook 服务的 libraries[preset]（C8：单一来源）→ 约定路径。
+   * 惰性解析：worldbook 插件可能比本插件晚加载。
+   */
+  const worldbookDirFor = (preset: string = defaultPreset): string => {
+    if (config.worldbookLibraryDir) return config.worldbookLibraryDir;
+    try {
+      const svc = (ctx as unknown as { reflect?: { get(n: string): unknown } }).reflect?.get('worldbook') as
+        | { libraries?: Record<string, string> }
+        | undefined;
+      const dir = svc?.libraries?.[preset];
+      if (dir) return dir;
+    } catch {
+      /* worldbook 未加载（独立 profile） */
+    }
+    return `packages/worldbook/data/${preset}`;
+  };
+  // 导入台账（握手导入去重；见 import-handoff.ts 的 ImportLedger）
+  const importLedger = fileLedger(join(store.rootPath, '_handoff_imported.json'));
   const lectureDataDir = config.lectureDataDir ?? 'packages/library/physicist/lectures';
   const autoCollect = config.autoCollectMistakes ?? true;
   // 批改/答辩的推理强度（用户定案 2026-10-23：默认 high —— 评测里 max 并不更好；
@@ -238,7 +322,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     model: config.llm?.model ?? '',
   };
 
-  log(`已挂载：dataDir=${store.rootPath} handoffDir=${handoffDir} worldbook=${worldbookDir} profile=${PROFILE_NAME}`);
+  log(
+    `已挂载：dataDir=${store.rootPath} handoffDir=${handoffDir} ` +
+      `worldbook=${config.worldbookLibraryDir || '（跟随 worldbook 插件的 libraries）'} profile=${PROFILE_NAME}`,
+  );
 
   // ============================================================
   // LLM 通道
@@ -324,13 +411,41 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
   };
 
-  /** 走全局 dsh LLM 运行时（与主 agent 同一套 provider/key/model）。 */
-  // 最近一次真正用到的通道（界面显示"谁批的"；也方便排查"推理是不是关了"）
+  /**
+   * "谁批的 / 推理开没开"的记录（界面显示，也方便排查）。
+   *
+   * 按**一次操作**记（AsyncLocalStorage）：早先是两个闭包变量，两道题同时检查、
+   * 或检查时顺手问了一句，后完成的会把先完成的那条的来源改写掉。
+   * 一次操作里调了多次模型（读图 + 文本）时，记录的是**最后一次**。
+   */
+  type LlmTrace = { route: string; reasoning: string };
+  const llmTrace = new AsyncLocalStorage<LlmTrace>();
   let lastLlmRoute = '';
   let lastLlmReasoning = '';
-  const llmProvider = (): string => lastLlmRoute || (llm.provider ? `${llm.provider}/${llm.model}` : 'unknown');
-  const llmReasoningState = (): string => lastLlmReasoning || 'high';
+  const noteLlm = (route: string, reasoning: string): void => {
+    const t = llmTrace.getStore();
+    if (t) {
+      t.route = route;
+      t.reasoning = reasoning;
+    }
+    lastLlmRoute = route;
+    lastLlmReasoning = reasoning;
+  };
+  const traced =
+    <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+    (...args: A): Promise<R> =>
+      llmTrace.run({ route: '', reasoning: '' }, () => fn(...args));
+  const llmProvider = (): string =>
+    llmTrace.getStore()?.route || lastLlmRoute || (llm.provider ? `${llm.provider}/${llm.model}` : 'unknown');
+  const llmReasoningState = (): string => llmTrace.getStore()?.reasoning || lastLlmReasoning || 'high';
+  /** 实际用的模型 id（`dsh:provider/model` / `direct:model` → model）。 */
+  const llmModel = (): string => {
+    const r = llmProvider();
+    const m = /^(?:dsh:[^/]+\/|direct:)(.+)$/.exec(r);
+    return m ? m[1]! : llm.model;
+  };
 
+  /** 走全局 dsh LLM 运行时（与主 agent 同一套 provider/key/model）。 */
   const askViaRuntime = async (
     prompt: string,
     opts: {
@@ -342,6 +457,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       reasoning?: 'off' | 'low' | 'high' | 'max';
       /** 单次调用超时（批改 180s；分块用默认 60s） */
       timeoutMs?: number;
+      /** 已解析好的路由（askLlm 先解析一次判断"运行时可不可用"，这里复用） */
+      route?: { provider: string; model: string };
     },
   ): Promise<string | null> => {
     const rt = llmRuntime();
@@ -349,10 +466,9 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     // ⚠️ 必须 bind：prepareCall 内部读 this.registration（TypertRemoteService），
     // 直接解构出来单独调用会得到 "Cannot read properties of undefined (reading 'registration')"。
     const prepareCall = rt.prepareCall.bind(rt);
-    const route = await resolveLlmRoute();
+    const route = opts.route ?? (await resolveLlmRoute());
     if (!route) return null;
-    lastLlmRoute = `dsh:${route.provider}/${route.model}`;
-    lastLlmReasoning = opts.noReasoning ? 'off' : (opts.reasoning ?? 'high');
+    noteLlm(`dsh:${route.provider}/${route.model}`, opts.noReasoning ? 'off' : (opts.reasoning ?? 'high'));
     const deadline = AbortSignal.timeout(opts.timeoutMs ?? LLM_TIMEOUT_MS_LOCAL);
     const request = async (noReasoning: boolean): Promise<string | null> => {
       const call = await prepareCall(
@@ -439,37 +555,48 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   const askLlm: AskLlm = async (prompt, opts) => {
     // ① 全局 dsh LLM（首选：同一套 provider/model/凭据）
     if (!opts.preferDirect) {
-      const viaRuntime = await askViaRuntime(prompt, {
-        maxTokens: opts.maxTokens,
-        purpose: opts.purpose,
-        noReasoning: opts.noReasoning,
-        reasoning: opts.reasoning,
-        timeoutMs: opts.timeoutMs,
-      });
-      if (viaRuntime) return viaRuntime;
+      const route = llmRuntime()?.prepareCall ? await resolveLlmRoute() : null;
+      if (route) {
+        // 运行时**在**：结果就是结果。调用失败/超时/空文本 → 返回 null 让调用方报错，
+        // **不**悄悄换成直连 DeepSeek —— 那会换掉用户在界面上选的模型，
+        // 批改结论也就不再是"主模型批的"。早先任何失败都会掉到下面的直连。
+        return askViaRuntime(prompt, {
+          maxTokens: opts.maxTokens,
+          purpose: opts.purpose,
+          noReasoning: opts.noReasoning,
+          reasoning: opts.reasoning,
+          timeoutMs: opts.timeoutMs,
+          route,
+        });
+      }
     }
 
-    // ② 直连兜底（key 仍来自全局 credentials；仅在没有 llm 运行时的环境下走）
+    // ② 直连兜底：**只在没有 llm 运行时（headless / 独立 profile 刚启动）时**走。
+    //    key 仍来自全局 credentials；超时与推理强度照调用方给的来（批改 180s + high），
+    //    不再固定 60s、也不再默认关推理。
     const apiKey = await resolveLlmKey();
     if (!apiKey) {
       warn(`LLM 不可用（${opts.purpose}）：既没有全局 LLM 运行时，也没有 DEEPSEEK_API_KEY`);
       return null;
     }
+    const directModel = llm.model || 'deepseek-v4-flash';
+    const wantReasoning = !opts.noReasoning && opts.reasoning && opts.reasoning !== 'off' ? opts.reasoning : undefined;
     try {
       const t0 = Date.now();
-      lastLlmRoute = `direct:${llm.model || 'deepseek-v4-flash'}`;
-      lastLlmReasoning = 'off';
+      noteLlm(`direct:${directModel}`, wantReasoning ?? 'off');
       const resp = await fetch(`${llm.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
-          model: llm.model || 'deepseek-v4-flash',
+          model: directModel,
           messages: [{ role: 'user', content: prompt }],
           response_format: { type: 'json_object' },
           max_tokens: opts.maxTokens,
           temperature: 0.2,
+          // 与多模态通道同一套写法：要推理就给强度，不要就显式关（否则推理吃光 max_tokens）
+          ...(wantReasoning ? { reasoning_effort: wantReasoning } : { thinking: { type: 'disabled' } }),
         }),
-        signal: AbortSignal.timeout(LLM_TIMEOUT_MS_LOCAL),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? LLM_TIMEOUT_MS_LOCAL),
       });
       if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
       const data = (await resp.json()) as {
@@ -480,7 +607,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       const content = choice?.message?.content ?? '';
       const finishReason = choice?.finish_reason ?? 'unknown';
       log(
-        `LLM（直连兜底）：${llm.model || 'deepseek-v4-flash'} ${Date.now() - t0}ms ` +
+        `LLM（直连兜底）：${directModel}（推理 ${wantReasoning ?? '关'}）${Date.now() - t0}ms ` +
           `len=${content.length} finish=${finishReason} usage=${JSON.stringify(data.usage ?? {})}`,
       );
       if (!content.trim()) {
@@ -558,8 +685,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         usage: data.usage ?? {},
       };
     };
-    lastLlmRoute = `direct:${model}`;
-    lastLlmReasoning = wantReasoning ?? 'off';
+    noteLlm(`direct:${model}`, wantReasoning ?? 'off');
     try {
       let withReasoning = !!wantReasoning;
       // 实际被接受的模型：下面放大预算重试时要沿用它，不能又回到被拒的那个
@@ -572,6 +698,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           warn(`多模态：模型 ${model} 被拒（HTTP ${resp.status}）→ 换 ${alt} 重试`);
           resp = await call(alt, withReasoning);
           usedModel = alt;
+          noteLlm(`direct:${alt}`, wantReasoning ?? 'off');
         }
       }
       let got = resp ? await read(resp) : null;
@@ -779,6 +906,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       images: [],
       mistakes: [],
       notes: '',
+      group: '',
+      part: '',
     }));
 
   interface ImportResult {
@@ -870,6 +999,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       ]);
     }
 
+    // 带 a) b) 小题的题拆成大题 + 小题（每个小题单独作答、单独检查）
+    const grouped = groupFreshProblems(problems);
     const now = Date.now();
     const sheet: Sheet = {
       id: sheetId,
@@ -886,7 +1017,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       needs_manual_text: !!pdfBytes && !text.trim() && rendered.length === 0,
       progress_digest: '',
       progress_digest_at: 0,
-      problems,
+      problems: grouped.problems,
+      groups: grouped.groups,
       lessons: [],
       submitted_at: 0,
       submission_pdf: '',
@@ -942,6 +1074,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       progress_digest: '',
       progress_digest_at: 0,
       problems: [],
+      groups: [],
       lessons: [],
       submitted_at: 0,
       submission_pdf: '',
@@ -1029,6 +1162,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       images: [],
       mistakes: [],
       notes: '',
+      group: '',
+      part: '',
     };
     // 避免 id 冲突（删过题之后 length 可能与已用 id 重复）
     const used = new Set(sheet.problems.map((x) => x.id));
@@ -1040,12 +1175,146 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     return { ok: true, sheet };
   };
 
+  /** 给模型的题目字段：小题 = 大题题干 + 【b)】本小题，另带前面小题的作答（parts.ts）。 */
+  const promptFields = (sheet: Sheet, p: Problem) => {
+    const st = statementFor(sheet, p);
+    return { problemLabel: st.label, problemTitle: st.title, points: st.points, problemText: st.text, earlier: st.earlier };
+  };
+
+  /** 错题本里指向这些题的条目改指新题（跳转、防重复收集都按 problem_id 找）。 */
+  const repointMistakes = (courseId: string, sheetId: string, fromIds: readonly string[], to: Problem): void => {
+    const oldRefs = new Set<string>();
+    for (const m of store.readMistakes()) {
+      if (m.course_id === courseId && m.sheet_id === sheetId && fromIds.includes(m.problem_id)) {
+        if (m.problem_id !== to.id && m.in_worldbook) oldRefs.add(mistakeRef(courseId, sheetId, m.problem_id));
+        // 世界书条目按 题号 定位：题号变了，旧条目撤回、标记清掉，下次同步按新题号重写
+        store.patchMistake(m.id, {
+          problem_id: to.id,
+          problem_label: to.label || to.id,
+          ...(m.problem_id !== to.id ? { in_worldbook: false } : {}),
+        });
+      }
+    }
+    if (oldRefs.size) retractWorldbook((e) => !!e.ref && oldRefs.has(e.ref), '错题换了题号');
+  };
+
+  /** 把一道题按 a) b) 拆成小题；答案 / 检查 / 错题一起搬（见 parts.ts 的 distributeIntoParts）。 */
+  const splitIntoParts = (input: { courseId: string; sheetId: string; problemId: string }) => {
+    const sheet = store.readSheet(input.courseId, input.sheetId);
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
+    const ids = splitProblemInSheet(sheet, input.problemId);
+    if (!ids) {
+      return {
+        ok: false,
+        error: tr(
+          '没找到连续的小题标记（a) b) … 或 i) ii) …）—— 先「改题干」让每个小题另起一行，再拆',
+          'No consecutive part markers found (a) b) … or i) ii) …) — edit the statement so each part starts on its own line, then split again',
+        ),
+      };
+    }
+    const first = sheet.problems.find((x) => x.id === ids[0])!;
+    repointMistakes(input.courseId, sheet.id, [input.problemId], first);
+    store.writeSheet(input.courseId, sheet);
+    log(`拆小题：${input.problemId} → ${ids.join(' / ')}`);
+    return { ok: true, sheet, parts: ids };
+  };
+
+  /** 合并一个大题的小题（拆错了时用）。 */
+  const mergeParts = (input: { courseId: string; sheetId: string; groupId: string }) => {
+    const sheet = store.readSheet(input.courseId, input.sheetId);
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
+    const before = sheet.problems.filter((x) => x.group === input.groupId).map((x) => x.id);
+    const merged = mergeGroupInSheet(sheet, input.groupId);
+    if (!merged) return { ok: false, error: tr('大题不存在', 'Problem group not found') };
+    repointMistakes(input.courseId, sheet.id, before, merged);
+    store.writeSheet(input.courseId, sheet);
+    log(`合并小题：${before.join(' / ')} → ${merged.id}`);
+    return { ok: true, sheet };
+  };
+
+  /** 改大题的共用题干 / 标题（OCR 漏字时手补）。 */
+  const updateGroup = (input: { courseId: string; sheetId: string; groupId: string; patch: { text?: unknown; title?: unknown } }) => {
+    const sheet = store.readSheet(input.courseId, input.sheetId);
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
+    const g = (sheet.groups ?? []).find((x) => x.id === input.groupId);
+    if (!g) return { ok: false, error: tr('大题不存在', 'Problem group not found') };
+    if (typeof input.patch.text === 'string') g.text = input.patch.text.slice(0, 20_000);
+    if (typeof input.patch.title === 'string') g.title = input.patch.title.slice(0, 200);
+    store.writeSheet(input.courseId, sheet);
+    return { ok: true, sheet };
+  };
+
+  /**
+   * 做题时提问：苏格拉底式提示，**不给答案、不注入 persona**（ask.ts）。
+   * 和思路检查一样是临时的：问答留在前端，不写 sheet.json。
+   */
+  const askAboutProblem = traced(async (input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+    question: string;
+    history: AskTurn[];
+  }): Promise<{ ok: boolean; error?: string; reply?: string; questions?: string[]; provider?: string }> => {
+    const question = input.question.trim();
+    if (!question) return { ok: false, error: tr('问题是空的', 'The question is empty') };
+    const sheet = store.readSheet(input.courseId, input.sheetId);
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
+    const p = store.findProblem(sheet, input.problemId);
+    if (!p) return { ok: false, error: tr('题目不存在', 'Problem not found') };
+    const course = store.readIndex(input.courseId);
+    const st = statementFor(sheet, p);
+    const pageNumbers = store.listPageImages(input.courseId, input.sheetId);
+    const pageNos =
+      input.courseId === SCRATCH_COURSE
+        ? pageNumbers.slice(0, 4)
+        : (p.page > 0 ? [p.page, p.page + 1] : pageNumbers.slice(0, 1)).filter((n) => pageNumbers.includes(n));
+    const pageImages: Array<{ base64: string; mediaType: string; page: number }> = [];
+    for (const n of pageNos) {
+      const got = store.readPageImage(input.courseId, input.sheetId, n);
+      if (got) pageImages.push({ base64: got.bytes.toString('base64'), mediaType: got.mediaType, page: n });
+    }
+    const readImages = (role: 'problem' | 'answer'): Array<{ base64: string; mediaType: string; name: string }> =>
+      p.images
+        .filter((img) => (role === 'problem' ? img.role === 'problem' : img.role !== 'problem'))
+        .slice(0, 3)
+        .map((img) => {
+          const got = store.readImage(input.courseId, input.sheetId, img.name);
+          return got ? { base64: got.bytes.toString('base64'), mediaType: got.mediaType, name: img.name } : null;
+        })
+        .filter((x): x is { base64: string; mediaType: string; name: string } => !!x);
+    const result = await runAsk(
+      {
+        courseTitle: course?.title ?? input.courseId,
+        problemLabel: st.label,
+        points: st.points,
+        problemText: st.text,
+        earlier: st.earlier,
+        draft: p.answer,
+        question: question.slice(0, 2000),
+        history: input.history,
+        lang: uiLang(),
+        statementImages: readImages('problem'),
+        pageImages,
+        answerImages: readImages('answer'),
+      },
+      askLlm,
+      askVision,
+    );
+    if (!result.ok || !result.parsed) {
+      warn(`提问失败（${p.id}）：${result.error}`);
+      return { ok: false, error: result.error ?? tr('模型没返回可解析的结果', 'Unparseable model output') };
+    }
+    log(`提问（${p.id}）：${result.parsed.questions.length} 个引导问题`);
+    return { ok: true, reply: result.parsed.reply, questions: result.parsed.questions, provider: llmProvider() };
+  });
+
   const deleteProblem = async (input: { courseId: string; sheetId: string; problemId: string }) => {
     const sheet = store.readSheet(input.courseId, input.sheetId);
     if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const i = sheet.problems.findIndex((p) => p.id === input.problemId);
     if (i === -1) return { ok: false, error: tr('题目不存在', 'Problem not found') };
     sheet.problems.splice(i, 1);
+    pruneEmptyGroups(sheet);
     store.writeSheet(input.courseId, sheet);
     return { ok: true, sheet };
   };
@@ -1132,20 +1401,22 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
     // 分块要等多模态/LLM，期间答案可能还在自动保存 → 以磁盘上的最新版为准对齐
     const latest = store.readSheet(input.courseId, input.sheetId) ?? sheet;
-    const fresh = problemsFromSplit(parts);
+    const grouped = groupFreshProblems(problemsFromSplit(parts));
+    const fresh = grouped.problems;
     // 按 label 对齐旧题的全部用户数据（题号是最稳的锚点；重新分块不该丢任何用户写的东西）。
     //
     // ⚠️ 早先只在"有文字答案"时才带回 answer/checks/notes/mistakes：
     //    附图（含手写答案的照片）和答辩记录一律丢掉，只有照片、没打字的题更是什么都不剩。
     //    每道旧题只认领一次，免得重复题号把同一份答案复制到几道题上。
+    const hasUserData = (o: Problem): boolean =>
+      !!(o.answer.trim() || o.notes.trim() || o.images.length || o.checks.length || o.rebuttals.length || o.mistakes.length);
     const claimed = new Set<Problem>();
     let kept = 0;
+    // ① 同题号一对一（小题的标签是 "Aufgabe 1 a)"，前后都拆了小题时也走这里）
     for (const p of fresh) {
       const old = latest.problems.find((o) => o.label === p.label && !claimed.has(o));
       if (!old) continue;
-      const hasUserData =
-        old.answer.trim() || old.notes.trim() || old.images.length || old.checks.length || old.rebuttals.length || old.mistakes.length;
-      if (!hasUserData) continue;
+      if (!hasUserData(old)) continue;
       claimed.add(old);
       p.answer = old.answer;
       p.answer_updated_at = old.answer_updated_at;
@@ -1157,7 +1428,29 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       p.mistakes = old.mistakes;
       kept++;
     }
+    // ② 以前是一整道题、这次拆出了小题：答案按 a) b) 分过去
+    for (const g of grouped.groups) {
+      const partsOfG = fresh.filter((p) => p.group === g.id);
+      if (partsOfG.some(hasUserData)) continue;
+      const old = latest.problems.find((o) => !o.group && o.label === g.label && !claimed.has(o) && hasUserData(o));
+      if (!old) continue;
+      claimed.add(old);
+      distributeIntoParts(old, partsOfG);
+      kept++;
+    }
+    // ③ 以前拆成了小题、这次没拆出来：并回一道题
+    for (const p of fresh) {
+      if (p.group || hasUserData(p)) continue;
+      const oldGroup = (latest.groups ?? []).find((g) => g.label === p.label);
+      if (!oldGroup) continue;
+      const oldParts = latest.problems.filter((o) => o.group === oldGroup.id && !claimed.has(o));
+      if (!oldParts.some(hasUserData)) continue;
+      for (const o of oldParts) claimed.add(o);
+      mergePartsInto(p, oldParts);
+      kept++;
+    }
     latest.problems = fresh;
+    latest.groups = grouped.groups;
     latest.split_by = by;
     store.writeSheet(input.courseId, latest);
     log(`重新分块：${latest.problems.length} 题（${by}，保留 ${kept} 题的作答）`);
@@ -1211,8 +1504,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         images: [],
         mistakes: [],
         notes: '',
+        group: '',
+        part: '',
       },
     ],
+    groups: [],
     lessons: [],
     submitted_at: 0,
     submission_pdf: '',
@@ -1292,7 +1588,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
    * 因此：不发自动触发、不写 sheet.json、不进错题本 —— 只把当前草稿和题目交给模型，
    * 返回一份临时结果，前端自己拿在手里，直到用户点「清除」。
    */
-  const checkApproach = async (input: {
+  const checkApproach = traced(async (input: {
     courseId: string;
     sheetId: string;
     problemId: string;
@@ -1339,10 +1635,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         courseTitle: course?.title ?? input.courseId,
         sheetNumber: sheet.number,
         sheetTitle: sheet.title,
-        problemLabel: p.label || p.id,
-        problemTitle: p.title,
-        points: p.points,
-        problemText: p.text,
+        ...promptFields(sheet, p),
         draft,
         notes: p.notes,
         statementImages: readImages('problem'),
@@ -1365,11 +1658,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       verdict: result.parsed.verdict,
       issues: result.parsed.issues,
       note: result.parsed.note,
-      model: llm.model,
+      model: llmModel(),
       provider: llmProvider(),
       reasoning: llmReasoningState(),
     };
-  };
+  });
   /** 重置极简工作区：清空题目/答案/检查/附图。 */
   const resetScratch = (): Sheet => {
     const fresh = blankScratchSheet();
@@ -1390,7 +1683,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // 手动检查（D3）
   // ============================================================
 
-  const checkProblem = async (input: {
+  const checkProblem = traced(async (input: {
     courseId: string;
     sheetId: string;
     problemId: string;
@@ -1445,10 +1738,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         courseTitle: course?.title ?? input.courseId,
         sheetNumber: sheet.number,
         sheetTitle: sheet.title,
-        problemLabel: p.label || p.id,
-        problemTitle: p.title,
-        points: p.points,
-        problemText: p.text,
+        ...promptFields(sheet, p),
         answer: p.answer,
         notes: p.notes,
         progressDigest: sheet.progress_digest,
@@ -1477,7 +1767,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const check: Check = {
       id: `c${now.toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
       created_at: now,
-      model: llm.model,
+      model: llmModel(),
       verdict: result.check?.verdict ?? 'error',
       score: result.check?.score ?? null,
       issues: result.check?.issues ?? [],
@@ -1524,7 +1814,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const latest = store.readSheet(input.courseId, input.sheetId) ?? fresh;
     store.writeSheetMarkdown(input.courseId, latest);
     return { ok: true, check, sheet: latest, mistake };
-  };
+  });
 
   // ============================================================
   // 答案附图（手画示意图）：存在 <sheet>/images/，检查/PDF/界面都带
@@ -1602,7 +1892,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // 答辩（学生 vs 批改）：让模型重新独立推导，必须承认或给出证据
   // ============================================================
 
-  const rebutProblem = async (input: {
+  const rebutProblem = traced(async (input: {
     courseId: string;
     sheetId: string;
     problemId: string;
@@ -1653,10 +1943,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           courseTitle: course?.title ?? input.courseId,
           sheetNumber: sheet.number,
           sheetTitle: sheet.title,
-          problemLabel: p.label || p.id,
-          problemTitle: p.title,
-          points: p.points,
-          problemText: p.text,
+          ...promptFields(sheet, p),
           answer: p.answer,
           notes: p.notes,
           progressDigest: sheet.progress_digest,
@@ -1709,7 +1996,13 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       const m = store.findMistakeFor(input.courseId, input.sheetId, p.id);
       if (m) {
         // 走 patchMistake（严格读 + 保留坏条目），不再用宽松读整份写回
-        store.patchMistake(m.id, { mastered: true, lesson: m.lesson || '答辩后确认：原批改有误，答案本身是对的' });
+        store.patchMistake(m.id, {
+          mastered: true,
+          lesson: m.lesson || tr('答辩后确认：原批改有误，答案本身是对的', 'Confirmed after rebuttal: the original grading was wrong; the answer itself is correct'),
+          in_worldbook: false,
+        });
+        // 已掌握 = 不该再被主 agent 提醒"你上次在这里栽过"
+        retractWorldbook((e) => e.ref === mistakeRef(m.course_id, m.sheet_id, m.problem_id), '答辩撤回批改');
         log(`答辩撤回批改 → 错题 ${m.id} 标为已掌握`);
       }
     }
@@ -1718,7 +2011,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     store.writeSheetMarkdown(input.courseId, fresh);
     log(`答辩：outcome=${rb.outcome}（撤回 ${rb.withdrawn.length} 条，保留 ${rb.remaining.length} 条）`);
     return { ok: true, rebuttal: rb, sheet: fresh, check: freshTarget };
-  };
+  });
 
   // ============================================================
   // 错题本
@@ -1832,13 +2125,21 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       const i = sheet.lessons.findIndex((l) => l.id === input.lessonId);
       if (i === -1) return { ok: false, error: tr('经验条目不存在', 'Lesson not found') };
       if (input.op === 'delete') {
-        sheet.lessons.splice(i, 1);
+        const [gone] = sheet.lessons.splice(i, 1);
+        // 经验删了，世界书里那条也撤回（否则主 agent 还会继续引用一条用户已经删掉的经验）
+        if (gone?.in_worldbook) {
+          const cid = store.readIndex(input.courseId)?.course_id ?? input.courseId;
+          retractWorldbook((e) => e.ref === lessonRef(cid, sheet.id, gone.id), '经验已删除');
+        }
       } else {
         if (input.text !== undefined) {
           sheet.lessons[i]!.text = input.text.slice(0, 2000);
           sheet.lessons[i]!.in_worldbook = false; // 内容变了要重新同步
         }
-        if (input.tags) sheet.lessons[i]!.tags = input.tags.slice(0, 6);
+        if (input.tags) {
+          sheet.lessons[i]!.tags = input.tags.slice(0, 6);
+          sheet.lessons[i]!.in_worldbook = false; // 标签进触发词，同样要重新同步
+        }
       }
     }
     store.writeSheet(input.courseId, sheet);
@@ -1850,61 +2151,125 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // worldbook 同步（错题教训 + 经验）
   // ============================================================
 
+  /**
+   * 撤回世界书条目（删错题 / 标已掌握 / 删经验 / 删套题时用）。
+   * 失败只记日志，不影响用户手上的主操作；没挂 worldbook（馆目录不存在）是常态，不刷警告。
+   */
+  const retractWorldbook = (remove: (e: WorldbookEntry) => boolean, why: string): number => {
+    const r = applyWorldbookChanges(worldbookDirFor(), { remove });
+    if (!r.ok) {
+      if (r.error && !/馆目录不存在|Library directory not found/.test(r.error)) warn(`世界书撤回失败（${why}）：${r.error}`);
+      return 0;
+    }
+    if (r.removed.length) log(`世界书撤回 ${r.removed.length} 条（${why}）`);
+    return r.removed.length;
+  };
+
+  /**
+   * 把本地的经验 / 错题教训同步进世界书。
+   *
+   * 语义是"让世界书与本地数据一致"（范围内的快照），而不是"只追加没同步过的"：
+   *   · 每条经验、每道**未掌握**的错题 → 按 ref 新增或整条替换（内容改过的会更新）
+   *   · 已掌握的错题 → 撤回（不管条目是本地写的还是握手导入的）
+   *   · 范围内由本机写过、但本地已经没有了的条目 → 撤回
+   *   · 握手导入的条目（另一台机器的数据）不在"本地没有就删"之列
+   * 全部变更**一次**原子写完：要么全成要么全不成，同步标记只在成功后打。
+   */
   const syncWorldbook = async (input: { courseId?: string; sheetId?: string }) => {
-    const courses = input.courseId ? [input.courseId] : store.listCourses();
-    if (!courses.length) return fail('还没有课程');
-    const entries = [];
-    const touchedLessons: Array<{ courseId: string; sheet: Sheet; lesson: Lesson }> = [];
-    const touchedMistakes: Mistake[] = [];
-    for (const cid of courses) {
+    const courseDirs = input.courseId ? [input.courseId] : store.listCourses();
+    if (!courseDirs.length) return fail(tr('还没有课程', 'No courses yet'));
+    const dir = worldbookDirFor();
+    const upserts: WorldbookEntry[] = [];
+    const scopes: Array<{ courseId: string; courseTitle: string; sheetId?: string }> = [];
+    /** ref → 这条经验在哪（成功后回写 in_worldbook） */
+    const lessonAt = new Map<string, { courseDir: string; sheetId: string; lessonId: string }>();
+    /** 错题 id → 同步后它在不在世界书里 */
+    const mistakeFlags = new Map<string, boolean>();
+    const retract = new Set<string>();
+    for (const cid of courseDirs) {
       const course = store.readIndex(cid);
       if (!course) continue;
+      scopes.push({ courseId: course.course_id, courseTitle: course.title, sheetId: input.sheetId });
       for (const sheet of store.listSheets(cid)) {
-        if (input.sheetId && sheet.id !== input.sheetId) continue;
+        if (input.sheetId && sheet.id !== safeSheetId(input.sheetId)) continue;
         for (const lesson of sheet.lessons) {
-          if (lesson.in_worldbook) continue;
-          const e = lessonToEntry(course.title, sheet, lesson);
-          if (e) {
-            entries.push(e);
-            touchedLessons.push({ courseId: cid, sheet, lesson });
-          }
+          const e = lessonToEntry({ courseId: course.course_id, courseTitle: course.title, sheet, lesson });
+          if (!e?.ref) continue;
+          upserts.push(e);
+          lessonAt.set(e.ref, { courseDir: cid, sheetId: sheet.id, lessonId: lesson.id });
         }
       }
     }
+    if (!scopes.length) return fail(tr(`课程不存在：${input.courseId ?? ''}`, `Course not found: ${input.courseId ?? ''}`));
+    const inCourses = new Set(scopes.map((s) => safeCourseId(s.courseId)));
     for (const m of store.readMistakes()) {
-      if (m.in_worldbook) continue;
-      if (input.courseId && m.course_id !== input.courseId) continue;
-      if (input.sheetId && m.sheet_id !== input.sheetId) continue;
-      const e = mistakeToEntry(m);
+      if (!inCourses.has(safeCourseId(m.course_id))) continue;
+      if (input.sheetId && safeSheetId(m.sheet_id) !== safeSheetId(input.sheetId)) continue;
+      const e = m.mastered ? null : mistakeToEntry(m);
       if (e) {
-        entries.push(e);
-        touchedMistakes.push(m);
+        upserts.push(e);
+        mistakeFlags.set(m.id, true);
+      } else {
+        // 已掌握 / 没有可写的教训 → 世界书里不该有它
+        if (m.mastered) retract.add(mistakeRef(m.course_id, m.sheet_id, m.problem_id));
+        mistakeFlags.set(m.id, false);
       }
     }
-    if (!entries.length) {
-      return ok({ written: 0, skipped: 0, failed: 0, note: '没有新的经验/错题教训需要同步' });
-    }
-    const r = appendWorldbookEntries(worldbookDir, entries);
-    if (r.failed && !r.written) {
-      return fail(`世界书写入失败：${r.errors[0] ?? '未知错误'}`, {
-        worldbook_dir: worldbookDir,
+
+    const r = applyWorldbookChanges(dir, {
+      upserts,
+      remove: (e) => {
+        if (e.ref && retract.has(e.ref)) return true;
+        if (!scopes.some((s) => entryInScope(e, s))) return false;
+        // 范围内、这次不再需要的：本机写的（或没有 ref 的老条目）撤回；握手导入的留着
+        return !e.ref || e.origin !== 'handoff';
+      },
+    });
+    if (!r.ok) {
+      return fail(tr(`世界书写入失败：${r.error ?? '未知错误'}`, `Worldbook write failed: ${r.error ?? 'unknown error'}`), {
+        worldbook_dir: dir,
         written: 0,
       });
     }
-    // 只有真正写进去（或已存在）的才 mark，避免"标了但没写"
-    for (const t of touchedLessons) {
-      t.lesson.in_worldbook = true;
-      store.writeSheet(t.courseId, t.sheet);
+
+    // 成功之后才打标记（一次写入，不存在"部分成功"）
+    const bySheet = new Map<string, { courseDir: string; sheetId: string; lessonIds: Set<string> }>();
+    for (const at of lessonAt.values()) {
+      const k = `${at.courseDir}/${at.sheetId}`;
+      const g = bySheet.get(k) ?? { courseDir: at.courseDir, sheetId: at.sheetId, lessonIds: new Set<string>() };
+      g.lessonIds.add(at.lessonId);
+      bySheet.set(k, g);
     }
-    for (const m of touchedMistakes) store.patchMistake(m.id, { in_worldbook: true });
-    log(`worldbook 同步：写入 ${r.written} 条，已存在 ${r.skipped} 条，失败 ${r.failed} 条 → ${worldbookDir}`);
+    for (const g of bySheet.values()) {
+      const fresh = store.readSheet(g.courseDir, g.sheetId);
+      if (!fresh) continue;
+      let dirty = false;
+      for (const l of fresh.lessons) {
+        if (g.lessonIds.has(l.id) && !l.in_worldbook) {
+          l.in_worldbook = true;
+          dirty = true;
+        }
+      }
+      if (dirty) store.writeSheet(g.courseDir, fresh);
+    }
+    store.setMistakesInWorldbook(mistakeFlags);
+
+    const written = r.added.length + r.updated.length;
+    log(
+      `worldbook 同步：新增 ${r.added.length} · 更新 ${r.updated.length} · 未变 ${r.unchanged.length} · ` +
+        `撤回 ${r.removed.length} → ${dir}`,
+    );
     return ok({
-      written: r.written,
-      skipped: r.skipped,
-      failed: r.failed,
-      worldbook_dir: worldbookDir,
-      details: r.errors.slice(0, 5),
-      note: 'worldbook 热重载 ≤3s 生效（主 agent 讲同类题时会主动提起）',
+      written,
+      skipped: r.unchanged.length,
+      removed: r.removed.length,
+      failed: 0,
+      worldbook_dir: dir,
+      details: [],
+      note:
+        written || r.removed.length
+          ? tr('worldbook 热重载 ≤3s 生效（主 agent 讲同类题时会主动提起）', 'Worldbook hot-reloads within 3s (the main agent will bring it up on similar problems)')
+          : tr('世界书已是最新', 'Worldbook is already up to date'),
     });
   };
 
@@ -1913,7 +2278,13 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // ============================================================
 
   const submissionProblemsOf = (courseId: string, sheet: Sheet): SubmissionProblem[] =>
-    sheet.problems.map((p) => ({
+    sheet.problems.map((p, i) => ({
+      // 大题的第一个小题前面印一次大题题干
+      groupHead: (() => {
+        const g = p.group ? (sheet.groups ?? []).find((x) => x.id === p.group) : undefined;
+        if (!g || sheet.problems[i - 1]?.group === g.id) return undefined;
+        return { label: g.label, title: g.title, text: g.text, points: g.points };
+      })(),
       label: p.label || p.id,
       title: p.title,
       text: p.text,
@@ -2268,8 +2639,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       }
       const o = await importExerciseHandoff(h, gk, {
         dryRun: input.dryRun ?? true,
-        preset: input.preset ?? 'physicist',
-        worldbookDir,
+        preset: input.preset ?? defaultPreset,
+        // 馆目录跟着目标 preset 走（早先写死 physicist 馆：preset=aemeath 时记忆进了 aemeath，世界书却还在 physicist）
+        worldbookDir: worldbookDirFor(input.preset ?? defaultPreset),
+        // 台账：同一条内容只写一次（握手文件导入后还留在目录里，早先每导一次就重复写一遍）
+        ledger: importLedger,
       });
       outcomes.push(describeExerciseOutcome(o));
       mem += o.memoriesWritten;
@@ -2295,8 +2669,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // ============================================================
 
   const buildCourseViews = () =>
-    store.listCourses().map((cid) => {
-      const idx = store.readIndex(cid)!;
+    store.listCourses().flatMap((cid) => {
+      // index.json 坏掉 / schema 不符时 readIndex 返回 null（已打警告）：跳过这门课，
+      // 别让一门课把整个课程列表（GET courses / exercise_list）一起拖成 500
+      const idx = store.readIndex(cid);
+      if (!idx) return [];
       return {
         course_id: idx.course_id,
         title: idx.title,
@@ -2365,8 +2742,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   const buildSymbolsView = async () => {
     try {
       // 借 lecture 的符号表（用户要求"符号之类的可以适当抄 lecture"）。
-      // 动态 import：exercise 可能在没装 lecture 的 profile 里跑（独立 profile），
-      // 静态 import 会让整个插件在那种情况下加载失败。
+      // lecture 是**硬依赖**（handoff.ts 静态 import 了它的 handoff 模块，两个 profile 都装了它）；
+      // 这里仍用动态 import 只是为了惰性加载 —— 符号表只有打开符号面板时才用得上。
       const mod = (await import('@aemeath/dsh-plugin-lecture/symbols')) as {
         SYMBOL_GROUPS?: unknown;
         SYMBOL_LABEL_EN?: unknown;
@@ -2399,7 +2776,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // 工具集
   // ============================================================
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_list',
       description:
@@ -2417,7 +2794,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_new_sheet',
       description:
@@ -2448,7 +2825,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_open',
       description:
@@ -2489,7 +2866,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_problem',
       description:
@@ -2512,7 +2889,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           title: p.title,
           points: p.points ?? 0,
           page: p.page,
-          text: p.text,
+          // 小题：连同大题题干一起给（"【b)】…" 标出本小题），否则 agent 看不到已知条件
+          text: statementFor(sheet, p).text,
           answer: p.answer,
           notes: p.notes,
           status: problemStatus(p),
@@ -2523,7 +2901,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_save_answer',
       description:
@@ -2557,7 +2935,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_check',
       description:
@@ -2586,7 +2964,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_collect_mistake',
       description:
@@ -2620,7 +2998,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_lessons',
       description:
@@ -2661,7 +3039,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_sync_worldbook',
       description:
@@ -2676,7 +3054,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_build_submission',
       description:
@@ -2699,7 +3077,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_progress',
       description:
@@ -2715,7 +3093,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_scratch',
       description:
@@ -2741,7 +3119,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_attach_image',
       description:
@@ -2781,7 +3159,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_rebut',
       description:
@@ -2815,7 +3193,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_export_text',
       description:
@@ -2843,7 +3221,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_export_handoff',
       description:
@@ -2866,7 +3244,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_import_handoff',
       description:
@@ -2883,7 +3261,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'exercise_resplit',
       description:
@@ -2909,6 +3287,10 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       },
     }),
   );
+
+  // 按当前开关挂载（之后随设置页的 volatile 更新增删）
+  syncTools();
+  if (!runtime.enabled) log('设置里关闭了习题工具：exercise_* 暂不挂载（界面仍可用）');
 
   // ============================================================
   // HTTP 桥（前端）
@@ -2960,6 +3342,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       },
       buildMistakes: () => buildMistakesView(),
       buildDigestPreview: (c) => buildDigestPreview(c),
+      // symbols 由下面的 symbolHandler 先截走（异步读 lecture 的符号表）；http.ts 里的同名分支只是兜底
       buildSymbols: () => ({ groups: [], notation: null, combining: null }),
       readSourceText: (c, s) => store.readSourceText(c, s),
       sourcePdfPath: (c, s) => (store.hasSourcePdf(c, s) ? store.sourcePdfFile(c, s) : null),
@@ -3017,16 +3400,32 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         return m ? { ok: true, mistake: m } : { ok: false, error: tr('加入失败（题集或题目不存在）', 'Could not add (sheet or problem not found)') };
       },
       onPatchMistake: async (input) => {
+        const before = store.readMistakes().find((x) => x.id === input.id);
+        if (!before) return { ok: false, error: tr('错题不存在', 'Mistake not found') };
         const allowed: Partial<Mistake> = {};
         if (typeof input.patch.lesson === 'string') allowed.lesson = input.patch.lesson;
         if (typeof input.patch.mastered === 'boolean') allowed.mastered = input.patch.mastered;
         if (Array.isArray(input.patch.tags)) allowed.tags = input.patch.tags as string[];
+        // 教训/标签改了 → 世界书里那条已经过时，标成"待同步"（下次同步按 ref 整条替换）
+        const contentChanged =
+          (allowed.lesson !== undefined && allowed.lesson !== before.lesson) ||
+          (allowed.tags !== undefined && JSON.stringify(allowed.tags) !== JSON.stringify(before.tags));
+        const nowMastered = allowed.mastered === true && !before.mastered;
+        if (contentChanged || nowMastered) allowed.in_worldbook = false;
         const m = store.patchMistake(input.id, allowed);
-        return m ? { ok: true, mistake: m } : { ok: false, error: tr('错题不存在', 'Mistake not found') };
+        if (!m) return { ok: false, error: tr('错题不存在', 'Mistake not found') };
+        // 标了"已掌握" → 立刻从世界书撤回：主 agent 不该再提醒"你上次在这里栽过"
+        if (nowMastered) {
+          retractWorldbook((e) => e.ref === mistakeRef(m.course_id, m.sheet_id, m.problem_id), '错题已掌握');
+        }
+        return { ok: true, mistake: m };
       },
       onDeleteMistake: async (input) => {
+        const victim = store.readMistakes().find((x) => x.id === input.id);
         const done = store.deleteMistake(input.id);
-        return done ? { ok: true } : { ok: false, error: tr('错题不存在', 'Mistake not found') };
+        if (!done) return { ok: false, error: tr('错题不存在', 'Mistake not found') };
+        if (victim) retractWorldbook((e) => e.ref === mistakeRef(victim.course_id, victim.sheet_id, victim.problem_id), '错题已删除');
+        return { ok: true };
       },
       onLesson: async (input) => {
         const r = await lessons(input);
@@ -3041,6 +3440,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           written: typeof d.written === 'number' ? d.written : 0,
           skipped: typeof d.skipped === 'number' ? d.skipped : 0,
           failed: typeof d.failed === 'number' ? d.failed : 0,
+          removed: typeof d.removed === 'number' ? d.removed : 0,
           details: Array.isArray(d.details) ? (d.details as string[]) : [],
         };
       },
@@ -3069,6 +3469,19 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         }
       },
       onApproach: (input) => checkApproach(input),
+      onAsk: (input) => askAboutProblem(input),
+      onSplitParts: async (input) => {
+        const r = splitIntoParts(input);
+        return { ...r, sheet: r.ok ? ((viewOf(input.courseId, input.sheetId) ?? r.sheet) as never) : undefined };
+      },
+      onMergeParts: async (input) => {
+        const r = mergeParts(input);
+        return { ...r, sheet: r.ok ? ((viewOf(input.courseId, input.sheetId) ?? r.sheet) as never) : undefined };
+      },
+      onUpdateGroup: async (input) => {
+        const r = updateGroup(input);
+        return { ...r, sheet: r.ok ? ((viewOf(input.courseId, input.sheetId) ?? r.sheet) as never) : undefined };
+      },
       onImportScratchPdf: async (input) => {
         const r = await importScratchPdf(input);
         if (!r.ok) return { ok: false, error: r.error };
@@ -3140,11 +3553,25 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         };
       },
       onDelete: async (input) => {
+        // 经验跟着套题一起删，所以世界书里本机写的经验条目也撤回。
+        // 错题**不删**：错题本是自包含的快照（题干/答案都在条目里），删课不该顺手抹掉它们，
+        // 它们的世界书条目也就继续有效。
+        const course = store.readIndex(input.courseId);
+        const retractLessons = (sheetId?: string): void => {
+          if (!course) return;
+          const scope = { courseId: course.course_id, courseTitle: course.title, sheetId };
+          retractWorldbook(
+            (e) => scopeOf(e)?.kind === 'lesson' && e.origin !== 'handoff' && entryInScope(e, scope),
+            sheetId ? '套题已删除' : '课程已删除',
+          );
+        };
         if (input.scope === 'course') {
           const done = store.deleteCourse(input.courseId);
+          if (done) retractLessons();
           return done ? { ok: true } : { ok: false, error: tr('课程不存在', 'Course not found') };
         }
         const done = store.deleteSheet(input.courseId, input.sheetId ?? '');
+        if (done) retractLessons(safeSheetId(input.sheetId ?? ''));
         return done ? { ok: true } : { ok: false, error: tr('题集不存在', 'Sheet not found') };
       },
       log,
@@ -3152,7 +3579,6 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     };
 
     // symbols 走异步（动态 import lecture），所以这里包一层再交给 http
-    deps.buildSymbols = () => ({ groups: [], notation: null, combining: null });
     const symbolHandler = async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
       const url = new URL(req.url ?? '/', 'http://localhost');
       if (req.method === 'GET' && url.searchParams.get('action') === 'symbols') {

@@ -15,29 +15,47 @@
 //   lecture 的 package.json exports 里没有 `./import-handoff`（那是内部模块）。
 //   与其为了一个类型去 import 别人的 src（会把对方的实现拖进编译），
 //   不如在这里写一份**结构相同**的窄接口 —— 运行时由 index.ts 注入 memory 的实现。
+//   ⚠️ 结构相同意味着**判定的形状也要照 memory 的真实返回写**：`decide()` 有
+//   pending / knowledge_direct，它们**没有** content / category（见 resolveWritable）。
 // ============================================================
 
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
+import { createHash } from 'node:crypto';
 import {
-  buildWorldbookEntry,
-  appendWorldbookEntries,
+  applyWorldbookChanges,
+  entryInScope,
+  lessonToEntry,
+  mistakeRef,
+  mistakeToEntry,
   type WorldbookEntry,
-  type WorldbookWriteResult,
 } from './worldbook.js';
 import { readExerciseHandoff, type ExerciseHandoff } from './handoff.js';
+import { withFileLockSync, writeFileAtomicSync } from './store.js';
 import { tr } from './locale.js';
 
 // ============================================================
-// 窄接口（由主 agent 侧注入；与 lecture 的 HandoffGatekeeper 结构一致）
+// 窄接口（由主 agent 侧注入；与 memory 的 decide() 返回值结构一致）
 // ============================================================
 
+/** memory 接受的记忆分类。 */
+export type WriteCategory = 'user_fact' | 'study_log' | 'preference' | 'relationship' | 'session_summary';
+const WRITE_CATEGORIES: readonly WriteCategory[] = ['user_fact', 'study_log', 'preference', 'relationship', 'session_summary'];
+
+/**
+ * memory 守门员 `decide()` 的返回。
+ *
+ * 只有 `save` 带 category/importance；`knowledge_direct` 带 content/topic；
+ * `pending` / `skip` / `blocked` 只有 reason。字段一律可选 —— 早先这里写成"必有"，
+ * pending 一路走到 `save({ content: undefined })`（见 resolveWritable）。
+ */
 export interface GateDecision {
-  kind: 'save' | 'knowledge_direct' | 'skip' | 'blocked';
-  content: string;
-  category: 'user_fact' | 'study_log' | 'preference' | 'relationship' | 'session_summary';
-  importance: number;
+  kind: 'save' | 'knowledge_direct' | 'skip' | 'blocked' | 'pending';
+  content?: string;
+  category?: WriteCategory;
+  importance?: number;
   topic?: string;
+  reason?: string;
 }
 
 export interface WriteGateResult {
@@ -52,7 +70,7 @@ export interface ExerciseGatekeeper {
   save(input: {
     preset: string;
     content: string;
-    category: GateDecision['category'];
+    category: WriteCategory;
     importance: number;
     confidence: number;
     scope: 'mode' | 'global';
@@ -66,6 +84,87 @@ export interface ExerciseGatekeeper {
   warn(msg: string): void;
 }
 
+/**
+ * 把 `decide()` 的结果规整成"确实可以写入的东西"（与 lecture 的同名函数同一套规则）。
+ *
+ * ⚠️ 为什么必须有这一步（lecture 真机事故，exercise 曾漏掉同一个修复）：
+ *   `pending` 的返回是 `{ kind: 'pending', reason }` —— 没有 content / category / importance。
+ *   只排除 skip / blocked 的话，pending 会把 undefined 写进 memories 表；
+ *   之后记忆域因 schema 不符**整个打不开**，memory 插件 apply 失败，所有导入都静默降级成试运行。
+ *   习题握手的陈述（"练习短板：…"）几乎全被判成 pending，所以这里不是边角情况。
+ *
+ *   · skip / blocked        → null（不写）
+ *   · pending               → 用调用方手上的原文 + study_log 兜底写入
+ *                             （pending 的意思是"交 L1/LLM 决定"，导入场景没有那条链路）
+ *   · knowledge_direct      → 同样按 study_log 写成记忆：短板是"关于用户的事"，
+ *                             只是句子里带了"角动量守恒"这类物理词才被规则判成知识；
+ *                             进知识层会变成一条"练习短板：…"的伪知识
+ *   · save                  → 用 decide 给的 content / category / importance
+ *
+ * @returns null 表示不写；否则给出非空 content 与合法 category
+ */
+export function resolveWritable(
+  decision: GateDecision,
+  fallbackContent: string,
+  fallbackCategory: WriteCategory = 'study_log',
+): { content: string; category: WriteCategory; importance: number } | null {
+  if (decision.kind === 'skip' || decision.kind === 'blocked') return null;
+  const content = (decision.content ?? '').trim() || fallbackContent.trim();
+  // 兜底文本也是空 → 宁可丢，也不写空记录（空记录会再次毒化存储）
+  if (!content) return null;
+  const raw = decision.kind === 'save' ? decision.category : undefined;
+  const category: WriteCategory = raw && WRITE_CATEGORIES.includes(raw) ? raw : fallbackCategory;
+  // importance 缺失时给中位值；undefined 传下去 memory 会当成 NaN/0
+  const importance = typeof decision.importance === 'number' && Number.isFinite(decision.importance) ? decision.importance : 50;
+  return { content, category, importance };
+}
+
+// ============================================================
+// 导入台账：同一条内容只写一次
+// ============================================================
+
+/**
+ * 记录"哪些内容已经写进过主记忆 / 知识层"。
+ *
+ * 为什么：memory.save 每次都生成新 id，握手文件导入后又留在目录里 ——
+ * 早先每点一次「导入握手」就把全部短板/进度再写一遍。
+ * 按 (种类, preset, 内容) 记一笔；内容变了（教训改了、进度更新了）才会再写。
+ * 用户在记忆面板里删掉的记忆不会被下一次导入"复活"。
+ */
+export interface ImportLedger {
+  has(key: string): boolean;
+  add(key: string, value: string): void;
+}
+
+export function ledgerKey(kind: string, preset: string, content: string): string {
+  return createHash('sha1').update(`${kind}\n${preset}\n${content}`, 'utf-8').digest('hex');
+}
+
+/** 文件台账（JSON 对象：key → { id, at }）。每次 add 都落盘（跨进程锁 + 原子写）。 */
+export function fileLedger(file: string): ImportLedger {
+  const abs = isAbsolute(file) ? file : join(process.cwd(), file);
+  const read = (): Record<string, { id: string; at: number }> => {
+    if (!existsSync(abs)) return {};
+    try {
+      const raw = readFileSync(abs, 'utf-8');
+      const data = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw) as unknown;
+      return data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, { id: string; at: number }>) : {};
+    } catch {
+      return {};
+    }
+  };
+  let cache = read();
+  return {
+    has: (key) => Object.prototype.hasOwnProperty.call(cache, key),
+    add: (key, value) => {
+      withFileLockSync(abs, () => {
+        cache = { ...read(), [key]: { id: value, at: Date.now() } };
+        writeFileAtomicSync(abs, JSON.stringify(cache, null, 2));
+      });
+    },
+  };
+}
+
 export interface ImportExerciseOptions {
   preset?: string;
   dryRun?: boolean;
@@ -75,52 +174,68 @@ export interface ImportExerciseOptions {
    * mac 上没有主 agent 的馆目录，所以这一步只在 Windows 侧生效。
    */
   worldbookDir?: string;
+  /** 导入台账（不传 = 不去重，测试/一次性导入用）。 */
+  ledger?: ImportLedger;
 }
 
 export interface ExerciseImportOutcome {
   course: string;
   memoriesWritten: number;
   claimsWritten: number;
+  /** 以前导入过、这次跳过的记忆条数 */
+  alreadyImported: number;
+  /** 新增 + 内容更新的世界书条目 */
   worldbookWritten: number;
+  /** 已存在且内容相同 */
   worldbookSkipped: number;
+  /** 撤回的世界书条目（错题已掌握 / 已删除） */
+  worldbookRemoved: number;
   dropped: number;
   details: Array<{ kind: string; content: string; reason: string }>;
 }
 
-/** 把错题/经验转成待写的世界书条目（纯函数，便于 dry_run 预览与单测）。 */
+/** 经验没有 id 时（老握手包）按文本生成一个稳定 id。 */
+function lessonIdFallback(text: string): string {
+  return `t${createHash('sha1').update(text, 'utf-8').digest('hex').slice(0, 8)}`;
+}
+
+/**
+ * 把错题/经验转成待写的世界书条目（纯函数，便于 dry_run 预览与单测）。
+ * 用的是与本地同步**同一套**组装函数，同一道题两条路径写出同一个 ref。
+ */
 export function handoffWorldbookEntries(h: ExerciseHandoff): WorldbookEntry[] {
   const out: WorldbookEntry[] = [];
   for (const m of h.mistakes) {
     if (m.mastered) continue; // 已掌握的不再反复注入
-    const text = (m.lesson || m.issues.join('；') || '').trim();
-    if (!text) continue;
-    out.push(
-      buildWorldbookEntry({
-        content: [
-          `【错题】${h.course.title} · ${m.sheet} · ${m.label || m.problem}`,
-          m.lesson ? `教训：${m.lesson}` : `当时的问题：${m.issues.join('；')}`,
-          m.tags.length ? `主题：${m.tags.join('、')}` : '',
-        ]
-          .filter(Boolean)
-          .join('\n'),
-        title: `${m.label || '习题'} 错题教训`.slice(0, 60),
+    const e = mistakeToEntry(
+      {
+        course_id: h.course.id,
+        course_title: h.course.title,
+        sheet_id: m.sheet,
+        sheet_title: m.sheet_title,
+        problem_id: m.problem,
+        problem_label: m.label,
+        lesson: m.lesson,
+        issues: m.issues,
         tags: m.tags,
-        source: `Übungsblatt 错题（${h.course.id}/${m.sheet}/${m.problem}）`,
-        priority: 70,
-      }),
+      },
+      'handoff',
     );
+    if (e) out.push(e);
   }
   for (const l of h.lessons) {
-    if (!l.text.trim()) continue;
-    out.push(
-      buildWorldbookEntry({
-        content: `【习题经验】${h.course.title} · ${l.sheet}\n${l.text.trim()}`,
-        title: `${l.sheet} 经验`.slice(0, 60),
-        tags: l.tags,
-        source: `Übungsblatt 经验（${h.course.id}/${l.sheet}）`,
-        priority: 55,
-      }),
+    const text = l.text.trim();
+    if (!text) continue;
+    const e = lessonToEntry(
+      {
+        courseId: h.course.id,
+        courseTitle: h.course.title,
+        sheet: { id: l.sheet, number: l.sheet_number || undefined, title: l.sheet_title },
+        lesson: { id: l.id || lessonIdFallback(text), text, tags: l.tags },
+      },
+      'handoff',
     );
+    if (e) out.push(e);
   }
   return out;
 }
@@ -132,7 +247,8 @@ export function handoffWorldbookEntries(h: ExerciseHandoff): WorldbookEntry[] {
  *   · `weak_points` → 记忆（study_log / user_fact，过守门员）——只处理**已提交**的套
  *   · `claims`      → 按套聚合成一条记忆 + 结构化断言（T1 时间轴）
  *   · `lessons`     → worldbook（+ 知识层，如果注入了 knowledgeAdd）
- *   · `mistakes`    → worldbook 里只写"未掌握且有教训"的；已掌握的跳过
+ *   · `mistakes`    → worldbook 里只写"未掌握且有教训"的；已掌握的**撤回**
+ *   · 握手包是这门课的完整快照：之前由握手导入、这次不在包里的条目也撤回
  */
 export async function importExerciseHandoff(
   handoff: ExerciseHandoff,
@@ -142,17 +258,60 @@ export async function importExerciseHandoff(
   const preset = opts.preset ?? 'physicist';
   const dryRun = opts.dryRun ?? false;
   const sessionId = opts.sessionId ?? `exercise-${handoff.course.id}`;
+  const ledger = opts.ledger;
   const out: ExerciseImportOutcome = {
     course: handoff.course.id,
     memoriesWritten: 0,
     claimsWritten: 0,
+    alreadyImported: 0,
     worldbookWritten: 0,
     worldbookSkipped: 0,
+    worldbookRemoved: 0,
     dropped: 0,
     details: [],
   };
 
   const submitted = new Set(handoff.progress.filter((p) => p.reviewed).map((p) => p.unit));
+
+  /** 过守门员 + 写门；返回 null = 不写（原因已记进 details）。 */
+  const gate = (
+    kind: string,
+    statement: string,
+    label: string,
+    baseConfidence: number,
+  ): { content: string; category: WriteCategory; importance: number; confidence: number } | null => {
+    // decide 的语义是"一轮对话"：待判陈述放 query 位、reply 传空串（同 lecture 的注释）
+    const decision = gk.decide(statement, '');
+    const writable = resolveWritable(decision, statement, 'study_log');
+    if (!writable) {
+      out.dropped++;
+      out.details.push({ kind, content: label, reason: tr(`守门员判定 ${decision.kind}`, `Gatekeeper decision: ${decision.kind}`) });
+      return null;
+    }
+    let confidence = baseConfidence;
+    let importance = writable.importance;
+    if (writable.category === 'user_fact') {
+      const wg = gk.writeGate(statement, writable.content);
+      if (wg.action === 'drop') {
+        out.dropped++;
+        out.details.push({ kind, content: label, reason: tr(`写门拦截：${wg.reason}`, `Write gate blocked: ${wg.reason}`) });
+        return null;
+      }
+      if (wg.action === 'demote') {
+        confidence = wg.confidence ?? 0.55;
+        importance = Math.max(0, importance - 20);
+      }
+    }
+    return { ...writable, importance, confidence };
+  };
+
+  /** 台账里已有 → 跳过（试运行也照实说"已导入过"）。 */
+  const seenBefore = (kind: string, content: string): boolean => {
+    if (!ledger?.has(ledgerKey('memory', preset, content))) return false;
+    out.alreadyImported++;
+    out.details.push({ kind, content, reason: tr('以前导入过，跳过', 'Imported before — skipped') });
+    return true;
+  };
 
   // ── 1) 短板 → 记忆 ──
   for (const wp of handoff.weak_points) {
@@ -161,49 +320,31 @@ export async function importExerciseHandoff(
       out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr('该套未提交，跳过', 'Sheet not submitted — skipped') });
       continue;
     }
-    // decide 的语义是"一轮对话"：待判陈述放 query 位、reply 传空串（同 lecture 的注释）
     const statement = tr(
       `练习短板：${wp.topic}。这是需要加强的地方。`,
       `Practice weak point: ${wp.topic}. This is something to work on.`,
     );
-    const decision = gk.decide(statement, '');
-    if (decision.kind === 'skip' || decision.kind === 'blocked') {
-      out.dropped++;
-      out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr(`守门员判定 ${decision.kind}`, `Gatekeeper decision: ${decision.kind}`) });
-      continue;
-    }
-    let confidence = 0.7;
-    let importance = decision.importance;
-    if (decision.category === 'user_fact') {
-      const wg = gk.writeGate(statement, decision.content);
-      if (wg.action === 'drop') {
-        out.dropped++;
-        out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr(`写门拦截：${wg.reason}`, `Write gate blocked: ${wg.reason}`) });
-        continue;
-      }
-      if (wg.action === 'demote') {
-        confidence = wg.confidence ?? 0.55;
-        importance = Math.max(0, importance - 20);
-      }
-    }
+    const w = gate('weak_point', statement, wp.topic, 0.7);
+    if (!w || seenBefore('weak_point', w.content)) continue;
     if (dryRun) {
       out.memoriesWritten++;
-      out.details.push({ kind: 'weak_point', content: decision.content, reason: tr(`[试运行] 将写入（${decision.category}）`, `[dry run] would write (${decision.category})`) });
+      out.details.push({ kind: 'weak_point', content: w.content, reason: tr(`[试运行] 将写入（${w.category}）`, `[dry run] would write (${w.category})`) });
       continue;
     }
     try {
-      await gk.save({
+      const id = await gk.save({
         preset,
-        content: decision.content,
-        category: decision.category,
-        importance,
-        confidence,
+        content: w.content,
+        category: w.category,
+        importance: w.importance,
+        confidence: w.confidence,
         scope: 'mode',
         sourceMode: 'exercise',
         sourceExercise: { course: handoff.course.id, sheet: wp.unit },
       });
+      ledger?.add(ledgerKey('memory', preset, w.content), id);
       out.memoriesWritten++;
-      out.details.push({ kind: 'weak_point', content: decision.content, reason: tr(`已写入（${decision.category}）`, `Written (${decision.category})`) });
+      out.details.push({ kind: 'weak_point', content: w.content, reason: tr(`已写入（${w.category}）`, `Written (${w.category})`) });
     } catch (e) {
       out.dropped++;
       out.details.push({ kind: 'weak_point', content: wp.topic, reason: tr(`写入失败：${(e as Error).message}`, `Write failed: ${(e as Error).message}`) });
@@ -223,30 +364,12 @@ export async function importExerciseHandoff(
     byUnit.set(c.unit, list);
   }
   for (const [unitId, list] of byUnit) {
-    const content = tr(
+    const statement = tr(
       `习题进度：${list.map((c) => `${c.attribute} = ${c.value}`).join('；')}`,
       `Exercise progress: ${list.map((c) => `${c.attribute} = ${c.value}`).join('; ')}`,
     );
-    const decision = gk.decide(content, '');
-    if (decision.kind === 'skip' || decision.kind === 'blocked') {
-      out.dropped++;
-      out.details.push({ kind: 'claim', content, reason: tr(`守门员判定 ${decision.kind}`, `Gatekeeper decision: ${decision.kind}`) });
-      continue;
-    }
-    let confidence = 0.75;
-    let importance = decision.importance;
-    if (decision.category === 'user_fact') {
-      const wg = gk.writeGate(content, decision.content);
-      if (wg.action === 'drop') {
-        out.dropped++;
-        out.details.push({ kind: 'claim', content, reason: tr(`写门拦截：${wg.reason}`, `Write gate blocked: ${wg.reason}`) });
-        continue;
-      }
-      if (wg.action === 'demote') {
-        confidence = wg.confidence ?? 0.55;
-        importance = Math.max(0, importance - 20);
-      }
-    }
+    const w = gate('claim', statement, statement, 0.75);
+    if (!w || seenBefore('claim', w.content)) continue;
     const now = Date.now();
     const entityClaims = list.map((c) => ({
       entity: c.entity || tr('用户', 'User'),
@@ -258,69 +381,100 @@ export async function importExerciseHandoff(
     if (dryRun) {
       out.memoriesWritten++;
       out.claimsWritten += entityClaims.length;
-      out.details.push({ kind: 'claim', content: decision.content, reason: tr(`[试运行] 将写入（含 ${entityClaims.length} 条断言）`, `[dry run] would write (${entityClaims.length} claims)`) });
+      out.details.push({ kind: 'claim', content: w.content, reason: tr(`[试运行] 将写入（含 ${entityClaims.length} 条断言）`, `[dry run] would write (${entityClaims.length} claims)`) });
       continue;
     }
     try {
-      await gk.save({
+      const id = await gk.save({
         preset,
-        content: decision.content,
-        category: decision.category,
-        importance,
-        confidence,
+        content: w.content,
+        category: w.category,
+        importance: w.importance,
+        confidence: w.confidence,
         scope: 'mode',
         sourceMode: 'exercise',
         sourceExercise: { course: handoff.course.id, sheet: unitId },
         entityClaims,
       });
+      ledger?.add(ledgerKey('memory', preset, w.content), id);
       out.memoriesWritten++;
       out.claimsWritten += entityClaims.length;
-      out.details.push({ kind: 'claim', content: decision.content, reason: tr(`已写入（含 ${entityClaims.length} 条断言）`, `Written (${entityClaims.length} claims)`) });
+      out.details.push({ kind: 'claim', content: w.content, reason: tr(`已写入（含 ${entityClaims.length} 条断言）`, `Written (${entityClaims.length} claims)`) });
     } catch (e) {
       out.dropped++;
-      out.details.push({ kind: 'claim', content, reason: tr(`写入失败：${(e as Error).message}`, `Write failed: ${(e as Error).message}`) });
+      out.details.push({ kind: 'claim', content: statement, reason: tr(`写入失败：${(e as Error).message}`, `Write failed: ${(e as Error).message}`) });
     }
   }
 
   // ── 3) 经验/错题教训 → worldbook（本模块与 lecture 接收侧的主要差异） ──
   const entries = handoffWorldbookEntries(handoff);
-  if (!entries.length) {
-    out.details.push({ kind: 'worldbook', content: '', reason: tr('没有可写的经验/教训条目', 'No lessons/mistakes to write') });
-  } else if (!opts.worldbookDir) {
+  // 包里明确"已掌握"的错题：不管条目是谁写的（本地同步 / 上次导入）都撤回
+  const retract = new Set(handoff.mistakes.filter((m) => m.mastered).map((m) => mistakeRef(handoff.course.id, m.sheet, m.problem)));
+  const courseScope = { courseId: handoff.course.id, courseTitle: handoff.course.title };
+  if (!opts.worldbookDir) {
     out.details.push({
       kind: 'worldbook',
       content: tr(`${entries.length} 条`, `${entries.length} entries`),
       reason: tr('未配置 worldbook 馆目录 —— 跳过（在 mac 上属正常；到 Windows 侧再导一次即可）', 'No worldbook library directory configured — skipped (normal on macOS; import again on the Windows side)'),
     });
+    return out;
+  }
+  const r = applyWorldbookChanges(
+    opts.worldbookDir,
+    {
+      upserts: entries,
+      remove: (e) => {
+        if (e.ref) {
+          if (retract.has(e.ref)) return true;
+          // 快照语义：上次由握手导入、这次包里没有了（错题删了 / 经验删了）→ 撤回。
+          // 本地同步写的条目不动：那是这台机器自己的数据。
+          return e.origin === 'handoff' && entryInScope(e, courseScope);
+        }
+        // 老条目（没有 ref、按内容哈希追加的）：这门课的一律换成带 ref 的新条目
+        return entryInScope(e, courseScope);
+      },
+    },
+    { dryRun },
+  );
+  if (!r.ok) {
+    out.dropped += entries.length;
+    out.details.push({ kind: 'worldbook', content: '', reason: tr(`写入失败：${r.error ?? ''}`, `Write failed: ${r.error ?? ''}`) });
+    return out;
+  }
+  out.worldbookWritten += r.added.length + r.updated.length;
+  out.worldbookSkipped += r.unchanged.length;
+  out.worldbookRemoved += r.removed.length;
+  if (!entries.length && !r.removed.length) {
+    out.details.push({ kind: 'worldbook', content: '', reason: tr('没有可写的经验/教训条目', 'No lessons/mistakes to write') });
   } else if (dryRun) {
-    for (const e of entries) {
+    for (const e of r.changed) {
       out.details.push({ kind: 'worldbook', content: e.title, reason: tr(`[试运行] 将写入世界书（${e.id}）`, `[dry run] would write to worldbook (${e.id})`) });
     }
-    out.worldbookWritten += entries.length;
-  } else {
-    const r = appendWorldbookEntries(opts.worldbookDir, entries);
-    out.worldbookWritten += r.written;
-    out.worldbookSkipped += r.skipped;
-    if (r.failed) {
-      out.dropped += r.failed;
-      for (const err of r.errors) out.details.push({ kind: 'worldbook', content: '', reason: tr(`写入失败：${err}`, `Write failed: ${err}`) });
+    if (r.removed.length) {
+      out.details.push({ kind: 'worldbook', content: tr(`${r.removed.length} 条`, `${r.removed.length} entries`), reason: tr('[试运行] 将从世界书撤回（已掌握 / 已删除）', '[dry run] would retract from worldbook (mastered / deleted)') });
     }
+  } else {
     out.details.push({
       kind: 'worldbook',
       content: tr(`${entries.length} 条`, `${entries.length} entries`),
       reason: tr(
-        `写入 ${r.written} 条（已存在跳过 ${r.skipped} 条，失败 ${r.failed} 条）`,
-        `Wrote ${r.written} (skipped existing ${r.skipped}, failed ${r.failed})`,
+        `新增 ${r.added.length} · 更新 ${r.updated.length} · 未变 ${r.unchanged.length} · 撤回 ${r.removed.length}`,
+        `Added ${r.added.length} · updated ${r.updated.length} · unchanged ${r.unchanged.length} · retracted ${r.removed.length}`,
       ),
     });
-    // 顺带进知识层（让记忆面板/知识审核能看到），失败不影响主流程
-    if (r.written && gk.knowledgeAdd) {
-      for (const e of entries) {
-        try {
-          await gk.knowledgeAdd({ preset, content: e.content, topic: e.title, sourceSession: sessionId });
-        } catch (err) {
-          gk.warn(`知识层写入失败（${e.title}）：${(err as Error).message}`);
-        }
+  }
+
+  // 顺带进知识层（让记忆面板/知识审核能看到）：只送**这次新增或改过**的条目，
+  // 且按台账去重 —— 早先只要写成一条，就把全部条目再送一遍。失败不影响主流程。
+  if (!dryRun && gk.knowledgeAdd) {
+    for (const e of r.changed) {
+      const key = ledgerKey('knowledge', preset, e.content);
+      if (ledger?.has(key)) continue;
+      try {
+        const id = await gk.knowledgeAdd({ preset, content: e.content, topic: e.title, sourceSession: sessionId });
+        ledger?.add(key, id);
+      } catch (err) {
+        gk.warn(`知识层写入失败（${e.title}）：${(err as Error).message}`);
       }
     }
   }
@@ -352,8 +506,8 @@ export function describeExerciseOutcome(o: ExerciseImportOutcome): string {
   return [
     tr(`课程：${o.course}`, `Course: ${o.course}`),
     tr(
-      `记忆 ${o.memoriesWritten} 条（含 ${o.claimsWritten} 条断言）· 世界书 ${o.worldbookWritten} 条（跳过 ${o.worldbookSkipped}）· 丢弃 ${o.dropped} 条`,
-      `Memory: ${o.memoriesWritten} written (${o.claimsWritten} claims) · Worldbook: ${o.worldbookWritten} (skipped ${o.worldbookSkipped}) · Dropped: ${o.dropped}`,
+      `记忆 ${o.memoriesWritten} 条（含 ${o.claimsWritten} 条断言；以前导入过 ${o.alreadyImported} 条）· 世界书 ${o.worldbookWritten} 条（未变 ${o.worldbookSkipped}，撤回 ${o.worldbookRemoved}）· 丢弃 ${o.dropped} 条`,
+      `Memory: ${o.memoriesWritten} written (${o.claimsWritten} claims; ${o.alreadyImported} imported before) · Worldbook: ${o.worldbookWritten} (unchanged ${o.worldbookSkipped}, retracted ${o.worldbookRemoved}) · Dropped: ${o.dropped}`,
     ),
     ...o.details.map((d) => `  · [${d.kind}] ${d.content || '—'} — ${d.reason}`),
   ].join('\n');

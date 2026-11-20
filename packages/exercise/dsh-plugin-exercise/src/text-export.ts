@@ -118,8 +118,20 @@ export function renderSheetText(course: CourseIndex, sheet: Sheet, mistakes: rea
   out.push('## Aufgaben');
   out.push('');
 
-  for (const p of sheet.problems) {
-    out.push(`### ${p.label || p.id}${p.points != null ? ` (${p.points} P)` : ''}`);
+  sheet.problems.forEach((p, i) => {
+    // 大题：共用题干在它的第一个小题前面写一次
+    const g = p.group ? (sheet.groups ?? []).find((x) => x.id === p.group) : undefined;
+    if (g && sheet.problems[i - 1]?.group !== g.id) {
+      out.push(`### ${g.label || g.id}${g.points != null ? ` (${g.points} P)` : ''}`);
+      out.push('');
+      if (g.title) {
+        out.push(`**${g.title}**`);
+        out.push('');
+      }
+      out.push(g.text.trim() || '_(keine gemeinsame Aufgabenstellung)_');
+      out.push('');
+    }
+    out.push(`${g ? '####' : '###'} ${p.label || p.id}${p.points != null ? ` (${p.points} P)` : ''}`);
     out.push('');
     if (p.title) {
       out.push(`**${p.title}**`);
@@ -161,7 +173,7 @@ export function renderSheetText(course: CourseIndex, sheet: Sheet, mistakes: rea
       }
       out.push('');
     }
-  }
+  });
 
   if (sheet.lessons.length) {
     out.push('## Was ich aus diesem Blatt gelernt habe');

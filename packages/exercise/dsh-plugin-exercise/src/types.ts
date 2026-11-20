@@ -135,8 +135,34 @@ export const problemSchema = z.object({
   mistakes: z.array(z.string()).default([]),
   /** 用户自己的备注（"这题我老忘方向"），与 LLM 检查分开 */
   notes: z.string().default(''),
+  /**
+   * 所属大题（`sheet.groups[].id`；空 = 独立的一道题）。
+   *
+   * 大题拆成小题后，**每个小题就是一道完整的 Problem**：自己的答案、检查、答辩、错题。
+   * 这样"只检查还没通过的小题"不需要任何新的检查逻辑 —— 已经 correct 的小题
+   * 答案不变，检查就一直是新鲜的，直接跳过。大题共用的题干放在 group 上。
+   */
+  group: z.string().default(''),
+  /** 小题标记（`a` / `b` / `ii`）；独立题为空 */
+  part: z.string().default(''),
 });
 export type Problem = z.infer<typeof problemSchema>;
+
+/** 大题：几道小题共用的题干（已知条件、示意图说明）。小题本身是 sheet.problems 里 group 指向它的那几道。 */
+export const problemGroupSchema = z.object({
+  /** 稳定 id（沿用拆分前那道题的 id，如 `p01`） */
+  id: z.string(),
+  /** 原题号（`Aufgabe 1`） */
+  label: z.string().default(''),
+  title: z.string().default(''),
+  /** 共用题干（第一个小题标记之前的部分） */
+  text: z.string().default(''),
+  points: z.number().nullable().default(null),
+  page: z.number().default(0),
+  has_figure: z.boolean().default(false),
+  figure_note: z.string().default(''),
+});
+export type ProblemGroup = z.infer<typeof problemGroupSchema>;
 
 // ============================================================
 // 经验条目（这道/这一套题教会我什么）
@@ -184,6 +210,8 @@ export const sheetSchema = z.object({
   progress_digest: z.string().default(''),
   progress_digest_at: z.number().default(0),
   problems: z.array(problemSchema).default([]),
+  /** 大题（拆成小题的那些题的共用题干）；小题按 problems 里的顺序排 */
+  groups: z.array(problemGroupSchema).default([]),
   lessons: z.array(lessonSchema).default([]),
   /** 提交包生成时间（0 = 未生成） */
   submitted_at: z.number().default(0),

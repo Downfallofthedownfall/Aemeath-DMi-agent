@@ -12,11 +12,12 @@
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ProblemView, SheetView } from './api.ts';
+import type { AskTurnView, ProblemView, SheetView } from './api.ts';
 import { API_BASE, apiGet, apiPost, fileToBase64 } from './api.ts';
 import { AnswerEditor, insertIntoActiveEditor } from './answer-editor.tsx';
 import { CheckPanel } from './check-panel.tsx';
-import { ApproachPanel, type ApproachResult } from './approach-panel.tsx';
+import type { ApproachResult } from './approach-panel.tsx';
+import { ProblemTools, type AskResult } from './problem-tools.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { useT } from './i18n.ts';
 
@@ -280,7 +281,6 @@ export function ScratchWorkspace({ onToast }: ScratchWorkspaceProps): JSX.Elemen
               <AnswerEditor
                 problem={problem}
                 onSave={saveProblem}
-                onCheck={() => void runCheck()}
                 onToast={onToast}
                 busy={busy}
                 onAttachImage={attachImage}
@@ -288,14 +288,25 @@ export function ScratchWorkspace({ onToast }: ScratchWorkspaceProps): JSX.Elemen
                 imageUrl={imageUrl}
               />
 
-              <ApproachPanel
-                hasDraft={!!(problem.answer ?? '').trim()}
+              <ProblemTools
+                problem={problem}
+                busy={busy}
+                onCheck={() => void runCheck()}
                 onToast={onToast}
-                onRun={() =>
+                onApproach={() =>
                   apiPost<ApproachResult & { ok: boolean; error?: string }>('approach', {
                     course_id: SCRATCH_COURSE,
                     sheet_id: SCRATCH_SHEET,
                     problem_id: SCRATCH_PROBLEM,
+                  })
+                }
+                onAsk={(question: string, history: AskTurnView[]) =>
+                  apiPost<AskResult>('ask', {
+                    course_id: SCRATCH_COURSE,
+                    sheet_id: SCRATCH_SHEET,
+                    problem_id: SCRATCH_PROBLEM,
+                    question,
+                    history,
                   })
                 }
               />

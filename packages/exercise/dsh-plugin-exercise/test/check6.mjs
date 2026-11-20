@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { buildCheckPrompt, parseCheckOutput, parseJsonLoose, runCheck, repairTruncatedJson } from '../lib/checker.js';
 import { checkWriteOrigin, handleExerciseHttp } from '../lib/http.js';
+import { ASK_HISTORY_TURNS, buildAskPrompt, parseAskOutput, runAsk } from '../lib/ask.js';
 
 let passed = 0;
 const t = (name, fn) => {
@@ -220,6 +221,10 @@ function fakeDeps(calls) {
     onScratch: () => { calls.push(['onScratch']); return { ok: true, sheet: { id: 'ub01' } }; },
     onImportScratchPdf: async (input) => { calls.push(['import_scratch_pdf', input]); return { ok: true, sheet: {}, text_length: 10, pages: 1 }; },
     onApproach: async (input) => { calls.push(['approach', input]); return { ok: true, verdict: 'on_track', issues: [], note: '' }; },
+    onAsk: async (input) => { calls.push(['ask', input]); return { ok: true, reply: 'r', questions: ['q'] }; },
+    onSplitParts: async (input) => { calls.push(['split_parts', input]); return { ok: true, sheet: {} }; },
+    onMergeParts: async (input) => { calls.push(['merge_parts', input]); return { ok: true, sheet: {} }; },
+    onUpdateGroup: async (input) => { calls.push(['update_group', input]); return { ok: true, sheet: {} }; },
     onAddAttachment: async (input) => { calls.push(['add_attachment', input]); return { ok: true, sheet: {} }; },
     onDeleteAttachment: async () => ({ ok: true, sheet: {} }),
     onReadAttachment: () => null,
@@ -494,6 +499,153 @@ await asyncT('POST approach 缺参数 → 400', async () => {
   const res = makeRes();
   await handleExerciseHttp(makeReq('POST', '/aemeath/api/exercise', { action: 'approach' }), res, fakeDeps([]));
   assert.equal(res.out.status, 400);
+});
+
+await asyncT('POST ask：透传问题；历史只收形状对的最近 6 轮', async () => {
+  const calls = [];
+  const res = makeRes();
+  const history = [
+    ...Array.from({ length: 7 }, (_, i) => ({ question: `q${i}`, reply: `r${i}`, questions: ['a', 'b', 'c', 'd'] })),
+    { reply: 'ohne Frage' },
+  ];
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', {
+      action: 'ask',
+      course_id: 'physik-1',
+      sheet_id: 'ub01',
+      problem_id: 'p01b',
+      question: '  Was heißt reibungsfrei?  ',
+      history,
+    }),
+    res,
+    fakeDeps(calls),
+  );
+  assert.equal(res.out.status, 200);
+  const [name, input] = calls[0];
+  assert.equal(name, 'ask');
+  assert.equal(input.question, 'Was heißt reibungsfrei?');
+  assert.equal(input.problemId, 'p01b');
+  assert.deepEqual(input.history.map((h) => h.question), ['q2', 'q3', 'q4', 'q5', 'q6'], '最近 6 轮里没有问题的那条丢掉');
+  assert.equal(input.history[0].questions.length, 3);
+});
+
+await asyncT('POST ask 没有问题 → 400（不打模型）', async () => {
+  const calls = [];
+  const res = makeRes();
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', { action: 'ask', course_id: 'c', sheet_id: 's', problem_id: 'p01', question: '   ' }),
+    res,
+    fakeDeps(calls),
+  );
+  assert.equal(res.out.status, 400);
+  assert.equal(calls.length, 0);
+});
+
+await asyncT('POST split_parts / merge_parts 透传 id，缺参数 → 400', async () => {
+  const calls = [];
+  let res = makeRes();
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', { action: 'split_parts', course_id: 'c', sheet_id: 's', problem_id: 'p01' }),
+    res,
+    fakeDeps(calls),
+  );
+  assert.equal(res.out.status, 200);
+  res = makeRes();
+  await handleExerciseHttp(
+    makeReq('POST', '/aemeath/api/exercise', { action: 'merge_parts', course_id: 'c', sheet_id: 's', group_id: 'p01' }),
+    res,
+    fakeDeps(calls),
+  );
+  assert.equal(res.out.status, 200);
+  assert.deepEqual(calls, [
+    ['split_parts', { courseId: 'c', sheetId: 's', problemId: 'p01' }],
+    ['merge_parts', { courseId: 'c', sheetId: 's', groupId: 'p01' }],
+  ]);
+  res = makeRes();
+  await handleExerciseHttp(makeReq('POST', '/aemeath/api/exercise', { action: 'merge_parts', course_id: 'c', sheet_id: 's' }), res, fakeDeps([]));
+  assert.equal(res.out.status, 400);
+});
+
+// ---- 提问（ask.ts）：苏格拉底式提示，不给答案、不注入 persona ----
+const askBase = {
+  courseTitle: 'Physik I',
+  problemLabel: 'Aufgabe 1 b)',
+  points: 3,
+  problemText: 'Ein Körper gleitet reibungsfrei.\n\n【b)】 Berechnen Sie die Beschleunigung.',
+  earlier: [{ part: 'a', answer: 'Gewicht und Normalkraft' }],
+  draft: 'F = m a ?',
+  question: 'Welche Formel brauche ich?',
+  history: [{ question: 'Was ist gegeben?', reply: 'Lies die Angabe.', questions: ['Welche Größen kennst du?'] }],
+  lang: 'zh',
+};
+
+t('ask prompt：硬性规则在（不给答案、不点名方法、不批改草稿），要 JSON', () => {
+  const p = buildAskPrompt(askBase);
+  assert.match(p, /苏格拉底/);
+  assert.match(p, /\*\*不给答案\*\*/);
+  assert.match(p, /\*\*不点名方法\*\*/);
+  assert.match(p, /不要批改/);
+  assert.match(p, /严格 JSON/);
+  assert.match(p, /"questions"/);
+  // 直连兜底会带 response_format=json_object：DeepSeek 要求 prompt 里出现 json 字样
+  assert.match(p, /json/i);
+});
+
+t('ask prompt：不注入 persona（没有角色名 / 人设）', () => {
+  for (const lang of ['zh', 'de', 'en']) {
+    const p = buildAskPrompt({ ...askBase, lang });
+    assert.doesNotMatch(p, /爱弥斯|Aemeath|小爱|persona|人设/i, `${lang} prompt 里出现了 persona`);
+    assert.doesNotMatch(p, /^你是|^Du bist|^You are/m, `${lang} prompt 给模型设了角色`);
+  }
+});
+
+t('ask prompt：带题干（含大题题干）、前面小题、草稿、历史、问题', () => {
+  const p = buildAskPrompt(askBase);
+  assert.match(p, /reibungsfrei[\s\S]*【b\)】/);
+  assert.match(p, /a\) Gewicht und Normalkraft/);
+  assert.match(p, /F = m a \?/);
+  assert.match(p, /Was ist gegeben\?[\s\S]*Welche Größen kennst du\?/);
+  assert.match(p, /Welche Formel brauche ich\?$/m);
+});
+
+t('ask prompt：历史只带最近几轮', () => {
+  const history = Array.from({ length: ASK_HISTORY_TURNS + 3 }, (_, i) => ({ question: `Frage-${i}`, reply: '', questions: [] }));
+  const p = buildAskPrompt({ ...askBase, history });
+  assert.doesNotMatch(p, /Frage-0\b/);
+  assert.match(p, new RegExp(`Frage-${ASK_HISTORY_TURNS + 2}`));
+});
+
+t('parseAskOutput：取 reply + 最多 3 个问题；空的算失败', () => {
+  const r = parseAskOutput('```json\n{"reply":"Schau auf die Angabe.","questions":["a","b","c","d",1]}\n```');
+  assert.equal(r.reply, 'Schau auf die Angabe.');
+  assert.deepEqual(r.questions, ['a', 'b', 'c']);
+  assert.equal(parseAskOutput('{"reply":"","questions":[]}'), null);
+  assert.equal(parseAskOutput(''), null);
+});
+
+await asyncT('runAsk：走注入的 askLlm（purpose=exercise-ask），有图走 askVision', async () => {
+  const seen = [];
+  const askLlm = async (prompt, opts) => {
+    seen.push(['llm', opts.purpose]);
+    return '{"reply":"ok","questions":["q"]}';
+  };
+  const askVision = async (prompt, images, opts) => {
+    seen.push(['vision', opts.purpose, images.length]);
+    return '{"reply":"ok","questions":[]}';
+  };
+  const a = await runAsk(askBase, askLlm, askVision);
+  assert.equal(a.ok, true);
+  const b = await runAsk({ ...askBase, pageImages: [{ base64: 'AA', mediaType: 'image/jpeg', page: 1 }] }, askLlm, askVision);
+  assert.equal(b.ok, true);
+  assert.deepEqual(seen, [['llm', 'exercise-ask'], ['vision', 'exercise-ask', 1]]);
+});
+
+t('检查小题：prompt 带前面小题的作答，并说明只查本小题（Folgefehler）', () => {
+  const p = buildCheckPrompt({ ...baseInput, earlier: [{ part: 'a', answer: 'v = 3 m/s' }] });
+  assert.match(p, /前面小题的作答/);
+  assert.match(p, /a\) v = 3 m\/s/);
+  assert.match(p, /Folgefehler/);
+  assert.doesNotMatch(buildCheckPrompt(baseInput), /前面小题/, '独立题不带这一段');
 });
 
 console.log(`\n[exercise-check-http] ${passed} 项断言通过`);

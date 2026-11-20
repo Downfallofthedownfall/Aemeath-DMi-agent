@@ -32,6 +32,10 @@ export const exerciseHandoffSchema = lectureHandoffSchema.extend({
     .array(
       z.object({
         sheet: z.string(),
+        /** 经验 id（世界书条目的 ref 用；老握手包没有 → 按文本哈希兜底） */
+        id: z.string().default(''),
+        sheet_number: z.number().default(0),
+        sheet_title: z.string().default(''),
         text: z.string(),
         tags: z.array(z.string()).default([]),
       }),
@@ -43,6 +47,8 @@ export const exerciseHandoffSchema = lectureHandoffSchema.extend({
       z.object({
         id: z.string(),
         sheet: z.string(),
+        /** 套题标题（让接收侧生成的条目文本与本地同步一致；老握手包没有） */
+        sheet_title: z.string().default(''),
         problem: z.string(),
         label: z.string().default(''),
         verdict: z.string().default('wrong'),
@@ -113,7 +119,14 @@ export function buildExerciseHandoff(input: BuildExerciseHandoffInput): Exercise
 
     for (const l of sheet.lessons) {
       if (!l.text.trim()) continue;
-      lessons.push({ sheet: sheet.id, text: l.text.trim().slice(0, 600), tags: l.tags.slice(0, 6) });
+      lessons.push({
+        sheet: sheet.id,
+        id: l.id,
+        sheet_number: sheet.number,
+        sheet_title: sheet.title,
+        text: l.text.trim().slice(0, 600),
+        tags: l.tags.slice(0, 6),
+      });
     }
   }
 
@@ -130,6 +143,7 @@ export function buildExerciseHandoff(input: BuildExerciseHandoffInput): Exercise
     mistakeViews.push({
       id: m.id,
       sheet: m.sheet_id,
+      sheet_title: m.sheet_title,
       problem: m.problem_id,
       label: m.problem_label,
       verdict: m.verdict,

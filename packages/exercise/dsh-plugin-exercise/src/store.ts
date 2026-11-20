@@ -109,6 +109,58 @@ export function writeFileAtomicSync(file: string, data: string): void {
   }
 }
 
+/** 锁目录放了多久算"持有者已经死了"（进程被杀不会走 finally）。 */
+const LOCK_STALE_MS = 30_000;
+/** 最多等多久拿锁；超时抛错（宁可这次写失败，也不无锁覆盖别人的写入）。 */
+const LOCK_WAIT_MS = 5_000;
+
+/**
+ * 跨进程文件锁（读-改-写整份 JSON 时用）。
+ *
+ * 为什么需要：主 profile 和独立 exercise profile 指向**同一个**数据目录 / 世界书文件，
+ * 两个进程可以同时开着。原子写只保证文件不会写坏，挡不住"两边各读一份、各改一处、
+ * 后写的覆盖先写的"——错题本 / generated_exercise.json 会静默丢更新。
+ *
+ * 实现：`mkdir <file>.lock` 是原子操作（已存在 → EEXIST）。持有者被杀留下的锁
+ * 超过 LOCK_STALE_MS 视为失效并清掉。锁目录不以 .json 结尾，worldbook 的扫描看不到它。
+ */
+export function withFileLockSync<T>(file: string, fn: () => T): T {
+  const lock = `${file}.lock`;
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        // 父目录还不存在（第一次写）：建好再抢
+        mkdirSync(join(lock, '..'), { recursive: true });
+        continue;
+      }
+      if (code !== 'EEXIST') throw e;
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
+          rmSync(lock, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        /* 锁刚被释放：直接重试 */
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(tr(`文件被另一个进程占用（锁未释放）：${file}`, `File is locked by another process: ${file}`));
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(25 * (attempt + 1), 200));
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
+}
+
 export interface StoreOptions {
   /** 数据根目录（相对仓库根或绝对路径）。 */
   rootDir: string;
@@ -483,8 +535,15 @@ export class ExerciseStore {
     if (sheet.progress_digest) {
       parts.push('> **Lernstand beim Start dieses Blatts**', ...sheet.progress_digest.split('\n').map((l) => `> ${l}`), '');
     }
-    for (const p of sheet.problems) {
-      parts.push(`## ${p.label || p.id}${p.points != null ? ` (${p.points} P)` : ''}`, '');
+    for (const [i, p] of sheet.problems.entries()) {
+      // 大题共用题干：在第一个小题前写一次（检索要能搜到"已知条件"那一段）
+      const g = p.group ? (sheet.groups ?? []).find((x) => x.id === p.group) : undefined;
+      if (g && sheet.problems[i - 1]?.group !== g.id) {
+        parts.push(`## ${g.label || g.id}${g.points != null ? ` (${g.points} P)` : ''}`, '');
+        if (g.title) parts.push(`**${g.title}**`, '');
+        if (g.text.trim()) parts.push(g.text, '');
+      }
+      parts.push(`${g ? '###' : '##'} ${p.label || p.id}${p.points != null ? ` (${p.points} P)` : ''}`, '');
       if (p.title) parts.push(`**${p.title}**`, '');
       parts.push(p.text || '_(keine Aufgabenstellung)_', '');
       parts.push('### Lösung', '');
@@ -634,22 +693,53 @@ export class ExerciseStore {
 
   /** 新增或按 id 覆盖（重复加入同一题不会产生两条：调用方传同一 id）。 */
   upsertMistake(m: Mistake): Mistake {
-    const { list, keep } = this.loadMistakesForWrite();
-    const i = list.findIndex((x) => x.id === m.id);
-    if (i === -1) list.push(m);
-    else list[i] = { ...list[i]!, ...m, created_at: list[i]!.created_at };
-    list.sort((a, b) => b.created_at - a.created_at);
-    this.writeMistakes(list, keep);
-    return m;
+    return this.withMistakesLock(() => {
+      const { list, keep } = this.loadMistakesForWrite();
+      const i = list.findIndex((x) => x.id === m.id);
+      if (i === -1) list.push(m);
+      else list[i] = { ...list[i]!, ...m, created_at: list[i]!.created_at };
+      list.sort((a, b) => b.created_at - a.created_at);
+      this.writeMistakes(list, keep);
+      return m;
+    });
   }
 
   patchMistake(id: string, patch: Partial<Mistake>): Mistake | null {
-    const { list, keep } = this.loadMistakesForWrite();
-    const i = list.findIndex((x) => x.id === id);
-    if (i === -1) return null;
-    list[i] = { ...list[i]!, ...patch, id: list[i]!.id, updated_at: Date.now() };
-    this.writeMistakes(list, keep);
-    return list[i]!;
+    return this.withMistakesLock(() => {
+      const { list, keep } = this.loadMistakesForWrite();
+      const i = list.findIndex((x) => x.id === id);
+      if (i === -1) return null;
+      list[i] = { ...list[i]!, ...patch, id: list[i]!.id, updated_at: Date.now() };
+      this.writeMistakes(list, keep);
+      return list[i]!;
+    });
+  }
+
+  /**
+   * 批量改世界书同步标记：一次读-改-写，**不**动 updated_at
+   * （同步不是用户编辑，不该把错题顶到"最近修改"）。
+   * @returns 实际改动的条数
+   */
+  setMistakesInWorldbook(flags: ReadonlyMap<string, boolean>): number {
+    if (!flags.size) return 0;
+    return this.withMistakesLock(() => {
+      const { list, keep } = this.loadMistakesForWrite();
+      let changed = 0;
+      for (const m of list) {
+        const want = flags.get(m.id);
+        if (want === undefined || m.in_worldbook === want) continue;
+        m.in_worldbook = want;
+        changed++;
+      }
+      if (changed) this.writeMistakes(list, keep);
+      return changed;
+    });
+  }
+
+  /** 错题本的读-改-写都在这把跨进程锁里（主 profile 与独立 profile 共用数据目录）。 */
+  private withMistakesLock<T>(fn: () => T): T {
+    this.ensureDir(this.root);
+    return withFileLockSync(this.mistakesFile(), fn);
   }
 
   /**
@@ -661,13 +751,17 @@ export class ExerciseStore {
    *     这道题挂着的 id 就指到了别的题的错题上
    */
   deleteMistake(id: string): boolean {
-    const { list, keep } = this.loadMistakesForWrite();
-    const victim = list.find((x) => x.id === id);
+    const victim = this.withMistakesLock(() => {
+      const { list, keep } = this.loadMistakesForWrite();
+      const hit = list.find((x) => x.id === id);
+      if (!hit) return null;
+      this.writeMistakes(
+        list.filter((x) => x.id !== id),
+        keep,
+      );
+      return hit;
+    });
     if (!victim) return false;
-    this.writeMistakes(
-      list.filter((x) => x.id !== id),
-      keep,
-    );
     const sheet = this.readSheet(victim.course_id, victim.sheet_id);
     const p = sheet ? this.findProblem(sheet, victim.problem_id) : null;
     if (sheet && p?.mistakes.includes(id)) {

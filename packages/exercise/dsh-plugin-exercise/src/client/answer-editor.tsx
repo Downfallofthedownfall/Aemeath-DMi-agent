@@ -68,7 +68,8 @@ export function insertIntoActiveEditor(text: string, caretOffset: number): boole
 export interface AnswerEditorProps {
   problem: ProblemView;
   onSave: (patch: { answer?: string; notes?: string }) => Promise<void>;
-  onCheck: () => void;
+  /** 不传 = 不显示检查按钮（精简布局里检查在 problem-tools 的操作栏） */
+  onCheck?: () => void;
   /** 可选：极简模式没有错题本，不传就不显示按钮 */
   onCollectMistake?: () => void;
   onToast: (msg: string) => void;
@@ -77,6 +78,12 @@ export interface AnswerEditorProps {
   onAttachImage?: (file: File) => Promise<void>;
   onDeleteImage?: (imageId: string) => void;
   imageUrl?: (name: string) => string;
+  /**
+   * 精简布局（2026-11-20）：不画「＋图片」那一行和底部按钮行（检查 / 错题本在操作栏和「⋯」里）；
+   * 备注框只在 showNotes 或已有备注时出现。
+   */
+  compact?: boolean;
+  showNotes?: boolean;
 }
 
 const SAVE_DEBOUNCE_MS = 900;
@@ -93,6 +100,8 @@ export function AnswerEditor({
   onAttachImage,
   onDeleteImage,
   imageUrl,
+  compact = false,
+  showNotes = false,
 }: AnswerEditorProps): JSX.Element {
   const t = useT();
   const locale = useLocale();
@@ -311,7 +320,7 @@ export function AnswerEditor({
         </div>
       </div>
 
-      {onAttachImage ? (
+      {onAttachImage && !compact ? (
         <div className="lec-toolrow" style={{ marginTop: 6 }}>
           <label className="lec-btn lec-btn-ghost" style={{ cursor: 'pointer', margin: 0 }}>
             {t('exercise.answer.addImage')}
@@ -370,29 +379,49 @@ export function AnswerEditor({
         </div>
       )}
 
-      <div className="lec-toolrow">
-        <button type="button" className="lec-btn" onClick={onCheck} disabled={busy}>
-          {busy ? t('exercise.check.busy') : t('exercise.answer.check')}
-        </button>
-        {onCollectMistake ? (
-          <button type="button" className="lec-btn lec-btn-ghost" onClick={onCollectMistake}>
-            {t('exercise.answer.collectMistake')}
-          </button>
-        ) : null}
-        <span className="lec-grow" />
-        <input
-          className="lec-input"
-          style={{ width: 220 }}
-          placeholder={t('exercise.answer.notesPlaceholder')}
-          value={notes}
-          onChange={(e) => {
-            const v = e.currentTarget.value;
-            setNotes(v);
-            schedule({ notes: v });
-          }}
-          onBlur={() => void flush()}
-        />
-      </div>
+      {compact ? (
+        showNotes || notes.trim() ? (
+          <div className="lec-toolrow">
+            <input
+              className="lec-input lec-notes-input"
+              placeholder={t('exercise.answer.notesPlaceholder')}
+              value={notes}
+              onChange={(e) => {
+                const v = e.currentTarget.value;
+                setNotes(v);
+                schedule({ notes: v });
+              }}
+              onBlur={() => void flush()}
+            />
+          </div>
+        ) : null
+      ) : (
+        <div className="lec-toolrow">
+          {onCheck ? (
+            <button type="button" className="lec-btn" onClick={onCheck} disabled={busy}>
+              {busy ? t('exercise.check.busy') : t('exercise.answer.check')}
+            </button>
+          ) : null}
+          {onCollectMistake ? (
+            <button type="button" className="lec-btn lec-btn-ghost" onClick={onCollectMistake}>
+              {t('exercise.answer.collectMistake')}
+            </button>
+          ) : null}
+          <span className="lec-grow" />
+          <input
+            className="lec-input"
+            style={{ width: 220 }}
+            placeholder={t('exercise.answer.notesPlaceholder')}
+            value={notes}
+            onChange={(e) => {
+              const v = e.currentTarget.value;
+              setNotes(v);
+              schedule({ notes: v });
+            }}
+            onBlur={() => void flush()}
+          />
+        </div>
+      )}
     </div>
   );
 }

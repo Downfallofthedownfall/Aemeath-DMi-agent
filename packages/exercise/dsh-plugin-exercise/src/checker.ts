@@ -68,6 +68,11 @@ export interface CheckInput {
   /** 有原题页面截图时：附图检查（多模态），题干里可能有图/公式 OCR 不准。
    *  一道题**跨页**时会有多张（按页码升序）。 */
   pageImages?: Array<{ base64: string; mediaType: string; page: number }>;
+  /**
+   * 小题：同一大题前面小题的作答（只作上下文，不在本次检查范围）。
+   * 题干此时是"大题题干 + 【b)】本小题"（parts.ts 的 statementFor）。
+   */
+  earlier?: Array<{ part: string; answer: string }>;
 }
 
 export interface ParsedCheck {
@@ -180,6 +185,15 @@ export function buildCheckPrompt(input: CheckInput): string {
     lines.push('');
     lines.push('## 学生自己的备注');
     lines.push(input.notes.trim());
+  }
+  if (input.earlier?.length) {
+    lines.push('');
+    lines.push('## 同一大题前面小题的作答（只作上下文，**不在本次检查范围**）');
+    for (const e of input.earlier) lines.push(`${e.part}) ${e.answer}`);
+    lines.push(
+      '- 本次**只检查**题目原文里【】标出的这个小题，上面那些小题的对错不要写进 issues。' +
+        '若本小题沿用了前面小题的结果而那个结果有误：按 Folgefehler 处理，只看本小题这一步本身做得对不对。',
+    );
   }
   lines.push('');
   lines.push(
@@ -445,6 +459,8 @@ export interface ApproachInput {
   pageImages?: Array<{ base64: string; mediaType: string; page: number }>;
   answerImages?: Array<{ base64: string; mediaType: string; name: string }>;
   lang: 'zh' | 'de' | 'en';
+  /** 小题：同一大题前面小题的作答（只作上下文） */
+  earlier?: Array<{ part: string; answer: string }>;
 }
 
 const APPROACH_VERDICTS = ['on_track', 'at_risk', 'wrong', 'unclear'] as const;
@@ -571,6 +587,11 @@ export function buildApproachPrompt(input: ApproachInput): string {
     );
   }
 
+  if (input.earlier?.length) {
+    lines.push('');
+    lines.push(L('## 同一大题前面小题的作答（只作上下文，不检查）', '## Bisherige Teilaufgaben (nur Kontext)', '## Earlier parts (context only)'));
+    for (const e of input.earlier) lines.push(`${e.part}) ${e.answer}`);
+  }
   lines.push('');
   lines.push(L('## 学生的当前草稿（可能只写了一半）', '## Aktueller Entwurf (evtl. halb fertig)', '## Current draft (maybe half done)'));
   lines.push(input.draft.trim() || L('（还是空的）', '(noch leer)', '(still empty)'));
