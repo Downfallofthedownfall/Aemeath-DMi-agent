@@ -160,7 +160,13 @@ try {
     const m2 = all.find((m) => m.problem_id === 'p02');
     const m3 = all.find((m) => m.problem_id === 'p03');
     assert.ok(m2 && m3, `错题本里应有 p02/p03：${JSON.stringify(all.map((m) => m.problem_id))}`);
+    assert.ok(prob('p02').mistakes.includes(m2.id), '前提：p02 挂着自己的错题');
     assert.ok(store.deleteMistake(m2.id));
+    assert.deepEqual(prob('p02').mistakes, [], '删错题后题目上不能还挂着它（题卡会一直显示"已加入错题本"）');
+    // 旧版本留下的悬空引用：下次收错题时顺手清掉
+    const s1 = store.readSheet(C, S);
+    store.findProblem(s1, 'p01').mistakes = ['m20000101-999', m3.id];
+    store.writeSheet(C, s1);
     // 让 p01 重新检查成 wrong → 再收一条
     const c1 = call('exercise_check', { course_id: C, sheet_id: S, problem_id: 'p01' });
     await waitPending(1);
@@ -171,7 +177,10 @@ try {
     assert.equal(new Set(ids).size, ids.length, `错题 id 重复：${ids.join(',')}`);
     const still3 = now.find((m) => m.id === m3.id);
     assert.equal(still3?.problem_id, 'p03', 'p03 的错题被新错题改写了');
-    assert.ok(now.some((m) => m.problem_id === 'p01'), 'p01 的错题没收进来');
+    const m1 = now.find((m) => m.problem_id === 'p01');
+    assert.ok(m1, 'p01 的错题没收进来');
+    assert.deepEqual(prob('p01').mistakes, [m1.id], 'p01 只该挂自己的错题（悬空 / 别的题的 id 要清掉）');
+    assert.deepEqual(prob('p02').mistakes, [], 'id 复用后 p02 不能指到 p01 的错题');
   });
 
   await t('nextMistakeId 跳过已占用的 id', () => {

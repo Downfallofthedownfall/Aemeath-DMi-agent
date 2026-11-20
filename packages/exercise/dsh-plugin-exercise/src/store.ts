@@ -652,11 +652,28 @@ export class ExerciseStore {
     return list[i]!;
   }
 
+  /**
+   * 删错题，**连同题目上的引用**（`problem.mistakes`）一起删。
+   *
+   * 早先只删错题本里的条目，题目上还挂着这个 id：
+   *   · 题卡一直显示「已加入错题本（1 条记录）」
+   *   · 新错题 id 从"条数 + 1"起找空位，删掉的 id 会被**复用**给别的题 ——
+   *     这道题挂着的 id 就指到了别的题的错题上
+   */
   deleteMistake(id: string): boolean {
     const { list, keep } = this.loadMistakesForWrite();
-    const next = list.filter((x) => x.id !== id);
-    if (next.length === list.length) return false;
-    this.writeMistakes(next, keep);
+    const victim = list.find((x) => x.id === id);
+    if (!victim) return false;
+    this.writeMistakes(
+      list.filter((x) => x.id !== id),
+      keep,
+    );
+    const sheet = this.readSheet(victim.course_id, victim.sheet_id);
+    const p = sheet ? this.findProblem(sheet, victim.problem_id) : null;
+    if (sheet && p?.mistakes.includes(id)) {
+      p.mistakes = p.mistakes.filter((x) => x !== id);
+      this.writeSheet(victim.course_id, sheet);
+    }
     return true;
   }
 

@@ -1784,8 +1784,18 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (input.lesson) m.lesson = input.lesson.slice(0, 2000);
     if (input.tags?.length) m.tags = input.tags.slice(0, 8);
     store.upsertMistake(m);
-    if (!p.mistakes.includes(m.id)) {
-      p.mistakes.push(m.id);
+    // 题目上只留**确实属于这道题**的错题 id：早先删错题不回写题目，留下的悬空 id
+    // 在序号复用后还会指到别的题的错题上（见 store.deleteMistake）。这里顺手把旧数据清干净。
+    const mine = new Set(
+      store
+        .readMistakes()
+        .filter((x) => x.course_id === m.course_id && x.sheet_id === m.sheet_id && x.problem_id === m.problem_id)
+        .map((x) => x.id),
+    );
+    const linked = p.mistakes.filter((id) => mine.has(id));
+    if (!linked.includes(m.id)) linked.push(m.id);
+    if (linked.length !== p.mistakes.length || linked.some((id, i) => id !== p.mistakes[i])) {
+      p.mistakes = linked;
       store.writeSheet(input.courseId, sheet);
     }
     log(`错题本 +1：${m.id}（${m.course_id}/${m.sheet_id}/${m.problem_id}）`);

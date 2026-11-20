@@ -18,10 +18,11 @@
 //   · 想整体清空"习题沉淀的知识"时，删一个文件即可，不碰记忆生成的知识
 // ============================================================
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Lesson, Mistake, Sheet } from './types.js';
+import { writeFileAtomicSync } from './store.js';
 import { tr } from './locale.js';
 
 export const WORLDBOOK_FILE = 'generated_exercise.json';
@@ -170,7 +171,10 @@ export function appendWorldbookEntry(libraryDir: string, entry: WorldbookEntry):
     }
     if (entries.some((e) => e.id === entry.id)) return { ok: true, id: entry.id, created: false };
     entries.push(entry);
-    writeFileSync(file, JSON.stringify(entries, null, 2), 'utf-8');
+    // 原子写：主 agent 的 worldbook 会重读馆里每个 .json（临时文件以 .tmp 结尾，不会被读到），
+    // 馆目录又常在 OneDrive 里。写到一半被读 / 进程被杀留下半截 JSON 的话，
+    // 上面的"坏文件不覆盖"会让之后的每次同步都跳过。
+    writeFileAtomicSync(file, JSON.stringify(entries, null, 2));
     return { ok: true, id: entry.id, created: true };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

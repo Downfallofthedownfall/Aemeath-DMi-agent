@@ -976,6 +976,8 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                 onDelete={async (id) => {
                   await apiPost('delete_mistake', { id });
                   await loadMistakes();
+                  // 题卡上的「已加入错题本」也跟着变（服务端已把 id 从题目上摘掉）
+                  if (courseId && sheet) await loadSheet(courseId, sheet.id);
                 }}
                 onJump={(cid, sid, pid) => void jumpToMistake(cid, sid, pid)}
                 onSyncWorldbook={() => void syncWorldbook()}
