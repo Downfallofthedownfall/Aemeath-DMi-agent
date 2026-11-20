@@ -218,8 +218,48 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     },
   };
   registerVolatileSettings('aemeath-lecture', { enabled: () => runtime.enabled });
+
+  // ============================================================
+  // `enabled`（设置页开关）真正控制工具：早先只打日志，关掉后 lecture_* 照样在模型面前。
+  // 关 = 从工具表里拿掉；开 = 放回去。课堂界面（侧栏 / HTTP 桥）不受影响。
+  // 与 exercise 插件同一套写法。
+  // ============================================================
+  type ToolDef = Parameters<typeof ctx.tools.register>[0];
+  const toolDefs: ToolDef[] = [];
+  let toolDisposers: Array<() => void> = [];
+  const registerTool = (def: ToolDef): void => {
+    toolDefs.push(def);
+  };
+  const syncTools = (): void => {
+    if (runtime.enabled && !toolDisposers.length && toolDefs.length) {
+      toolDisposers = toolDefs.map((d) => ctx.tools.register(d));
+      log(`工具已挂载（${toolDefs.length} 个）`);
+    } else if (!runtime.enabled && toolDisposers.length) {
+      for (const dispose of toolDisposers) {
+        try {
+          dispose();
+        } catch {
+          /* 服务可能已卸载 */
+        }
+      }
+      toolDisposers = [];
+      log('设置已关闭课堂工具：lecture_* 已从工具表移除');
+    }
+  };
   ctx.on('loader/volatile-update', () => {
     log(`settings 已更新: enabled=${runtime.enabled}`);
+    syncTools();
+  });
+  // 精简宿主（headless 测试 / 自建 ctx）可能没有 effect：没有就靠 tools 服务随上下文回收
+  (ctx as unknown as { effect?: (fn: () => () => void) => void }).effect?.(() => () => {
+    for (const dispose of toolDisposers) {
+      try {
+        dispose();
+      } catch {
+        /* 已随上下文卸载 */
+      }
+    }
+    toolDisposers = [];
   });
 
   const dataDir = config.dataDir ?? 'packages/library/physicist/lectures';
@@ -678,7 +718,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   // 工具集
   // ============================================================
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_session_start',
       description:
@@ -717,7 +757,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_capture',
       description:
@@ -797,7 +837,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_status',
       description:
@@ -882,7 +922,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
 
   // ---------- 课后复盘 ----------
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_review_start',
       description:
@@ -923,7 +963,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_review_submit',
       description:
@@ -1005,7 +1045,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_review_next',
       description:
@@ -1174,7 +1214,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     return { files: written, summaries };
   }
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_export_handoff',
       description:
@@ -1232,7 +1272,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   //
   // 这个工具就是干这件事的：一句话拿到某一讲的 markdown 原文。
   // ============================================================
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_read',
       description:
@@ -1509,7 +1549,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
   //
   // 这个工具补上第三条：跨 preset 把课堂来源的记忆捞出来。
   // ============================================================
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_imported',
       description:
@@ -1592,7 +1632,7 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
     }),
   );
 
-  ctx.tools.register(
+  registerTool(
     defineTool({
       name: 'lecture_import_handoff',
       description:
@@ -1696,6 +1736,10 @@ export async function apply(ctx: Context, config: LectureConfig): Promise<void> 
       },
     }),
   );
+
+  // 按当前开关挂载（之后随设置页的 volatile 更新增删）
+  syncTools();
+  if (!runtime.enabled) log('设置里关闭了课堂工具：lecture_* 暂不挂载（界面仍可用）');
 
   // ============================================================
   // 内部辅助
