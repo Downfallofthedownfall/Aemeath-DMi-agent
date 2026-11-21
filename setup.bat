@@ -12,6 +12,13 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+rem dsh 0.2.2 requires Node 24.9+ and no longer runs on Node 22: refuse here, not at first launch
+node -e "const [a,b]=process.versions.node.split('.').map(Number);process.exit(a>24||(a===24&&b>=9)?0:1)"
+if %errorlevel% neq 0 (
+    for /f %%v in ('node -v') do echo Node.js %%v is too old - Node.js 24.9+ is required, dsh 0.2.2 dropped Node 22: https://nodejs.org
+    pause
+    exit /b 1
+)
 echo [OK] Node.js found
 
 echo [2/7] Checking Python...
