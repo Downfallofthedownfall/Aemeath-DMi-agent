@@ -249,6 +249,25 @@ t('sessionPresetOf：调用方没 inject 也能读到会话中途选的角色（
   assert.equal(resolveRole(ctx, session, 'aemeath'), 'physicist');
 });
 
+t('sessionPresetOf：dsh 0.2.2 优先 agentPresets.presetForSession；注册表 stateOf 只作兜底', () => {
+  const session = { header: { agentPreset: 'aemeath' } };
+  const services = {
+    agentPresets: {
+      presetForSession(s) {
+        assert.equal(this, services.agentPresets, '要按方法调用（远程服务代理读 this）');
+        return s === session ? 'physicist' : null;
+      },
+    },
+    sessionProjections: { stateOf: () => 'aemeath' },
+  };
+  assert.equal(sessionPresetOf({ reflect: { get: (n) => services[n] } }, session), 'physicist');
+  // 注册表还没选（null）→ 落到 projection 兜底
+  assert.equal(sessionPresetOf({ reflect: { get: (n) => services[n] } }, { header: {} }), 'aemeath');
+  // 注册表抛错（还没激活）→ 同样兜底，不冒泡
+  const broken = { agentPresets: { presetForSession: () => { throw new Error('not ready'); } }, sessionProjections: { stateOf: () => 'aemeath' } };
+  assert.equal(sessionPresetOf({ reflect: { get: (n) => broken[n] } }, session), 'aemeath');
+});
+
 t('AEMEATH_HIDDEN_TOOLS 覆盖所有学习类工具（新增工具要加进去）', () => {
   const names = new Set();
   for (const { src } of pluginIndexes()) {

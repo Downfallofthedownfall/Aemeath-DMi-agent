@@ -224,13 +224,30 @@ function hostService<T>(ctx: unknown, name: string): T | undefined {
   }
 }
 
-/** 会话当前 agent preset（0.2.0 读法）；解析不出时 undefined。 */
+/**
+ * 会话当前 agent preset；解析不出时 undefined。
+ *
+ * 读法顺序：
+ *   ① `ctx.agentPresets.presetForSession(session)` —— dsh 0.2.1-rc.3 起的正式 API
+ *      （preset 注册表自己持有 `agentPreset` projection 的 handle）
+ *   ② `ctx.sessionProjections.stateOf(session, 'agentPreset')` —— 注册表级读取，
+ *      0.2.1-rc.3 起 deprecated（没有插件注册该键时返回 undefined），只作老版本兜底
+ */
 export function sessionPresetOf(ctx: unknown, session: unknown): string | undefined {
   if (!ctx || !session) return undefined;
+  const pick = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
+  try {
+    const presets = hostService<{ presetForSession?: (s: unknown) => unknown }>(ctx, 'agentPresets');
+    if (typeof presets?.presetForSession === 'function') {
+      const fromRegistry = pick(presets.presetForSession(session));
+      if (fromRegistry) return fromRegistry;
+    }
+  } catch {
+    /* 注册表还没激活 / 老版本：落到 projection 读取 */
+  }
   try {
     const projections = hostService<{ stateOf?: (s: unknown, k: string) => unknown }>(ctx, 'sessionProjections');
-    const value = projections?.stateOf?.(session, 'agentPreset');
-    return typeof value === 'string' && value.length > 0 ? value : undefined;
+    return pick(projections?.stateOf?.(session, 'agentPreset'));
   } catch {
     return undefined;
   }

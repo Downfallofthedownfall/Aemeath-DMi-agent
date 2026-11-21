@@ -390,12 +390,30 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
   // ---- presentAs('ptc')（v2，config 门控默认关） ----
   // DSH 0.2.0：呈现模式由 'code' 改名为 'ptc'（native | ptc | both），且
   // presentAs 现在返回一个「恢复部署默认」的 disposer，须交给 ctx.effect 释放。
+  //
+  // dsh 0.2.1-rc.3 起 `ctx.tools.presentAs` 被移除：执行方式改由 executor 插件决定
+  // （`@deepseek-ai/dsh-tool-executor-native` / `-ptc`），按 preset 选择要在 profile 里
+  // 给 physicist preset 挂 `tool-executor-ptc`（或已 deprecated 的 dsh-agent-tool-presentation 行）。
+  // 运行时已没有"给单个 agent 切换呈现模式"的 API —— 这里保留老版本的行为，
+  // 新版本上只明确告诉用户去 profile 里配，而不是悄悄失效。
   if (codeMode) {
+    let warnedNoPresentAs = false;
     const applyCodeMode = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
       const preset = resolvePresetCompat(ctx, agent.session) ?? defaultPreset;
       if (preset !== 'physicist') return;
+      const tools = agent.ctx.tools as unknown as { presentAs?: (mode: 'native' | 'ptc') => () => void };
+      if (typeof tools.presentAs !== 'function') {
+        if (!warnedNoPresentAs) {
+          warnedNoPresentAs = true;
+          warn(
+            'codeMode：当前 dsh 已没有 tools.presentAs（0.2.1-rc.3 起改由 executor 插件决定）。' +
+              '要让 physicist 走 PTC，请在 profile 的 physicist preset 里挂 tool-executor-ptc；本开关在此版本上不生效。',
+          );
+        }
+        return;
+      }
       try {
-        const restore = agent.ctx.tools.presentAs('ptc');
+        const restore = tools.presentAs('ptc');
         agent.ctx.effect(() => restore);
         log(`preset=${preset}（${agent.id}）已启用 ptc 呈现模式`);
       } catch (e) {
@@ -407,8 +425,8 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
       applyCodeMode(agent);
       return undefined;
       });
-    log('codeMode 已启用（presentAs("ptc")，physicist 计算密集流）');
+    log('codeMode 已启用（physicist 走 PTC：老版本用 presentAs，dsh 0.2.1-rc.3+ 需在 profile 的 physicist preset 挂 tool-executor-ptc）');
   } else {
-    log('codeMode 默认关闭（presentAs("ptc") 可选，需 ptcRuntime）');
+    log('codeMode 默认关闭（要让 physicist 走 PTC：在 profile 的 physicist preset 挂 tool-executor-ptc）');
   }
 }

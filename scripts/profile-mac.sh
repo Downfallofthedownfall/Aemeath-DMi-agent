@@ -113,18 +113,13 @@ case "$(uname -s)" in
 esac
 
 # ---- 0) 前置检查：明确告诉用户缺什么，而不是抛一句 node 的错 ----
-command -v node >/dev/null 2>&1 || die "找不到 node。请先装 Node.js 22.13+（https://nodejs.org 或 brew install node）"
+command -v node >/dev/null 2>&1 || die "找不到 node。请先装 Node.js 24.9+（https://nodejs.org 或 brew install node）"
 NODE_VER="$(node -p 'process.versions.node.split(".").slice(0,2).join(" ")')"
 NODE_MAJOR="${NODE_VER%% *}"
 NODE_MINOR="${NODE_VER##* }"
-[[ "$NODE_MAJOR" -ge 20 ]] || die "Node 版本过低（${NODE_MAJOR}.${NODE_MINOR}）。需要 22.13+。"
-# 20 ≤ 版本 < 22.13：放行但明说。仓库根 package.json 的 engines 是 >=22.13；
-# dsh 的会话搜索用 node:sqlite（22.13 起才免 flag 可用），习题的 PDF 导入用的
-# pdfjs-dist 也声明 >=22.13。这里不直接拦，是因为没在这些版本上实测过"完全起不来"，
-# 不想把一台本来能用的机器挡在门外 —— 但出了怪错先看这一条。
-if [[ "$NODE_MAJOR" -lt 22 ]] || { [[ "$NODE_MAJOR" -eq 22 ]] && [[ "$NODE_MINOR" -lt 13 ]]; }; then
-  warn "Node ${NODE_MAJOR}.${NODE_MINOR} 低于 22.13：会话搜索（node:sqlite）和习题的 PDF 导入可能不可用。"
-  warn "  遇到看不懂的报错，先把 Node 升到 22.13 或更新版本再试。"
+# dsh 0.2.2 起要求 Node 24.9+，明确不再支持 Node 22（engines: >=24.9.0）—— 直接拦。
+if [[ "$NODE_MAJOR" -lt 24 ]] || { [[ "$NODE_MAJOR" -eq 24 ]] && [[ "$NODE_MINOR" -lt 9 ]]; }; then
+  die "Node 版本过低（${NODE_MAJOR}.${NODE_MINOR}）。需要 24.9+（dsh 0.2.2 起不再支持 Node 22）。"
 fi
 
 # ---- 1) 依赖 ----

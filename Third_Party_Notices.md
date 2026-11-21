@@ -15,7 +15,7 @@
 | `@deepseek-ai/cosmokit` | 1.8.2 | MIT | 工具库 |
 | Electron | 28.3.3（v1 `electron-app/` 与 v2 `app/` 当前运行实例；v2 声明 ^41.0.0） | MIT | 桌宠壳（桌面窗口 + 进程托管） |
 | electron-builder | 24.x | MIT | Windows 打包（NSIS） |
-| Node.js | 22.13+ | MIT | 运行环境（内嵌 npm） |
+| Node.js | 24.9+ | MIT | 运行环境（内嵌 npm） |
 | TypeScript | 5.x | Apache-2.0 | 插件/前端源码编译 |
 | esbuild | 0.2x | MIT | client bundle 打包（`packages/ui` build.mjs） |
 | React / react-dom | 18.3.1 | MIT | 前端 client 插件 UI |

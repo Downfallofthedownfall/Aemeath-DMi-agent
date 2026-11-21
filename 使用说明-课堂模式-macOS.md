@@ -61,14 +61,14 @@ AEMEATH_LECTURE_PORT=4000 ./lecture-launch.command   # 入口也支持换端口
 
 **都找不到**会明确报错并告诉你去哪装，不会静默失败。
 
-要求 **Node 22.13 或更新**（与仓库根 `package.json` 的 `engines` 一致）。检查：
+要求 **Node 24.9 或更新**（与仓库根 `package.json` 的 `engines` 一致）。检查：
 
 ```bash
-node -v      # 应输出 v22.13 或更高
+node -v      # 应输出 v24.9 或更高
 ```
 
-低于 20 脚本直接拒绝；20 – 22.12 会放行但给出警告 —— 会话搜索用的 `node:sqlite`
-要 22.13 才免 flag 可用。遇到看不懂的报错，先升级 Node。
+低于 24.9 脚本直接拒绝：dsh 0.2.2 起要求 Node 24.9+，不再支持 Node 22。
+之前装的是 Node 22 的话，`brew upgrade node` 或去官网装新的 LTS 即可。
 
 没装的话：官网 https://nodejs.org 下 LTS 双击安装，或 `brew install node`。
 

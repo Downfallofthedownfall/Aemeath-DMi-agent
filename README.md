@@ -1,7 +1,7 @@
 # 🤖 Aemeath-DMi Agent v2 · physicist · 物理学习 Copilot
 
 A local-first physics-study Copilot with a companion desktop pet, built as a plugin monorepo on
-[DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.2.1-rc.2`). The engine stays vanilla
+[DeepSeek Harness](https://github.com/deepseek-ai) (dsh `0.2.2-rc.5`). The engine stays vanilla
 dsh; all domain capability — knowledge, memory, retrieval, solving workflow, class-note capture,
 UI — lives in self-written TypeScript plugins under `packages/`.
 
@@ -41,8 +41,8 @@ knowledge, no cross-talk.
 
 ### Requirements
 
-- **Windows 10/11** for the main app (physicist + Aemeath, Electron shell): Node.js ≥ 22.13, Python ≥ 3.10.
-- **macOS** for Lecture Mode and Übungen only (no desktop shell, no Python): Node.js ≥ 22.13
+- **Windows 10/11** for the main app (physicist + Aemeath, Electron shell): Node.js ≥ 24.9, Python ≥ 3.10.
+- **macOS** for Lecture Mode and Übungen only (no desktop shell, no Python): Node.js ≥ 24.9
   (same as the repo's `engines`; session search uses `node:sqlite` and PDF import needs it).
   The launchers refuse anything below 20 and print a warning for 20 – 22.12.
 - A DeepSeek API key (or another provider configured in dsh).
@@ -189,7 +189,7 @@ never to hand you the solution.
 
 | Tech | Purpose |
 |---|---|
-| **DeepSeek Harness (dsh) 0.2.1-rc.2** | Agent loop, tool pipeline, session event sourcing, approvals, plugin system (the engine) |
+| **DeepSeek Harness (dsh) 0.2.2-rc.5** | Agent loop, tool pipeline, session event sourcing, approvals, plugin system (the engine) |
 | DeepSeek API | Chat model (`deepseek-v4-flash`) |
 | TypeScript + Cordis | dsh plugin monorepo (`packages/`) |
 | Python MCP services | SymPy compute / YOLO-OCR vision / IndexTTS2 speech / keyboard-mouse control, wired through dsh `mcp-client` (`packages/py-services/`) |
@@ -263,8 +263,8 @@ npm test -w @aemeath/dsh-plugin-common            # and worldbook / memory / ret
 
 ### 环境要求
 
-- **Windows 10/11**（主程序：physicist + 爱弥斯 + Electron 壳）：Node.js ≥ 22.13，Python ≥ 3.10。
-- **macOS**（仅课堂模式与习题模式，无桌宠壳、无需 Python）：Node.js ≥ 22.13
+- **Windows 10/11**（主程序：physicist + 爱弥斯 + Electron 壳）：Node.js ≥ 24.9，Python ≥ 3.10。
+- **macOS**（仅课堂模式与习题模式，无桌宠壳、无需 Python）：Node.js ≥ 24.9
   （与仓库根 `engines` 一致；会话搜索用 `node:sqlite`，PDF 导入也依赖它）。
   启动脚本只拦 20 以下，20 – 22.12 会放行并给出警告。
 - DeepSeek API Key（或在 dsh 中配置其他服务商）。
@@ -403,7 +403,7 @@ electron-app/          # v1（冻结，仅保留壳参考）
 
 | 技术 | 用途 |
 |---|---|
-| **DeepSeek Harness（dsh）0.2.1-rc.2** | agent loop、工具流水线、会话事件溯源、审批、插件体系（引擎本体） |
+| **DeepSeek Harness（dsh）0.2.2-rc.5** | agent loop、工具流水线、会话事件溯源、审批、插件体系（引擎本体） |
 | DeepSeek API | 对话模型（`deepseek-v4-flash`） |
 | TypeScript + Cordis | dsh 插件 monorepo（`packages/`） |
 | Python MCP 服务 | SymPy 计算 / YOLO-OCR 视觉 / IndexTTS2 语音 / 键鼠控制，经 dsh `mcp-client` 接入（`packages/py-services/`） |

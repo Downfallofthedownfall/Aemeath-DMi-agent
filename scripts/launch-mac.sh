@@ -74,11 +74,11 @@ node_version_of() {
   "$1" -p 'process.versions.node.split(".").slice(0,3).map((s) => parseInt(s, 10) || 0).join(" ")' 2>/dev/null || echo "0 0 0"
 }
 
-# 某个 node 是否 ≥ 20（能启动的最低线；22.13 以下会在后面给警告）
+# 某个 node 是否 ≥ 24.9（dsh 0.2.2 起的硬性下限：不再支持 Node 22）
 node_usable() {
   local maj min pat
   read -r maj min pat <<< "$(node_version_of "$1")"
-  [ "${maj:-0}" -ge 20 ] 2>/dev/null
+  [ "${maj:-0}" -gt 24 ] 2>/dev/null || { [ "${maj:-0}" -eq 24 ] 2>/dev/null && [ "${min:-0}" -ge 9 ] 2>/dev/null; }
 }
 
 NODE_BIN=""
@@ -118,13 +118,13 @@ fi
 
 if [ -z "$NODE_BIN" ]; then
   if command -v node >/dev/null 2>&1; then
-    die_gui "Node 版本过低（当前 $(node -v 2>/dev/null)）。需要 22.13 或更新版本。
+    die_gui "Node 版本过低（当前 $(node -v 2>/dev/null)）。需要 24.9 或更新版本（dsh 0.2.2 起不再支持 Node 22）。
 请升级：
   · 官网 https://nodejs.org（下载 LTS 版，双击安装）
   · 或终端执行：brew install node"
   fi
   die_gui "找不到 Node.js。
-请先安装 Node 22.13 或更新版本：
+请先安装 Node 24.9 或更新版本：
   · 官网 https://nodejs.org（下载 LTS 版，双击安装）
   · 或终端执行：brew install node"
 fi

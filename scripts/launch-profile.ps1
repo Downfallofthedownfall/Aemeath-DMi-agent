@@ -57,7 +57,7 @@ Write-Host ""
 # ---- Node 检查 ----
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {
-  Die "找不到 Node.js。请先安装 Node 22.13 或更新版本（https://nodejs.org），装完重开这个窗口。"
+  Die "找不到 Node.js。请先安装 Node 24.9 或更新版本（https://nodejs.org），装完重开这个窗口。"
 }
 # ⚠️ 不要用 `node -p 'process.versions.node.split(".")[0]'`：
 #    PowerShell 会把内层双引号吃掉，node 收到 split(.)[0] → SyntaxError。
@@ -66,18 +66,12 @@ $nodeVer = (& node -v) -replace '^v', ''
 $verParts = $nodeVer -split '\.'
 $major = [int]$verParts[0]
 $minor = [int]$verParts[1]
-if ($major -lt 20) {
-  Die "Node 版本过低（当前 $nodeVer）。需要 22.13 或更新版本。"
+# dsh 0.2.2 起要求 Node 24.9+，明确不再支持 Node 22（engines: >=24.9.0）—— 直接拦，
+# 不再像 22.13 时代那样"放行但警告"：低版本上 dsh 本体就不保证能启动。
+if ($major -lt 24 -or ($major -eq 24 -and $minor -lt 9)) {
+  Die "Node 版本过低（当前 $nodeVer）。需要 24.9 或更新版本（dsh 0.2.2 起不再支持 Node 22）。"
 }
 Write-Host "Node: v$nodeVer" -ForegroundColor DarkGray
-# 20 ≤ 版本 < 22.13：放行但明说。仓库根 package.json 的 engines 是 >=22.13；
-# dsh 的会话搜索用 node:sqlite（22.13 起才免 flag 可用），习题的 PDF 导入用的
-# pdfjs-dist 也声明 >=22.13。这里不直接拦，是因为没在这些版本上实测过"完全起不来"，
-# 不想把一台本来能用的机器挡在门外 —— 但出了怪错先看这一条。
-if ($major -lt 22 -or ($major -eq 22 -and $minor -lt 13)) {
-  Write-Warning "Node $nodeVer 低于 22.13：会话搜索（node:sqlite）和习题的 PDF 导入可能不可用。"
-  Write-Warning "遇到看不懂的报错，先把 Node 升到 22.13 或更新版本再试。"
-}
 Write-Host ""
 
 # ---- 依赖（只在仓库根安装；绝不在 profiles\* 里跑 npm install，见 scripts\dsh.ps1）----

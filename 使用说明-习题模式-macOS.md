@@ -9,7 +9,7 @@
 
 | 需要 | 说明 |
 |---|---|
-| **Node 22.13+** | 唯一的硬依赖。脚本会自己找（Homebrew / nvm / volta / fnm 都试）。20 – 22.12 会放行但给警告：会话搜索和 PDF 导入依赖 22.13 |
+| **Node 24.9+** | 唯一的硬依赖。脚本会自己找（Homebrew / nvm / volta / fnm 都试，挑够新的那个）。低于 24.9 直接拒绝：dsh 0.2.2 起不再支持 Node 22 |
 | **Chrome 或 Edge**（可选） | 用来把提交页打印成 PDF。没有也能用：界面会给「打开打印页」，你按 **⌘P → 存储为 PDF** 一样出文件 |
 | **DeepSeek API Key**（可选） | 只有「让爱弥斯检查」需要。**不用单独填**：用的是主 agent 那把全局 key（界面「设置 → Models」或 `$DSH_HOME/.credentials.yaml`）。不填也能导入/做题/生成 PDF/记错题 |
 | 不需要 Python | 习题模式不调 sympy / vision / tts / control（那是 Windows 主 agent 的事） |
