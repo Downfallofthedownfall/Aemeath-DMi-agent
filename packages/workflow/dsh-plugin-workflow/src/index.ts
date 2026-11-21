@@ -401,8 +401,14 @@ export async function apply(ctx: Context, config: WorkflowConfig): Promise<void>
     const applyCodeMode = (agent: { id: string; ctx: Context; session: { header?: unknown } }): void => {
       const preset = resolvePresetCompat(ctx, agent.session) ?? defaultPreset;
       if (preset !== 'physicist') return;
-      const tools = agent.ctx.tools as unknown as { presentAs?: (mode: 'native' | 'ptc') => () => void };
-      if (typeof tools.presentAs !== 'function') {
+      // tools 服务可能还没就绪（agent.ctx.tools 为 undefined）：按"没有 presentAs"处理，别从 agent 钩子里抛
+      let tools: { presentAs?: (mode: 'native' | 'ptc') => () => void } | undefined;
+      try {
+        tools = agent.ctx.tools as unknown as typeof tools;
+      } catch {
+        tools = undefined;
+      }
+      if (!tools || typeof tools.presentAs !== 'function') {
         if (!warnedNoPresentAs) {
           warnedNoPresentAs = true;
           warn(
