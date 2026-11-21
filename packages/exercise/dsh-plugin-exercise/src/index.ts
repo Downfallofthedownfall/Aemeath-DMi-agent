@@ -285,18 +285,28 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
    * 世界书馆目录：显式配置 → worldbook 服务的 libraries[preset]（C8：单一来源）→ 约定路径。
    * 惰性解析：worldbook 插件可能比本插件晚加载。
    */
-  const worldbookDirFor = (preset: string = defaultPreset): string => {
-    if (config.worldbookLibraryDir) return config.worldbookLibraryDir;
+  const worldbookLibraries = (): Record<string, string> | null => {
     try {
       const svc = (ctx as unknown as { reflect?: { get(n: string): unknown } }).reflect?.get('worldbook') as
         | { libraries?: Record<string, string> }
         | undefined;
-      const dir = svc?.libraries?.[preset];
-      if (dir) return dir;
+      return svc?.libraries ?? null;
     } catch {
-      /* worldbook 未加载（独立 profile） */
+      return null; // worldbook 未加载（独立 profile）
     }
-    return `packages/worldbook/data/${preset}`;
+  };
+  const worldbookDirFor = (preset: string = defaultPreset): string => {
+    if (config.worldbookLibraryDir) return config.worldbookLibraryDir;
+    return worldbookLibraries()?.[preset] || `packages/worldbook/data/${preset}`;
+  };
+  /**
+   * 习题可能写过的**所有**馆目录：本地同步写 defaultPreset 的馆，握手导入写目标 preset 的馆
+   * （exercise_import_handoff 的 preset 参数）。撤回要每个馆都扫一遍，
+   * 否则导入进 aemeath 馆的条目在本地删错题 / 标已掌握之后永远撤不掉。
+   */
+  const allWorldbookDirs = (): string[] => {
+    if (config.worldbookLibraryDir) return [config.worldbookLibraryDir];
+    return [...new Set([worldbookDirFor(), ...Object.values(worldbookLibraries() ?? {})].filter(Boolean))];
   };
   // 导入台账（握手导入去重；见 import-handoff.ts 的 ImportLedger）
   const importLedger = fileLedger(join(store.rootPath, '_handoff_imported.json'));
@@ -1181,19 +1191,26 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     return { problemLabel: st.label, problemTitle: st.title, points: st.points, problemText: st.text, earlier: st.earlier };
   };
 
-  /** 错题本里指向这些题的条目改指新题（跳转、防重复收集都按 problem_id 找）。 */
-  const repointMistakes = (courseId: string, sheetId: string, fromIds: readonly string[], to: Problem): void => {
+  /**
+   * 错题本里指向旧题的条目改指新题（跳转、防重复收集都按 problem_id 找）。
+   *
+   * 传的是**一整张映射**（旧题 id → 新题），按每条错题**当前**的 problem_id 一次改完：
+   * 重新分块时题号可能互换（旧 p01 → 新 p02、旧 p02 → 新 p01），逐对调用会把
+   * 刚改到 p02 的错题又当成"旧 p02"改回去。
+   */
+  const repointMistakes = (courseId: string, sheetId: string, moves: ReadonlyMap<string, Problem>): void => {
     const oldRefs = new Set<string>();
     for (const m of store.readMistakes()) {
-      if (m.course_id === courseId && m.sheet_id === sheetId && fromIds.includes(m.problem_id)) {
-        if (m.problem_id !== to.id && m.in_worldbook) oldRefs.add(mistakeRef(courseId, sheetId, m.problem_id));
-        // 世界书条目按 题号 定位：题号变了，旧条目撤回、标记清掉，下次同步按新题号重写
-        store.patchMistake(m.id, {
-          problem_id: to.id,
-          problem_label: to.label || to.id,
-          ...(m.problem_id !== to.id ? { in_worldbook: false } : {}),
-        });
-      }
+      if (m.course_id !== courseId || m.sheet_id !== sheetId) continue;
+      const to = moves.get(m.problem_id);
+      if (!to) continue;
+      if (m.problem_id !== to.id && m.in_worldbook) oldRefs.add(mistakeRef(courseId, sheetId, m.problem_id));
+      // 世界书条目按 题号 定位：题号变了，旧条目撤回、标记清掉，下次同步按新题号重写
+      store.patchMistake(m.id, {
+        problem_id: to.id,
+        problem_label: to.label || to.id,
+        ...(m.problem_id !== to.id ? { in_worldbook: false } : {}),
+      });
     }
     if (oldRefs.size) retractWorldbook((e) => !!e.ref && oldRefs.has(e.ref), '错题换了题号');
   };
@@ -1213,7 +1230,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       };
     }
     const first = sheet.problems.find((x) => x.id === ids[0])!;
-    repointMistakes(input.courseId, sheet.id, [input.problemId], first);
+    repointMistakes(input.courseId, sheet.id, new Map([[input.problemId, first]]));
     store.writeSheet(input.courseId, sheet);
     log(`拆小题：${input.problemId} → ${ids.join(' / ')}`);
     return { ok: true, sheet, parts: ids };
@@ -1226,7 +1243,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const before = sheet.problems.filter((x) => x.group === input.groupId).map((x) => x.id);
     const merged = mergeGroupInSheet(sheet, input.groupId);
     if (!merged) return { ok: false, error: tr('大题不存在', 'Problem group not found') };
-    repointMistakes(input.courseId, sheet.id, before, merged);
+    repointMistakes(input.courseId, sheet.id, new Map(before.map((id) => [id, merged])));
     store.writeSheet(input.courseId, sheet);
     log(`合并小题：${before.join(' / ')} → ${merged.id}`);
     return { ok: true, sheet };
@@ -1411,6 +1428,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const hasUserData = (o: Problem): boolean =>
       !!(o.answer.trim() || o.notes.trim() || o.images.length || o.checks.length || o.rebuttals.length || o.mistakes.length);
     const claimed = new Set<Problem>();
+    /** 旧题 id → 接手它的新题：错题本里的 problem_id 要跟着改（新题的 id 可能变了） */
+    const moves = new Map<string, Problem>();
+    const moveTo = (old: Problem, to: Problem): void => {
+      if (old.id !== to.id) moves.set(old.id, to);
+    };
     let kept = 0;
     // ① 同题号一对一（小题的标签是 "Aufgabe 1 a)"，前后都拆了小题时也走这里）
     for (const p of fresh) {
@@ -1418,6 +1440,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       if (!old) continue;
       if (!hasUserData(old)) continue;
       claimed.add(old);
+      moveTo(old, p);
       p.answer = old.answer;
       p.answer_updated_at = old.answer_updated_at;
       p.answer_edited_by = old.answer_edited_by;
@@ -1436,6 +1459,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       if (!old) continue;
       claimed.add(old);
       distributeIntoParts(old, partsOfG);
+      // 错题 / 检查都搬到了第一小题上（distributeIntoParts）
+      moveTo(old, partsOfG[0]!);
       kept++;
     }
     // ③ 以前拆成了小题、这次没拆出来：并回一道题
@@ -1445,10 +1470,16 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       if (!oldGroup) continue;
       const oldParts = latest.problems.filter((o) => o.group === oldGroup.id && !claimed.has(o));
       if (!oldParts.some(hasUserData)) continue;
-      for (const o of oldParts) claimed.add(o);
+      for (const o of oldParts) {
+        claimed.add(o);
+        moveTo(o, p);
+      }
       mergePartsInto(p, oldParts);
       kept++;
     }
+    // 题目上的 mistakes 已经搬好；错题本里的 problem_id 也得改，否则跳转找不到题、
+    // 再检查判错会另收一条，旧的那条成了孤儿
+    if (moves.size) repointMistakes(input.courseId, latest.id, moves);
     latest.problems = fresh;
     latest.groups = grouped.groups;
     latest.split_by = by;
@@ -2002,7 +2033,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           in_worldbook: false,
         });
         // 已掌握 = 不该再被主 agent 提醒"你上次在这里栽过"
-        retractWorldbook((e) => e.ref === mistakeRef(m.course_id, m.sheet_id, m.problem_id), '答辩撤回批改');
+        retireMistakeEntry(m, '答辩撤回批改');
         log(`答辩撤回批改 → 错题 ${m.id} 标为已掌握`);
       }
     }
@@ -2029,7 +2060,6 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     const p = store.findProblem(sheet, input.problemId);
     if (!p) return null;
     const course = store.readIndex(input.courseId);
-    const existing = store.findMistakeFor(input.courseId, input.sheetId, p.id);
     const check = lastVerdictCheck(p.checks) ?? p.checks.at(-1) ?? null;
     const now = Date.now();
     const tags = (input.tags ?? []).length
@@ -2042,41 +2072,45 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
             ].filter(Boolean),
           ),
         ].slice(0, 4);
-    const m: Mistake = existing ?? {
-      id: nextMistakeId(now, store.readMistakes().map((x) => x.id)),
-      course_id: input.courseId,
-      course_title: course?.title ?? input.courseId,
-      sheet_id: sheet.id,
-      sheet_title: `Übungsblatt ${sheet.number}${sheet.title ? ` ${sheet.title}` : ''}`,
-      sheet_due: sheet.due,
-      problem_id: p.id,
-      problem_label: p.label || p.id,
-      problem_text: p.text.slice(0, 4000),
-      answer: p.answer.slice(0, 4000),
-      verdict: check?.verdict ?? 'wrong',
-      issues: (check?.issues ?? []).map((i) => i.text).slice(0, 6),
-      tags,
-      // 这里不能用 `existing?.lesson` —— TS 在本分支已把 existing 收窄成 null
-      //（`existing ?? {...}` 的右操作数只在 existing 为 null 时求值），写出来恒为空。
-      lesson: input.lesson ?? '',
-      created_at: now,
-      updated_at: now,
-      review_count: 0,
-      mastered: false,
-      in_worldbook: false,
-      source_check_id: check?.id ?? '',
-    };
-    // 已存在则刷新"当时错在哪"的最新证据（但保留用户写的 lesson / tags 选择）
-    if (existing) {
-      m.answer = p.answer.slice(0, 4000);
-      m.verdict = check?.verdict ?? existing.verdict;
-      m.issues = (check?.issues ?? []).map((i) => i.text).slice(0, 6);
-      m.source_check_id = check?.id ?? existing.source_check_id;
-      m.updated_at = now;
-    }
-    if (input.lesson) m.lesson = input.lesson.slice(0, 2000);
-    if (input.tags?.length) m.tags = input.tags.slice(0, 8);
-    store.upsertMistake(m);
+    // 查找已有错题 + 分配新 id + 写回在同一把跨进程锁里（见 store.upsertMistakeFor）：
+    // 早先 id 在锁外算，主 profile 与独立 profile 同时收错题会算出同一个 id、互相改写
+    const m = store.upsertMistakeFor({ courseId: input.courseId, sheetId: input.sheetId, problemId: p.id }, (existing, takenIds) => {
+      const next: Mistake = existing ?? {
+        id: nextMistakeId(now, takenIds),
+        course_id: input.courseId,
+        course_title: course?.title ?? input.courseId,
+        sheet_id: sheet.id,
+        sheet_title: `Übungsblatt ${sheet.number}${sheet.title ? ` ${sheet.title}` : ''}`,
+        sheet_due: sheet.due,
+        problem_id: p.id,
+        problem_label: p.label || p.id,
+        problem_text: p.text.slice(0, 4000),
+        answer: p.answer.slice(0, 4000),
+        verdict: check?.verdict ?? 'wrong',
+        issues: (check?.issues ?? []).map((i) => i.text).slice(0, 6),
+        tags,
+        // 这里不能用 `existing?.lesson` —— TS 在本分支已把 existing 收窄成 null
+        //（`existing ?? {...}` 的右操作数只在 existing 为 null 时求值），写出来恒为空。
+        lesson: input.lesson ?? '',
+        created_at: now,
+        updated_at: now,
+        review_count: 0,
+        mastered: false,
+        in_worldbook: false,
+        source_check_id: check?.id ?? '',
+      };
+      // 已存在则刷新"当时错在哪"的最新证据（但保留用户写的 lesson / tags 选择）
+      if (existing) {
+        next.answer = p.answer.slice(0, 4000);
+        next.verdict = check?.verdict ?? existing.verdict;
+        next.issues = (check?.issues ?? []).map((i) => i.text).slice(0, 6);
+        next.source_check_id = check?.id ?? existing.source_check_id;
+        next.updated_at = now;
+      }
+      if (input.lesson) next.lesson = input.lesson.slice(0, 2000);
+      if (input.tags?.length) next.tags = input.tags.slice(0, 8);
+      return next;
+    });
     // 题目上只留**确实属于这道题**的错题 id：早先删错题不回写题目，留下的悬空 id
     // 在序号复用后还会指到别的题的错题上（见 store.deleteMistake）。这里顺手把旧数据清干净。
     const mine = new Set(
@@ -2151,18 +2185,57 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // worldbook 同步（错题教训 + 经验）
   // ============================================================
 
+  /** 馆目录不存在 = 这个 profile 没挂 worldbook（常态），不算失败、不刷警告。 */
+  const isMissingLibrary = (error?: string): boolean => !!error && /馆目录不存在|Library directory not found/.test(error);
+
   /**
-   * 撤回世界书条目（删错题 / 标已掌握 / 删经验 / 删套题时用）。
-   * 失败只记日志，不影响用户手上的主操作；没挂 worldbook（馆目录不存在）是常态，不刷警告。
+   * 撤回世界书条目（删错题 / 标已掌握 / 删经验 / 删套题时用）。**每个馆都扫**（见 allWorldbookDirs）。
+   * 失败只记日志，不影响用户手上的主操作。
+   * @param dirs 只扫这些馆（默认全部）
    */
-  const retractWorldbook = (remove: (e: WorldbookEntry) => boolean, why: string): number => {
-    const r = applyWorldbookChanges(worldbookDirFor(), { remove });
-    if (!r.ok) {
-      if (r.error && !/馆目录不存在|Library directory not found/.test(r.error)) warn(`世界书撤回失败（${why}）：${r.error}`);
-      return 0;
+  const retractWorldbook = (remove: (e: WorldbookEntry) => boolean, why: string, dirs: readonly string[] = allWorldbookDirs()): number => {
+    let removed = 0;
+    for (const dir of dirs) {
+      const r = applyWorldbookChanges(dir, { remove });
+      if (!r.ok) {
+        if (!isMissingLibrary(r.error)) warn(`世界书撤回失败（${why}，${dir}）：${r.error}`);
+        continue;
+      }
+      removed += r.removed.length;
     }
-    if (r.removed.length) log(`世界书撤回 ${r.removed.length} 条（${why}）`);
-    return r.removed.length;
+    if (removed) log(`世界书撤回 ${removed} 条（${why}）`);
+    return removed;
+  };
+
+  /**
+   * 一条错题不该再被提醒了（删了 / 标已掌握 / 答辩认错），处理它那道题的世界书条目。
+   *
+   * 条目按**题目**的 ref 定位，而一道题可能挂着几条错题（合并小题后，几个小题的错题都指向
+   * 合并后的那道题）。早先直接按 ref 整条撤回，同题另一条还没掌握的错题也跟着从世界书里消失。
+   * 现在：还有未掌握的同题错题 → 用它重写条目（只替换已经在世界书里的，不主动新增）；
+   * 没有了 → 整条撤回。
+   */
+  const retireMistakeEntry = (gone: Pick<Mistake, 'id' | 'course_id' | 'sheet_id' | 'problem_id'>, why: string): void => {
+    const ref = mistakeRef(gone.course_id, gone.sheet_id, gone.problem_id);
+    const survivor = store
+      .readMistakes()
+      .find((x) => x.id !== gone.id && !x.mastered && mistakeRef(x.course_id, x.sheet_id, x.problem_id) === ref);
+    const entry = survivor ? mistakeToEntry(survivor) : null;
+    if (!survivor || !entry) {
+      retractWorldbook((e) => e.ref === ref, why);
+      return;
+    }
+    let present = false;
+    for (const dir of allWorldbookDirs()) {
+      const r = applyWorldbookChanges(dir, { upserts: [entry], replaceOnly: true });
+      if (!r.ok) {
+        if (!isMissingLibrary(r.error)) warn(`世界书更新失败（${why}，${dir}）：${r.error}`);
+        continue;
+      }
+      if (r.updated.length || r.unchanged.length) present = true;
+      if (r.updated.length) log(`世界书条目改用同题的另一条错题（${survivor.id}，${why}）`);
+    }
+    if (present && !survivor.in_worldbook) store.setMistakesInWorldbook(new Map([[survivor.id, true]]));
   };
 
   /**
@@ -2231,6 +2304,17 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         written: 0,
       });
     }
+    // 握手导入可能写在别的 preset 的馆里：已掌握的错题在那些馆里也撤回。
+    // 同题还有未掌握错题（这次刚写进主馆）的 ref 不算 —— 那条不该撤。
+    const upsertRefs = new Set(upserts.map((e) => e.ref).filter(Boolean));
+    const retractElsewhere = new Set([...retract].filter((ref) => !upsertRefs.has(ref)));
+    const removedElsewhere = retractElsewhere.size
+      ? retractWorldbook(
+          (e) => !!e.ref && retractElsewhere.has(e.ref),
+          '同步：错题已掌握',
+          allWorldbookDirs().filter((d) => d !== dir),
+        )
+      : 0;
 
     // 成功之后才打标记（一次写入，不存在"部分成功"）
     const bySheet = new Map<string, { courseDir: string; sheetId: string; lessonIds: Set<string> }>();
@@ -2255,19 +2339,20 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     store.setMistakesInWorldbook(mistakeFlags);
 
     const written = r.added.length + r.updated.length;
+    const removed = r.removed.length + removedElsewhere;
     log(
       `worldbook 同步：新增 ${r.added.length} · 更新 ${r.updated.length} · 未变 ${r.unchanged.length} · ` +
-        `撤回 ${r.removed.length} → ${dir}`,
+        `撤回 ${r.removed.length}${removedElsewhere ? `（另有其它馆 ${removedElsewhere}）` : ''} → ${dir}`,
     );
     return ok({
       written,
       skipped: r.unchanged.length,
-      removed: r.removed.length,
+      removed,
       failed: 0,
       worldbook_dir: dir,
       details: [],
       note:
-        written || r.removed.length
+        written || removed
           ? tr('worldbook 热重载 ≤3s 生效（主 agent 讲同类题时会主动提起）', 'Worldbook hot-reloads within 3s (the main agent will bring it up on similar problems)')
           : tr('世界书已是最新', 'Worldbook is already up to date'),
     });
@@ -3416,7 +3501,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         if (!m) return { ok: false, error: tr('错题不存在', 'Mistake not found') };
         // 标了"已掌握" → 立刻从世界书撤回：主 agent 不该再提醒"你上次在这里栽过"
         if (nowMastered) {
-          retractWorldbook((e) => e.ref === mistakeRef(m.course_id, m.sheet_id, m.problem_id), '错题已掌握');
+          retireMistakeEntry(m, '错题已掌握');
         }
         return { ok: true, mistake: m };
       },
@@ -3424,7 +3509,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         const victim = store.readMistakes().find((x) => x.id === input.id);
         const done = store.deleteMistake(input.id);
         if (!done) return { ok: false, error: tr('错题不存在', 'Mistake not found') };
-        if (victim) retractWorldbook((e) => e.ref === mistakeRef(victim.course_id, victim.sheet_id, victim.problem_id), '错题已删除');
+        if (victim) retireMistakeEntry(victim, '错题已删除');
         return { ok: true };
       },
       onLesson: async (input) => {

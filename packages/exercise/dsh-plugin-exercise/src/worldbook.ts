@@ -269,6 +269,11 @@ export interface WorldbookChanges {
   upserts?: readonly WorldbookEntry[];
   /** 已有条目里返回 true 的删掉（与 upserts 同 key 的条目不受影响：它们会被替换）。 */
   remove?: (e: WorldbookEntry) => boolean;
+  /**
+   * true = upserts 只**替换已有**的同 key 条目，文件里没有的不新增。
+   * 用于"内容该换了，但同步与否仍由用户决定"的场合（比如同一道题的另一条错题顶上来）。
+   */
+  replaceOnly?: boolean;
 }
 
 export interface WorldbookApplyResult {
@@ -358,10 +363,12 @@ export function applyWorldbookChanges(
       }
       next.push(cur);
     }
-    for (const [key, e] of pending) {
-      result.added.push(key);
-      result.changed.push(e);
-      next.push(e);
+    if (!changes.replaceOnly) {
+      for (const [key, e] of pending) {
+        result.added.push(key);
+        result.changed.push(e);
+        next.push(e);
+      }
     }
 
     const dirty = result.added.length + result.updated.length + result.removed.length > 0;

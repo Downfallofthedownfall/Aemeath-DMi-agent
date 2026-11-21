@@ -216,6 +216,10 @@ try {
     assert.equal(r.ok, true, JSON.stringify(r));
     const s = store.readSheet(C, S);
     const a1 = s.problems.find((p) => p.label === 'Aufgabe 1');
+    // 错题本也要跟着题走（早先只有题目上的 mistakes 搬了，错题本里的 problem_id 还是旧题号）
+    const mA1 = store.readMistakes().find((m) => m.problem_id === a1.id);
+    assert.ok(mA1 && a1.mistakes.includes(mA1.id), '前提：Aufgabe 1 挂着一条错题');
+    const mistakeOf = (id) => store.readMistakes().find((m) => m.id === id);
     a1.answer = 'a) x = 1\nb) y = 2';
     store.writeSheet(C, s);
     // 原卷里其实有小题 → 重新分块后拆开，答案跟着分
@@ -231,13 +235,54 @@ try {
     ]);
     const kept = after.problems.find((p) => p.label === 'Aufgabe 2');
     assert.equal(kept.checks.length, 1, '没拆的题照旧带回检查');
+    assert.equal(mistakeOf(mA1.id).problem_id, parts[0].id, '拆开后错题本应指向第一小题（错题搬到了它上面）');
+    assert.ok(parts[0].mistakes.includes(mA1.id));
+    assert.equal(mistakeOf(mA1.id).problem_label, parts[0].label);
     // 再分一次、小题不见了（比如改了原文）→ 并回一道题
     store.writeSourceText(C, S, 'Aufgabe 1 (3 Punkte)\nBerechnen Sie x.\n\nAufgabe 2 (4 Punkte)\nZeigen Sie y.\n');
     r = await call('exercise_resplit', { course_id: C, sheet_id: S, use_llm: false });
     assert.equal(r.ok, true, JSON.stringify(r));
     after = store.readSheet(C, S);
     assert.equal(after.groups.length, 0);
-    assert.equal(after.problems.find((p) => p.label === 'Aufgabe 1').answer, 'a) x = 1\n\nb) y = 2');
+    const back = after.problems.find((p) => p.label === 'Aufgabe 1');
+    assert.equal(back.answer, 'a) x = 1\n\nb) y = 2');
+    assert.equal(mistakeOf(mA1.id).problem_id, back.id, '并回后错题本应指回整题');
+    assert.ok(back.mistakes.includes(mA1.id));
+  });
+
+  await t('重新分块后题号互换：两道题的错题各自跟着自己的题走（不被来回改两次）', async () => {
+    let s = store.readSheet(C, S);
+    const a1 = s.problems.find((p) => p.label === 'Aufgabe 1');
+    const a2 = s.problems.find((p) => p.label === 'Aufgabe 2');
+    const mA1 = store.readMistakes().find((m) => m.problem_id === a1.id);
+    // Aufgabe 2 也挂一条错题
+    const at = new Date(2026, 10, 21, 9).getTime();
+    const mA2 = store.upsertMistakeFor({ courseId: C, sheetId: S, problemId: a2.id }, (existing, taken) => ({
+      ...mA1,
+      id: nextMistakeId(at, taken),
+      problem_id: a2.id,
+      problem_label: a2.label,
+      lesson: 'A2 的教训',
+      created_at: at,
+      updated_at: at,
+      ...(existing ? { id: existing.id } : {}),
+    }));
+    s = store.readSheet(C, S);
+    s.problems.find((p) => p.id === a2.id).mistakes = [mA2.id];
+    store.writeSheet(C, s);
+    assert.deepEqual([a1.id, a2.id], ['p01', 'p02'], '前提：Aufgabe 1 = p01，Aufgabe 2 = p02');
+    // 原卷顺序反过来 → 规则分块按出现顺序编号：Aufgabe 2 = p01，Aufgabe 1 = p02
+    store.writeSourceText(C, S, 'Aufgabe 2 (4 Punkte)\nZeigen Sie y.\n\nAufgabe 1 (3 Punkte)\nBerechnen Sie x.\n');
+    const r = await call('exercise_resplit', { course_id: C, sheet_id: S, use_llm: false });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const after = store.readSheet(C, S);
+    const n1 = after.problems.find((p) => p.label === 'Aufgabe 1');
+    const n2 = after.problems.find((p) => p.label === 'Aufgabe 2');
+    assert.deepEqual([n1.id, n2.id], ['p02', 'p01']);
+    const byId = new Map(store.readMistakes().map((m) => [m.id, m]));
+    assert.equal(byId.get(mA1.id).problem_id, 'p02', 'Aufgabe 1 的错题应跟到 p02');
+    assert.equal(byId.get(mA2.id).problem_id, 'p01', 'Aufgabe 2 的错题应跟到 p01');
+    assert.ok(n1.mistakes.includes(mA1.id) && n2.mistakes.includes(mA2.id));
   });
 
   assert.equal(pending.length, 0, '还有没放行的 LLM 请求');

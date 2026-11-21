@@ -111,8 +111,61 @@ export function writeFileAtomicSync(file: string, data: string): void {
 
 /** 锁目录放了多久算"持有者已经死了"（进程被杀不会走 finally）。 */
 const LOCK_STALE_MS = 30_000;
-/** 最多等多久拿锁；超时抛错（宁可这次写失败，也不无锁覆盖别人的写入）。 */
-const LOCK_WAIT_MS = 5_000;
+/**
+ * 最多等多久拿锁；超时抛错（宁可这次写失败，也不无锁覆盖别人的写入）。
+ *
+ * 等锁是**同步**的（Atomics.wait），等待期间整个 dsh 进程（所有会话、HTTP、流式输出）都停着，
+ * 所以上限要短：锁里只有一次 JSON 读-改-写（含 OneDrive 下 rename 重试，最坏约 0.3s），
+ * 2s 足够让正常的持有者做完；再长就说明对面卡住了，这次写失败比把主进程冻住更好。
+ */
+const LOCK_WAIT_MS = 2_000;
+/** 锁目录里的持有者标记（释放时核对，别删掉别人的锁）。 */
+const LOCK_OWNER_FILE = 'owner';
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** 锁目录已经存在了多久；不存在（刚被释放）→ null。 */
+function lockAgeMs(path: string): number | null {
+  try {
+    return Date.now() - statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 清掉持有者已死的锁。**清理本身也要排他**：
+ *
+ * 早先是"看到过期 → 直接删 → 重新 mkdir"。两个等锁的进程同时看到过期时：
+ * A 删掉、A 建好新锁；B 接着删掉的是 **A 刚拿到的锁**，再自己建一把 —— 两边都以为持锁。
+ * 现在先抢 `<lock>.break`（mkdir 原子），抢到的那个**再看一次**锁是否仍过期才删；
+ * 没抢到的直接回去重试（下一轮它会看到新锁是新鲜的，老老实实等）。
+ *
+ * @returns 是否真的删掉了一把过期锁（删了 → 调用方立刻重抢；没删 → 照常退避）
+ */
+function breakStaleLock(lock: string): boolean {
+  const breaker = `${lock}.break`;
+  try {
+    mkdirSync(breaker);
+  } catch {
+    // 别人正在清。清理锁自己也可能是死进程留下的（清理只有几微秒，极少见）：过期就顺手删掉，下一轮再抢
+    const age = lockAgeMs(breaker);
+    if (age !== null && age > LOCK_STALE_MS) rmSync(breaker, { recursive: true, force: true });
+    return false;
+  }
+  try {
+    const age = lockAgeMs(lock);
+    if (age === null || age <= LOCK_STALE_MS) return false; // 等的这段时间里已被释放 / 换成了新锁
+    rmSync(lock, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false; // 删不掉（Windows 句柄占用等）：照常退避，由超时兜底
+  } finally {
+    rmSync(breaker, { recursive: true, force: true });
+  }
+}
 
 /**
  * 跨进程文件锁（读-改-写整份 JSON 时用）。
@@ -122,10 +175,14 @@ const LOCK_WAIT_MS = 5_000;
  * 后写的覆盖先写的"——错题本 / generated_exercise.json 会静默丢更新。
  *
  * 实现：`mkdir <file>.lock` 是原子操作（已存在 → EEXIST）。持有者被杀留下的锁
- * 超过 LOCK_STALE_MS 视为失效并清掉。锁目录不以 .json 结尾，worldbook 的扫描看不到它。
+ * 超过 LOCK_STALE_MS 视为失效，由 breakStaleLock 排他地清掉。锁目录里写一个持有者标记，
+ * 释放时只删自己的锁（万一自己慢到被当成死锁清掉，也不会顺手删掉接手者的锁）。
+ * 锁目录不以 .json 结尾，worldbook 的扫描看不到它。
  */
 export function withFileLockSync<T>(file: string, fn: () => T): T {
   const lock = `${file}.lock`;
+  const ownerFile = join(lock, LOCK_OWNER_FILE);
+  const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (let attempt = 0; ; attempt++) {
     try {
@@ -133,31 +190,37 @@ export function withFileLockSync<T>(file: string, fn: () => T): T {
       break;
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') {
+      if (code === 'ENOENT' && attempt === 0) {
         // 父目录还不存在（第一次写）：建好再抢
         mkdirSync(join(lock, '..'), { recursive: true });
         continue;
       }
       if (code !== 'EEXIST') throw e;
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
-          rmSync(lock, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        /* 锁刚被释放：直接重试 */
-        continue;
-      }
-      if (Date.now() > deadline) {
-        throw new Error(tr(`文件被另一个进程占用（锁未释放）：${file}`, `File is locked by another process: ${file}`));
-      }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(25 * (attempt + 1), 200));
     }
+    if (Date.now() > deadline) {
+      throw new Error(tr(`文件被另一个进程占用（锁未释放）：${file}`, `File is locked by another process: ${file}`));
+    }
+    const age = lockAgeMs(lock);
+    if (age === null) continue; // 锁刚被释放：直接重抢
+    if (age > LOCK_STALE_MS && breakStaleLock(lock)) continue;
+    sleepSync(Math.min(25 * (attempt + 1), 200));
+  }
+  try {
+    writeFileSync(ownerFile, token, 'utf-8');
+  } catch (e) {
+    rmSync(lock, { recursive: true, force: true });
+    throw e;
   }
   try {
     return fn();
   } finally {
-    rmSync(lock, { recursive: true, force: true });
+    let mine = false;
+    try {
+      mine = readFileSync(ownerFile, 'utf-8') === token;
+    } catch {
+      /* 锁已不在（被当成过期清掉了）：没有可释放的 */
+    }
+    if (mine) rmSync(lock, { recursive: true, force: true });
   }
 }
 
@@ -695,6 +758,37 @@ export class ExerciseStore {
   upsertMistake(m: Mistake): Mistake {
     return this.withMistakesLock(() => {
       const { list, keep } = this.loadMistakesForWrite();
+      const i = list.findIndex((x) => x.id === m.id);
+      if (i === -1) list.push(m);
+      else list[i] = { ...list[i]!, ...m, created_at: list[i]!.created_at };
+      list.sort((a, b) => b.created_at - a.created_at);
+      this.writeMistakes(list, keep);
+      return m;
+    });
+  }
+
+  /**
+   * 按题目新增或更新错题，**查找、分配 id、写回全在一把锁里**。
+   *
+   * 为什么不能"先读出来算 id、再 upsertMistake"：主 profile 和独立 profile 同时收错题时，
+   * 两边读到同样的列表、算出同一个新 id，后写的按 id 合并进先写的那条 ——
+   * 一道题的错题记录被另一道题整条改写（正是 id 复用那次事故的样子）。
+   *
+   * @param make 拿到该题现有的错题（副本，没有则 null）和当前已占用的全部 id，返回要写入的错题
+   */
+  upsertMistakeFor(
+    key: { courseId: string; sheetId: string; problemId: string },
+    make: (existing: Mistake | null, takenIds: readonly string[]) => Mistake,
+  ): Mistake {
+    return this.withMistakesLock(() => {
+      const { list, keep } = this.loadMistakesForWrite();
+      const found = list.find((x) => x.course_id === key.courseId && x.sheet_id === key.sheetId && x.problem_id === key.problemId);
+      // 不合 schema 的原始条目也占着 id（它们会原样写回），新 id 不能撞上
+      const takenIds = [
+        ...list.map((x) => x.id),
+        ...keep.flatMap((x) => (x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string' ? [(x as { id: string }).id] : [])),
+      ];
+      const m = make(found ? { ...found } : null, takenIds);
       const i = list.findIndex((x) => x.id === m.id);
       if (i === -1) list.push(m);
       else list[i] = { ...list[i]!, ...m, created_at: list[i]!.created_at };

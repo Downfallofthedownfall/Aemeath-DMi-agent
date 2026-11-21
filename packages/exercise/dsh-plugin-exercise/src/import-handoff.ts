@@ -19,7 +19,7 @@
 //   pending / knowledge_direct，它们**没有** content / category（见 resolveWritable）。
 // ============================================================
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
@@ -140,7 +140,12 @@ export function ledgerKey(kind: string, preset: string, content: string): string
   return createHash('sha1').update(`${kind}\n${preset}\n${content}`, 'utf-8').digest('hex');
 }
 
-/** 文件台账（JSON 对象：key → { id, at }）。每次 add 都落盘（跨进程锁 + 原子写）。 */
+/**
+ * 文件台账（JSON 对象：key → { id, at }）。每次 add 都落盘（跨进程锁 + 原子写）。
+ *
+ * `has()` 按文件 mtime 判断要不要重读：主 profile 与独立 profile 共用数据目录，
+ * 只认启动时读进来的那份的话，另一个进程后来导入的内容这边看不到，会再写一遍。
+ */
 export function fileLedger(file: string): ImportLedger {
   const abs = isAbsolute(file) ? file : join(process.cwd(), file);
   const read = (): Record<string, { id: string; at: number }> => {
@@ -153,13 +158,30 @@ export function fileLedger(file: string): ImportLedger {
       return {};
     }
   };
+  const mtimeOf = (): number => {
+    try {
+      return statSync(abs).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
   let cache = read();
+  let cachedAt = mtimeOf();
+  const fresh = (): Record<string, { id: string; at: number }> => {
+    const m = mtimeOf();
+    if (m !== cachedAt) {
+      cache = read();
+      cachedAt = m;
+    }
+    return cache;
+  };
   return {
-    has: (key) => Object.prototype.hasOwnProperty.call(cache, key),
+    has: (key) => Object.prototype.hasOwnProperty.call(fresh(), key),
     add: (key, value) => {
       withFileLockSync(abs, () => {
         cache = { ...read(), [key]: { id: value, at: Date.now() } };
         writeFileAtomicSync(abs, JSON.stringify(cache, null, 2));
+        cachedAt = mtimeOf();
       });
     },
   };
@@ -305,6 +327,19 @@ export async function importExerciseHandoff(
     return { ...writable, importance, confidence };
   };
 
+  /**
+   * 记一笔台账。**和写入本身分开处理**：记忆 / 知识已经写进去了，台账写失败（锁超时等）
+   * 不能把这条报成"写入失败"；只提醒一句"下次导入可能重复"。
+   */
+  const recordImported = (key: string, id: string): void => {
+    if (!ledger) return;
+    try {
+      ledger.add(key, id);
+    } catch (e) {
+      gk.warn(tr(`导入台账写入失败（下次导入可能重复写这一条）：${(e as Error).message}`, `Import ledger write failed (the next import may write this again): ${(e as Error).message}`));
+    }
+  };
+
   /** 台账里已有 → 跳过（试运行也照实说"已导入过"）。 */
   const seenBefore = (kind: string, content: string): boolean => {
     if (!ledger?.has(ledgerKey('memory', preset, content))) return false;
@@ -342,7 +377,8 @@ export async function importExerciseHandoff(
         sourceMode: 'exercise',
         sourceExercise: { course: handoff.course.id, sheet: wp.unit },
       });
-      ledger?.add(ledgerKey('memory', preset, w.content), id);
+      // 台账写失败不抛（recordImported 只提醒）：记忆已经写进去了，不能报成写入失败
+      recordImported(ledgerKey('memory', preset, w.content), id);
       out.memoriesWritten++;
       out.details.push({ kind: 'weak_point', content: w.content, reason: tr(`已写入（${w.category}）`, `Written (${w.category})`) });
     } catch (e) {
@@ -396,7 +432,8 @@ export async function importExerciseHandoff(
         sourceExercise: { course: handoff.course.id, sheet: unitId },
         entityClaims,
       });
-      ledger?.add(ledgerKey('memory', preset, w.content), id);
+      // 台账写失败不抛（recordImported 只提醒）：记忆已经写进去了，不能报成写入失败
+      recordImported(ledgerKey('memory', preset, w.content), id);
       out.memoriesWritten++;
       out.claimsWritten += entityClaims.length;
       out.details.push({ kind: 'claim', content: w.content, reason: tr(`已写入（含 ${entityClaims.length} 条断言）`, `Written (${entityClaims.length} claims)`) });
@@ -472,7 +509,7 @@ export async function importExerciseHandoff(
       if (ledger?.has(key)) continue;
       try {
         const id = await gk.knowledgeAdd({ preset, content: e.content, topic: e.title, sourceSession: sessionId });
-        ledger?.add(key, id);
+        recordImported(key, id);
       } catch (err) {
         gk.warn(`知识层写入失败（${e.title}）：${(err as Error).message}`);
       }
