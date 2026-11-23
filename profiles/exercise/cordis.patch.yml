@@ -94,16 +94,33 @@
         # 空 = 自动发现 Chrome/Edge/Chromium（Windows Edge 一定在）
         chromePath: ''
 
-# —— 前端 UI 插件（aemeath 设计语言；browser 半区经 dsh.client 进入 __DSH_BOOT__）——
-#    ⚠️ 放在**顶层**而不是 insert 列表里：aemeath-ui 会把前端上报的 locale
-#    写回它的配置；放在 insert 里它找不到条目 → 会往文件末尾**追加重复条目**
-#    （真机踩过：每次启动多一份 - id: aemeath-ui）。
+    # —— 前端 UI 插件（aemeath 设计语言；browser 半区经 dsh.client 进入 __DSH_BOOT__）——
+    #    这里只负责**挂载**这一行（插件默认值）。前端上报的 locale / TTS 开关
+    #    写回的是下面 insert 之外的顶层 `- id: aemeath-ui` 条目，原因见那里。
+    #    ⚠️ 真机踩过：早先**只有**下面那条顶层条目、这里没有 insert ——
+    #    顶层条目只能改已存在的行，于是 dsh 报 `patch: entry "aemeath-ui" not found`，
+    #    插件根本没挂上：习题界面没有 aemeath 配色 / 品牌标题，locale 也读不到。
+    - id: aemeath-ui
+      name: '@aemeath/dsh-plugin-ui'
+      config:
+        locale: ''
+        ttsEnabled: false
+        ttsVolume: 1
+
+# —— aemeath-ui 的运行时设置（volatile：locale / ttsEnabled / ttsVolume）——
+#    ⚠️ 这一条必须是**顶层**条目，且 locale 预先写成前端会上报的值（zh）。
+#    dsh 的 configEditor 写回时只找 insert 之外的顶层 `- id: aemeath-ui`，
+#    找不到就往文件末尾**追加**一条（真机踩过：每次打开页面多一份 aemeath-ui）。
+#    aemeath-ui 只在值变化时才写：这里已经是 zh，打开页面就不再动文件。
+#    浏览器语言是英文时它会把 zh 改成 en —— 那是真实的设置变化，不是重复条目。
+#    不要在 config 里加注释：写回会整块替换 config，注释会丢。
 - id: aemeath-ui
   name: '@aemeath/dsh-plugin-ui'
   config:
-    locale: ''
+    locale: zh
     ttsEnabled: false
     ttsVolume: 1
+
 # —— 重新启用文件系统工具（题目/答案要落盘）——
 - id: tool-fs
   disabled: false
