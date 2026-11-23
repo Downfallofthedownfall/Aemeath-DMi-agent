@@ -199,7 +199,8 @@ bash scripts/diagnose-frontend.sh
 | `node: command not found` | 双击的是 `.sh` 而不是 `.command` | 用 `lecture-launch.command` |
 | `Permission denied` | 没有执行权限 | `chmod +x lecture-launch.command` |
 | 来自身份不明的开发者 | Gatekeeper | 右键 → 打开 → 打开 |
-| 界面是 dsh 原生的 | host 产物旧 | `npm run build` 后重启 |
+| 界面是 dsh 原生的，终端里有 `dsh: disabling profile plugin row "aemeath-…"` | 依赖没跟上 `git pull`（例如仍是旧版 dsh），插件被判为不兼容而停用 | 新版启动脚本会自动重装；手动：仓库根 `npm install` 后重启 |
+| 界面是 dsh 原生的（终端里没有上面那行） | host 产物旧 | `npm run build` 后重启 |
 | 端口被占用 | 旧进程还在 | `lsof -nP -iTCP:3083 -sTCP:LISTEN` 找到后 `kill <PID>` |
 | 不能创建会话 / unknown preset | profile 没声明 preset | 跑诊断脚本，看第 7 项版本 |
 | 课堂内 LLM 不可用 | 没配 API key | 界面左下角**设置 → Models** 里填 |

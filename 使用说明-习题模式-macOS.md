@@ -59,10 +59,11 @@ AEMEATH_EXERCISE_PORT=4000 ./scripts/exercise-mac.sh
 
 按顺序，全部自动：
 
-1. **找 Node**（低于 20 直接拒绝；20 – 22.12 放行并警告；nvm 装了多个版本时取最新的）
+1. **找 Node**（低于 24.9 直接拒绝 —— dsh 0.2.2 起不再支持 Node 22；nvm 装了多个版本时取最新的）
 2. **检查 shell 可移植性**（macOS 自带 bash 3.2 对 `$VAR` 紧跟中文的写法会解析错，
    脚本里已有自检，改了脚本也能立刻发现）
-3. **装依赖**（仓库根 `npm install`，缺 `node_modules` 时）
+3. **装依赖**（仓库根 `npm install`：缺 `node_modules` 时，或已装的版本与 `package-lock.json` 对不上时 ——
+   `git pull` 带来依赖升级后会自动重装，见下面「出问题时」第一条）
 4. **构建**（`npm run build`；判据是"任一包的源码比 `lib/` 产物新"——host 与 client 都比）
 5. **把 profile 接到 dsh**：`$DSH_HOME/profiles/exercise` → 仓库 `profiles/exercise`（符号链接）
 6. **建依赖链接**：`profiles/exercise/node_modules/@deepseek-ai` → 仓库根；
@@ -287,7 +288,8 @@ packages/library/physicist/exercises/
 | `node: command not found` | 双击了 `.sh` 而不是 `.command` | 用 `exercise-launch.command` |
 | `Permission denied` | 没有执行权限 | `chmod +x exercise-launch.command` |
 | 来自身份不明的开发者 | Gatekeeper | 右键 → 打开 → 打开 |
-| 界面是 dsh 原生的（有「新会话」「插件」） | host 产物旧 / 没进独立模式 | `npm run build` 后重开；仍不行看下一条 |
+| 界面是 dsh 原生的，终端里有 `dsh: disabling profile plugin row "aemeath-…"` | 依赖没跟上 `git pull`（例如仍是旧版 dsh），插件被 dsh 判为不兼容而停用 | 新版启动脚本会自动重装；手动：仓库根 `npm install` 后重开。`node scripts/check-deps.mjs` 可查哪些包不对 |
+| 界面是 dsh 原生的（有「新会话」「插件」），终端里没有上面那行 | host 产物旧 / 没进独立模式 | `npm run build` 后重开；仍不行看下一条 |
 | 「生成提交 PDF」说找不到浏览器 | 没装 Chrome/Edge | 点「打开打印页」→ ⌘P → 存储为 PDF |
 | 检查按钮一直失败 | 没有 API Key / key 失效 / 模型不可用 | 左下角「设置 → Models」填（与主 agent 同一处）；或写 `$DSH_HOME/.credentials.yaml`。检查走的是全局 dsh LLM，模型跟随主 agent |
 | 从讲义复制来的公式出现红字（如 `\differentialD`） | 讲义用 MathLive，有专有宏 | 已内置兼容层：渲染期自动换成 `\mathrm{d}` 等通用写法（**不改你的原文**），预览下方会说明；真正的未知命令（如 `\foo`）会给出命令名与位置 |

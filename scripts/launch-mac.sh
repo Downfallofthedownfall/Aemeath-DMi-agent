@@ -165,10 +165,20 @@ echo
 #    每次启动都是两个标签页。开浏览器统一由本脚本做（抓到的地址带 token，
 #    而且会打印出来，浏览器没弹出时还能手动复制）。
 OPENED=0
+WARNED=0
 "$ROOT/node_modules/.bin/dsh" --profile "$PROFILE" --port "$PORT" --no-open 2>&1 | while IFS= read -r line; do
   printf '%s\n' "$line"
   # dsh 打印形如：dsh web: http://127.0.0.1:3084/?token=xxxx
   case "$line" in
+    # dsh 判定插件与当前 dsh 不兼容时**只停用那一行**、照常启动 ——
+    # 浏览器里就是没有课堂/习题界面的标准版 dsh，而原因只在终端里一闪而过。
+    # 装配阶段已经比对过依赖（profile-mac.sh），这里兜住其它原因，弹窗说清楚。
+    *'disabling profile plugin row "aemeath-'*)
+      if [ "$WARNED" = "0" ]; then
+        WARNED=1
+        osascript -e "display alert \"${FAIL_TITLE}\" message \"dsh 停用了本模式的插件（与当前 dsh 版本不兼容），浏览器里会是标准版 dsh。请关掉这个窗口，在仓库根执行 npm install 后重试；原因见终端里 disabling profile plugin row 那一行。\" as warning" >/dev/null 2>&1 &
+      fi
+      ;;
     *"dsh web: http"*)
       url="$(printf '%s' "$line" | sed -n 's/.*\(http[^ ]*\).*/\1/p')"
       # OPENED 活在管道右侧这个子 shell 里，循环内各次迭代共享 —— 只开一次就够了

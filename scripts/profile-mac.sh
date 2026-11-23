@@ -33,7 +33,7 @@ set -euo pipefail
 
 # 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
 # （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
-PROFILE_MAC_VERSION="2026-11-13.1"
+PROFILE_MAC_VERSION="2026-11-24.1"
 
 # ---- 路径 ----
 # ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
@@ -123,10 +123,26 @@ if [[ "$NODE_MAJOR" -lt 24 ]] || { [[ "$NODE_MAJOR" -eq 24 ]] && [[ "$NODE_MINOR
 fi
 
 # ---- 1) 依赖 ----
+#
+# ⚠️ 真机踩过（dsh 0.2.1 → 0.2.2 那次升级）：早先只在 node_modules/@deepseek-ai/dsh
+#    **不存在**时才装。`git pull` 拉到升级后 node_modules 还是旧 dsh，而插件已经要求
+#    ^0.2.2-rc.5 —— dsh 启动时核对插件的 dsh peer，不满足就**停用那行插件**、其余照常，
+#    于是双击打开的是**标准版 dsh**（没有课堂/习题界面），终端里只有一行
+#    `dsh: disabling profile plugin row …`。
+#    现在每次都比对 node_modules 与 package-lock.json，不一致就重装。
 if [[ ! -d "$ROOT/node_modules/@deepseek-ai/dsh" ]]; then
   say "首次运行：安装仓库依赖（只在仓库根安装）…"
   npm install || die "npm install 失败。请检查网络或代理后重试。"
+elif ! node "$ROOT/scripts/check-deps.mjs"; then
+  say "已装的依赖和 package-lock.json 对不上（多半是 git pull 带来了依赖升级）→ 在仓库根重新 npm install…"
+  npm install || die "npm install 失败。请检查网络或代理后重试。
+  旧依赖下插件会被 dsh 判为不兼容而停用，打开的会是标准版 dsh。"
 fi
+node "$ROOT/scripts/check-deps.mjs" --quiet || die "\
+npm install 之后依赖仍与 package-lock.json 不一致（差异见下）。
+$(node "$ROOT/scripts/check-deps.mjs" 2>&1 || true)
+  照这样启动，插件会被 dsh 判为不兼容而停用，打开的会是标准版 dsh。
+  可以试：在仓库根 rm -rf node_modules && npm install"
 
 # 关键：workspace 的 @aemeath/* 链接必须可解析。
 # 它们的**声明**在根 package.json（devDependencies），由 npm install 建立链接。

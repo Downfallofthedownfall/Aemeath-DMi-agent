@@ -87,8 +87,17 @@ fi
 
 echo
 echo "════════ 7) 版本 ════════"
-grep -m1 'LECTURE_MAC_VERSION=' scripts/lecture-mac.sh | sed 's/^/  /'
+# 两个模式共用 profile-mac.sh（版本戳在那里；lecture-mac.sh 只是入口）
+grep -m1 'PROFILE_MAC_VERSION=' scripts/profile-mac.sh | sed 's/^/  /'
 git log --oneline -1 2>/dev/null | sed 's/^/  当前提交: /'
+
+echo
+echo "════════ 8) 依赖跟上 git pull 了吗？ ════════"
+# 不一致时 dsh 会把插件判为不兼容并停用（终端里有 disabling profile plugin row），
+# 浏览器里就是标准版 dsh —— 和"产物旧"症状一样，但 npm run build 修不好
+dsh_ver="$(node -p 'require("./node_modules/@deepseek-ai/dsh/package.json").version' 2>/dev/null || echo '?')"
+echo "  已装 dsh: ${dsh_ver}"
+node scripts/check-deps.mjs 2>&1 | sed 's/^/  /'
 
 echo
 echo "════════ 完 ════════"

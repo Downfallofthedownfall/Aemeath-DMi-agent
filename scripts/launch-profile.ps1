@@ -75,10 +75,24 @@ Write-Host "Node: v$nodeVer" -ForegroundColor DarkGray
 Write-Host ""
 
 # ---- 依赖（只在仓库根安装；绝不在 profiles\* 里跑 npm install，见 scripts\dsh.ps1）----
+# 早先只在 dsh.cmd 不存在时才装：git pull 带来依赖升级（如 dsh 0.2.1 → 0.2.2）后
+# node_modules 还是旧的，dsh.ps1 因版本不符拒绝启动（mac 上更糟：插件被 dsh 停用，
+# 打开的是标准版 dsh）。现在每次都比对 package-lock.json，对不上就重装。
 if (-not (Test-Path "$root\node_modules\.bin\dsh.cmd")) {
   Write-Host "首次运行：安装依赖…（需要几分钟）" -ForegroundColor Yellow
+  $needInstall = $true
+} else {
+  & node "$root\scripts\check-deps.mjs"
+  $needInstall = $LASTEXITCODE -ne 0
+  if ($needInstall) {
+    Write-Host "已装的依赖和 package-lock.json 对不上（多半是 git pull 带来了依赖升级），重新安装…" -ForegroundColor Yellow
+  }
+}
+if ($needInstall) {
   & npm install
   if ($LASTEXITCODE -ne 0) { Die "npm install 失败。" }
+  & node "$root\scripts\check-deps.mjs"
+  if ($LASTEXITCODE -ne 0) { Die "npm install 之后依赖仍与 package-lock.json 不一致（差异见上）。可以试：删掉仓库根的 node_modules 后重新运行。" }
 }
 
 # ---- 构建（源码比产物新就重建）----
