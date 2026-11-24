@@ -1112,6 +1112,11 @@ const CSS = `
   display: flex; align-items: center; gap: 8px;
   font-size: 11.5px; color: var(--aem-ink-soft);
 }
+/* 收起后原地留的那一行：整行看得出是"可以点开" */
+.${EX_CLASS} .lec-pagefig[data-open="0"] .lec-pagefig-bar {
+  padding: 4px 8px; border: 1px dashed var(--aem-line); border-radius: var(--aem-radius-ctl);
+}
+.${EX_CLASS} .lec-pagefig-toggle { font-weight: 600; }
 .${EX_CLASS} .lec-pagefig[data-figure="1"] { border-left: 3px solid var(--aem-accent); padding-left: 8px; }
 .${EX_CLASS} .lec-fignote { font-size: 11.5px; color: var(--aem-ink-soft); margin-top: 4px; }
 .${EX_CLASS} .lec-badge[data-kind="figure"] { background: var(--aem-accent-soft); color: var(--aem-accent); }

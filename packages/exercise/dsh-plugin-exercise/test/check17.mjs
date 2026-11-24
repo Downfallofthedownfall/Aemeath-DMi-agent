@@ -88,10 +88,15 @@ t('原卷截图：限高限宽挂在图容器自己身上，图上方有「收�
   assert.match(img[1], /max-width:\s*100%/, '宽度不超过卡片');
   const fig = read(join(client, 'page-figure.tsx'));
   assert.match(fig, /className="lec-pageimg"/);
-  assert.match(fig, /onClick=\{onHide\}/, '图上方要有收起按钮');
+  assert.match(fig, /onClick=\{onToggle\}/, '图上方要有收起 / 展开按钮');
+  // 2026-11-24 追加（"图片收起就再也打不开了"）：收起 = 原地留一行可点开的条，不是整块消失
+  assert.match(fig, /\{open \? \(\s*<div className="lec-pageimg">/, '只有图本身随收起消失，条要留着');
+  assert.match(fig, /exercise\.problem\.expandPage/, '收起后那一行要有「展开」');
   for (const f of ['problem-card.tsx', 'group-card.tsx']) {
     const src = read(join(client, f));
     assert.match(src, /<PageFigure\b/, `${f} 要用 PageFigure`);
+    assert.match(src, /pageView !== 'hidden'/, `${f}：收起后 PageFigure 还要渲染（只是不显示图）`);
+    assert.doesNotMatch(src, /showPage &&/, `${f}：不能再按 showPage 整块卸掉`);
     assert.doesNotMatch(src, /className="lec-pageimg"/, `${f} 不要自己拼图容器`);
   }
 });

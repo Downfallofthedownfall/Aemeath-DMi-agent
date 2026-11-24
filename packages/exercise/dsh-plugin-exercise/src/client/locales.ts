@@ -311,6 +311,8 @@ export const zh = {
   'exercise.problem.figureNote': '图注：{note}',
   'exercise.problem.showPage': '原题截图（第 {page} 页）',
   'exercise.problem.hidePage': '收起原题截图',
+  'exercise.problem.expandPage': '展开原题截图',
+  'exercise.problem.pageCollapsed': '原卷第 {page} 页（已收起）',
   'exercise.problem.openNewWindow': '新窗口打开',
   'exercise.problem.inMistakes': '已加入错题本（{n} 条记录）—— 右栏「错题本」里补写教训。',
 
@@ -690,6 +692,8 @@ export const en: Record<ExerciseKey, string> = {
   'exercise.problem.figureNote': 'Figure note: {note}',
   'exercise.problem.showPage': 'Page screenshot (page {page})',
   'exercise.problem.hidePage': 'Hide page screenshot',
+  'exercise.problem.expandPage': 'Show page screenshot',
+  'exercise.problem.pageCollapsed': 'Sheet page {page} (collapsed)',
   'exercise.problem.openNewWindow': 'Open in new window',
   'exercise.problem.inMistakes': 'Added to mistakes ({n} entries) — write the lesson in the “Mistakes” tab on the right.',
 

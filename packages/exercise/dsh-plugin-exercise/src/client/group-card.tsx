@@ -11,7 +11,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import type { ProblemGroupView, ProblemView } from './api.ts';
 import { MathText } from './math.tsx';
 import { Menu } from './menu.tsx';
-import { PageFigure } from './page-figure.tsx';
+import { nextPageView, PageFigure, type PageView } from './page-figure.tsx';
 import { useT } from './i18n.ts';
 
 /** 「检查未通过的小题」要查哪些：有答案、最近一次结论不是 correct（改过答案的会重新查）。 */
@@ -47,7 +47,7 @@ export function GroupCard({
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(group.text);
   const [saving, setSaving] = useState(false);
-  const [showPage, setShowPage] = useState(group.has_figure);
+  const [pageView, setPageView] = useState<PageView>(group.has_figure ? 'open' : 'hidden');
   useEffect(() => {
     if (!editing) setText(group.text);
   }, [group.text, editing]);
@@ -85,10 +85,11 @@ export function GroupCard({
             <button
               type="button"
               className="lec-chip"
-              data-open={showPage ? '1' : '0'}
-              title={showPage ? t('exercise.problem.hidePage') : t('exercise.problem.showPage', { page })}
-              onClick={() => setShowPage((v) => !v)}
+              data-open={pageView === 'open' ? '1' : '0'}
+              title={pageView === 'open' ? t('exercise.problem.hidePage') : t('exercise.problem.showPage', { page })}
+              onClick={() => setPageView(nextPageView)}
             >
+              {pageView === 'open' ? '▾ ' : '▸ '}
               {t('exercise.problem.pageChip', { page })}
             </button>
           ) : null}
@@ -136,8 +137,14 @@ export function GroupCard({
       ) : null}
 
       {group.figure_note && <div className="lec-fignote">{t('exercise.problem.figureNote', { note: group.figure_note })}</div>}
-      {pageImageUrl && showPage && (
-        <PageFigure url={pageImageUrl} page={page} figure={group.has_figure} onHide={() => setShowPage(false)} />
+      {pageImageUrl && pageView !== 'hidden' && (
+        <PageFigure
+          url={pageImageUrl}
+          page={page}
+          figure={group.has_figure}
+          open={pageView === 'open'}
+          onToggle={() => setPageView(nextPageView)}
+        />
       )}
 
       <div className="lec-group-parts">{children}</div>

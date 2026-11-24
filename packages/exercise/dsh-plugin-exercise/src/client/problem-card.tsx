@@ -19,7 +19,7 @@ import type { ApproachResult } from './approach-panel.tsx';
 import { CheckPanel } from './check-panel.tsx';
 import { MathText } from './math.tsx';
 import { Menu } from './menu.tsx';
-import { PageFigure } from './page-figure.tsx';
+import { nextPageView, PageFigure, type PageView } from './page-figure.tsx';
 import { ProblemTools, type AskResult } from './problem-tools.tsx';
 import { useT } from './i18n.ts';
 
@@ -87,7 +87,8 @@ export function ProblemCard({
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(problem.text);
   const [savingText, setSavingText] = useState(false);
-  const [showPage, setShowPage] = useState(problem.has_figure && !isPart);
+  // 带图的题默认展开；收起后原地留一行，随时点开（见 page-figure.tsx）
+  const [pageView, setPageView] = useState<PageView>(problem.has_figure && !isPart ? 'open' : 'hidden');
   const [showNotes, setShowNotes] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   // 题干可能在外面变（重新分块 / agent 改过）：没在编辑时跟上，否则点"保存"会写回旧文本
@@ -127,10 +128,11 @@ export function ProblemCard({
             <button
               type="button"
               className="lec-chip"
-              data-open={showPage ? '1' : '0'}
-              title={showPage ? t('exercise.problem.hidePage') : t('exercise.problem.showPage', { page })}
-              onClick={() => setShowPage((v) => !v)}
+              data-open={pageView === 'open' ? '1' : '0'}
+              title={pageView === 'open' ? t('exercise.problem.hidePage') : t('exercise.problem.showPage', { page })}
+              onClick={() => setPageView(nextPageView)}
             >
+              {pageView === 'open' ? '▾ ' : '▸ '}
               {t('exercise.problem.pageChip', { page })}
             </button>
           ) : null}
@@ -196,8 +198,14 @@ export function ProblemCard({
 
       {problem.figure_note && !isPart && <div className="lec-fignote">{t('exercise.problem.figureNote', { note: problem.figure_note })}</div>}
 
-      {pageImageUrl && showPage && !isPart && (
-        <PageFigure url={pageImageUrl} page={page} figure={problem.has_figure} onHide={() => setShowPage(false)} />
+      {pageImageUrl && pageView !== 'hidden' && !isPart && (
+        <PageFigure
+          url={pageImageUrl}
+          page={page}
+          figure={problem.has_figure}
+          open={pageView === 'open'}
+          onToggle={() => setPageView(nextPageView)}
+        />
       )}
 
       <AnswerEditor
