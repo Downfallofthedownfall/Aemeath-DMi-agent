@@ -192,6 +192,9 @@ docs
 # ===== v2 (dsh 插件 monorepo) =====
 # 项目内 dsh home（profile 运行时数据/会话/凭据）
 .dsh-home/
+# mac 启动器的装配锁（scripts/profile-mac.sh；两个启动器同时双击时串行装配）
+.setup.lock
+.setup.lock.break/
 # 无工作区时的自动兜底工作区（空文件夹，见 dsh-plugin-ui bootstrap）
 .chat/
 # 项目内 npm 缓存（沙箱/离线友好）

@@ -33,7 +33,7 @@ set -euo pipefail
 
 # 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
 # （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
-PROFILE_MAC_VERSION="2026-11-24.1"
+PROFILE_MAC_VERSION="2026-11-24.2"
 
 # ---- 路径 ----
 # ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
@@ -121,6 +121,82 @@ NODE_MINOR="${NODE_VER##* }"
 if [[ "$NODE_MAJOR" -lt 24 ]] || { [[ "$NODE_MAJOR" -eq 24 ]] && [[ "$NODE_MINOR" -lt 9 ]]; }; then
   die "Node 版本过低（${NODE_MAJOR}.${NODE_MINOR}）。需要 24.9+（dsh 0.2.2 起不再支持 Node 22）。"
 fi
+
+# ---- 0.5) 装配锁：同一个仓库同一时间只让一个启动器装配 ----
+#
+# ⚠️ 真机踩过（2026-11-23）：习题、课堂两个启动器前后一秒双击，两个 `npm install`
+#    同时改仓库根的 node_modules —— 一个报 ENOTEMPTY 退出，另一个刷了几十条
+#    TAR_ENTRY_ERROR 却返回 0，结果 node_modules 少了 308 个包（连 dsh 本身都没了），
+#    两个窗口都报"npm install 失败"，看着像网络问题。
+#    依赖、构建产物、profile 链接都是两个模式共用的，所以下面 1)–3) 整段串行：
+#    后到的那个等前一个装配完再走，装配完各自启动、互不影响。
+#
+# 锁是一个符号链接，目标就是持有者的 pid：`ln -s` 一步原子地"占锁 + 写 pid"，
+# 不会出现"锁建好了、pid 还没写"的空窗。（macOS 没有 flock，所以不用它。）
+# 持有者被强杀 / 断电留下的旧锁：pid 不在了、或已不是本脚本（pid 被系统复用），
+# 就当旧锁清掉。清之前先抢一把 .break 小锁，并再确认锁里还是那个 pid ——
+# 两个等待者同时发现旧锁时，慢的那个不会把快的那个刚建好的新锁当旧锁删掉。
+SETUP_LOCK="$ROOT/.setup.lock"
+SETUP_LOCK_HELD=0
+
+setup_lock_owner_alive() {
+  local cmd
+  case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+  cmd="$(ps -o command= -p "$1" 2>/dev/null || true)"
+  [[ "$cmd" == *profile-mac.sh* ]]
+}
+
+break_stale_setup_lock() {
+  local seen="${1:-}" brk="${SETUP_LOCK}.break"
+  if mkdir "$brk" 2>/dev/null; then
+    if [[ "$(readlink "$SETUP_LOCK" 2>/dev/null || true)" == "$seen" ]]; then
+      rm -rf "$SETUP_LOCK"
+      warn "清掉了旧的装配锁（记录的 pid ${seen:-?} 已不是在跑的启动器，多半是上次窗口被强关留下的）"
+    fi
+    rmdir "$brk" 2>/dev/null || true
+  else
+    # .break 只占几毫秒；超过 1 分钟还在，只能是占它的进程被强杀了
+    if [[ -n "$(find "$brk" -maxdepth 0 -mmin +1 2>/dev/null || true)" ]]; then
+      rmdir "$brk" 2>/dev/null || true
+    fi
+    sleep 1
+  fi
+}
+
+acquire_setup_lock() {
+  local owner announced=0
+  while ! ln -sn "$$" "$SETUP_LOCK" 2>/dev/null; do
+    # 刚被释放：马上再抢
+    [[ -e "$SETUP_LOCK" || -L "$SETUP_LOCK" ]] || continue
+    owner="$(readlink "$SETUP_LOCK" 2>/dev/null || true)"
+    if setup_lock_owner_alive "$owner"; then
+      if [[ "$announced" == "0" ]]; then
+        say "另一个启动器（pid ${owner}）正在装配（装依赖 / 构建），等它完成…"
+        say "  两个模式共用仓库根的同一份依赖，不能同时装。若确定没有别的启动器在跑，删掉 ${SETUP_LOCK} 再试。"
+        announced=1
+      fi
+      sleep 1
+    else
+      break_stale_setup_lock "$owner"
+    fi
+  done
+  SETUP_LOCK_HELD=1
+  trap release_setup_lock EXIT
+  if [[ "$announced" == "1" ]]; then say "轮到本窗口装配。"; fi
+}
+
+# 只删自己的锁。正常路径在 3) 之后显式调用（5) 用 exec 启动 dsh，EXIT trap 不会跑）；
+# die / Control-C / 关窗口走 EXIT trap。
+release_setup_lock() {
+  if [[ "$SETUP_LOCK_HELD" == "1" ]]; then
+    if [[ "$(readlink "$SETUP_LOCK" 2>/dev/null || true)" == "$$" ]]; then
+      rm -f "$SETUP_LOCK"
+    fi
+    SETUP_LOCK_HELD=0
+  fi
+}
+
+acquire_setup_lock
 
 # ---- 1) 依赖 ----
 #
@@ -377,6 +453,9 @@ for existing in "$AE_SCOPE"/*; do
     rm -rf "$existing"
   fi
 done
+
+# 共用的依赖 / 构建产物 / 链接都已就绪：放开装配锁，让另一个启动器接着装配。
+release_setup_lock
 say "@aemeath 逐包链接：$(ls "$AE_SCOPE" 2>/dev/null | tr '\n' ' ')"
 
 # ---- 4) API key 检查（不打印内容）----
