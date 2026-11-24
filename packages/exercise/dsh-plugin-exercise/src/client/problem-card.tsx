@@ -19,6 +19,7 @@ import type { ApproachResult } from './approach-panel.tsx';
 import { CheckPanel } from './check-panel.tsx';
 import { MathText } from './math.tsx';
 import { Menu } from './menu.tsx';
+import { PageFigure } from './page-figure.tsx';
 import { ProblemTools, type AskResult } from './problem-tools.tsx';
 import { useT } from './i18n.ts';
 
@@ -143,9 +144,6 @@ export function ProblemCard({
               onAttachImage ? { label: t('exercise.problem.addImage'), title: t('exercise.answer.imageHint'), onSelect: () => fileRef.current?.click() } : null,
               { label: showNotes ? t('exercise.problem.hideNotes') : t('exercise.problem.notes'), onSelect: () => setShowNotes((v) => !v) },
               { label: t('exercise.answer.collectMistake'), onSelect: onCollectMistake },
-              pageImageUrl && !isPart
-                ? { label: t('exercise.problem.openNewWindow'), onSelect: () => window.open(pageImageUrl, '_blank') }
-                : null,
               {
                 label: t('exercise.problem.deleteTitle'),
                 danger: true,
@@ -199,9 +197,7 @@ export function ProblemCard({
       {problem.figure_note && !isPart && <div className="lec-fignote">{t('exercise.problem.figureNote', { note: problem.figure_note })}</div>}
 
       {pageImageUrl && showPage && !isPart && (
-        <div className="lec-pageimg">
-          <img src={pageImageUrl} alt={t('exercise.problem.pageBadge', { page })} loading="lazy" />
-        </div>
+        <PageFigure url={pageImageUrl} page={page} figure={problem.has_figure} onHide={() => setShowPage(false)} />
       )}
 
       <AnswerEditor

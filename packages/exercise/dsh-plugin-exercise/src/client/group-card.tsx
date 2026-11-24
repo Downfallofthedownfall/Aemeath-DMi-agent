@@ -11,6 +11,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import type { ProblemGroupView, ProblemView } from './api.ts';
 import { MathText } from './math.tsx';
 import { Menu } from './menu.tsx';
+import { PageFigure } from './page-figure.tsx';
 import { useT } from './i18n.ts';
 
 /** 「检查未通过的小题」要查哪些：有答案、最近一次结论不是 correct（改过答案的会重新查）。 */
@@ -104,7 +105,6 @@ export function GroupCard({
             title={t('exercise.common.more')}
             items={[
               { label: editing ? t('exercise.problem.cancelEdit') : t('exercise.group.editStem'), onSelect: () => setEditing((v) => !v) },
-              pageImageUrl ? { label: t('exercise.problem.openNewWindow'), onSelect: () => window.open(pageImageUrl, '_blank') } : null,
               {
                 label: t('exercise.group.merge'),
                 title: t('exercise.group.mergeTitle'),
@@ -137,9 +137,7 @@ export function GroupCard({
 
       {group.figure_note && <div className="lec-fignote">{t('exercise.problem.figureNote', { note: group.figure_note })}</div>}
       {pageImageUrl && showPage && (
-        <div className="lec-pageimg">
-          <img src={pageImageUrl} alt={t('exercise.problem.pageBadge', { page })} loading="lazy" />
-        </div>
+        <PageFigure url={pageImageUrl} page={page} figure={group.has_figure} onHide={() => setShowPage(false)} />
       )}
 
       <div className="lec-group-parts">{children}</div>

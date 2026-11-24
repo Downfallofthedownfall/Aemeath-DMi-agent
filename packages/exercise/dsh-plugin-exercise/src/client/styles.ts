@@ -1099,12 +1099,18 @@ const CSS = `
 /* ---- 原题截图（多模态渲染出来的原卷页面） ---- */
 .${EX_CLASS} .lec-pagefig { margin: 8px 0 4px; }
 /* 原图容器：限高 + 自己滚，展开时不会把解答框顶到屏幕外 */
-.${EX_CLASS} .lec-pagefig .lec-pageimg {
-  margin-top: 6px; max-height: 58vh; overflow: auto; overscroll-behavior: contain;
+/* ⚠️ 限高 / 限宽直接挂在 .lec-pageimg 上：早先挂在 .lec-pagefig 下面，
+   精简布局时外层没了，原卷截图按 2 倍渲染的原尺寸铺开（约 1700×2400），冲出界面 */
+.${EX_CLASS} .lec-pageimg {
+  margin-top: 4px; max-height: 58vh; overflow: auto; overscroll-behavior: contain;
   border-radius: var(--aem-radius-ctl); border: 1px solid var(--aem-line); background: #fff;
 }
-.${EX_CLASS} .lec-pagefig img {
-  display: block; width: 100%; height: auto; background: #fff;
+.${EX_CLASS} .lec-pageimg img {
+  display: block; width: 100%; max-width: 100%; height: auto; background: #fff;
+}
+.${EX_CLASS} .lec-pagefig-bar {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11.5px; color: var(--aem-ink-soft);
 }
 .${EX_CLASS} .lec-pagefig[data-figure="1"] { border-left: 3px solid var(--aem-accent); padding-left: 8px; }
 .${EX_CLASS} .lec-fignote { font-size: 11.5px; color: var(--aem-ink-soft); margin-top: 4px; }

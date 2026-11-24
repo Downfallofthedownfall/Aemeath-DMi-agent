@@ -75,4 +75,25 @@ t('切换题集时进度页跟着换；同名题集不会两门课同时高亮',
   assert.match(wb, /c\.course_id === courseId && sheet\?\.id === m\.id/);
 });
 
+t('原卷截图：限高限宽挂在图容器自己身上，图上方有「收起」（不能冲出界面）', () => {
+  // 2026-11-24 真机："含图题目图片无法折叠且巨大无比"。精简布局拿掉了外层 .lec-pagefig，
+  // 而限高样式写成了 `.lec-pagefig .lec-pageimg` —— 图按 2 倍渲染的原尺寸铺开。
+  const css = read(join(client, 'styles.ts'));
+  const box = css.match(/\.\$\{EX_CLASS\} \.lec-pageimg \{([^}]*)\}/);
+  assert.ok(box, '.lec-pageimg 要有自己的规则（不挂在别的父级下面）');
+  assert.match(box[1], /max-height:\s*\d+vh/, '要限高');
+  assert.match(box[1], /overflow:\s*auto/, '超出部分在框里滚');
+  const img = css.match(/\.\$\{EX_CLASS\} \.lec-pageimg img \{([^}]*)\}/);
+  assert.ok(img, '.lec-pageimg img 要有规则');
+  assert.match(img[1], /max-width:\s*100%/, '宽度不超过卡片');
+  const fig = read(join(client, 'page-figure.tsx'));
+  assert.match(fig, /className="lec-pageimg"/);
+  assert.match(fig, /onClick=\{onHide\}/, '图上方要有收起按钮');
+  for (const f of ['problem-card.tsx', 'group-card.tsx']) {
+    const src = read(join(client, f));
+    assert.match(src, /<PageFigure\b/, `${f} 要用 PageFigure`);
+    assert.doesNotMatch(src, /className="lec-pageimg"/, `${f} 不要自己拼图容器`);
+  }
+});
+
 console.log(`\n[exercise-wiring] ${passed} 项断言全部通过`);
