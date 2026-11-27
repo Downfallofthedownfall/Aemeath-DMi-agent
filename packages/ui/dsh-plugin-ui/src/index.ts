@@ -207,6 +207,17 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
     ttsVolume: { get: (): number => config.ttsVolume?.get?.() ?? 1 },
   };
 
+  // 前端上报的 locale **只留在内存里**，不经 settings.update 写回 profile patch。
+  //
+  // ⚠️ 真机踩过：写回改的是 profile 的 cordis.patch.yml（git 跟踪的文件）。早先靠
+  //    "值没变就不写" + 在 patch 里预置 locale: zh 兜着，可浏览器是英文（或德语等
+  //    回退成 en）时，第一次打开页面就把 zh 改成 en —— 文件变脏，mac 上挡住 git pull。
+  //    locale 本来就是"前端此刻用什么语言"：每次打开页面都会重报，没有需要跨重启保留的东西。
+  //    读的一侧（common 的语言指令、TTS 的 lang）经下面 registerVolatileSettings 的 locale
+  //    读到这里；还没有页面上报过时，回退到配置里的值（profile 里写的默认）。
+  let reportedLocale = '';
+  const currentUiLocale = (): string => reportedLocale || uiConfig.locale.get();
+
   // —— UI 改造 P1：默认亮色迁移（决策 Q1：默认亮色，深色仅设置页可选）——
   // 持久化偏好为 dark/system/缺失时 → 迁移为 light，避免每次启动先闪暗色；
   // 插件侧（theme.ts）再把 light → aemeath（金强调亮色）。
@@ -424,23 +435,41 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
         const remapped = FEATURE_NAMESPACE_FIELD_MAP[parsed.ns];
         const fieldFor = (f: string): string => remapped?.[f] ?? f;
         const entryId = FEATURE_NAMESPACE_ENTRY[parsed.ns] ?? parsed.ns;
+        // locale 只进内存，不落 profile 文件（原因见 apply 开头 reportedLocale 处）
+        const isUiLocaleEntry = parsed.ns === UI_LOCALE_NAMESPACE;
+        if (patchOk && isUiLocaleEntry && UI_LOCALE_FIELD in (parsed.patch as Record<string, unknown>)) {
+          if (typeof (parsed.patch as Record<string, unknown>)[UI_LOCALE_FIELD] !== 'string') {
+            return json(res, 400, { ok: false, error: 'locale must be a string' });
+          }
+        }
         if (unsetOk) {
+          let fields = parsed.unset as string[];
+          if (isUiLocaleEntry && fields.includes(UI_LOCALE_FIELD)) {
+            reportedLocale = '';
+            fields = fields.filter((f) => f !== UI_LOCALE_FIELD);
+          }
           // 删除字段 → settings.mutate 的 {op:'unset'}（恢复 base/默认，而非置值）
-          await withTimeout(
-            settings.mutate(
-              entryId,
-              (parsed.unset as string[]).map((f) => ({ op: 'unset', path: [fieldFor(f)] })),
-            ),
-            10_000,
-            'settings.mutate',
-          );
+          if (fields.length) {
+            await withTimeout(
+              settings.mutate(
+                entryId,
+                fields.map((f) => ({ op: 'unset', path: [fieldFor(f)] })),
+              ),
+              10_000,
+              'settings.mutate',
+            );
+          }
         }
         if (patchOk) {
-          const patchIn = parsed.patch as Record<string, unknown>;
+          const patchIn = { ...(parsed.patch as Record<string, unknown>) };
+          if (isUiLocaleEntry && UI_LOCALE_FIELD in patchIn) {
+            reportedLocale = patchIn[UI_LOCALE_FIELD] as string;
+            delete patchIn[UI_LOCALE_FIELD];
+          }
           const patchOut: Record<string, unknown> = {};
           for (const [k, v] of Object.entries(patchIn)) patchOut[fieldFor(k)] = v;
-          // 值没变就不写：settings.update 会改写 profile 的 cordis.patch.yml（git 跟踪的文件），
-          // 前端每次打开页面都上报 locale，不该每次都动它。
+          // 值没变就不写：settings.update 会改写 profile 的 cordis.patch.yml（git 跟踪的文件）。
+          // （locale 上面已经摘掉了；只剩 locale 的上报到这里 patchIn 为空，不会写。）
           const current = readSetting(ctx, parsed.ns);
           const changed = Object.entries(patchIn).some(([k, v]) => current?.[k] !== v);
           if (changed) await withTimeout(settings.update(entryId, patchOut), 10_000, 'settings.update');
@@ -461,7 +490,7 @@ export function apply(ctx: Context, config: UiConfig = {}): void {
   // 字段（locale / ttsEnabled / ttsVolume），设置页由框架自动生成并写回
   // profile patch。注册进全局读表，供 common 的语言指令与 /tts/status 读取。
   registerVolatileSettings(UI_LOCALE_NAMESPACE, {
-    locale: () => uiConfig.locale.get() ?? '',
+    locale: () => currentUiLocale(),
     enabled: () => uiConfig.ttsEnabled.get() ?? false,
     volume: () => uiConfig.ttsVolume.get() ?? 1,
     font: () => config.font?.get?.() ?? '',

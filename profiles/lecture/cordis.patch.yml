@@ -97,8 +97,8 @@
               - '数据显示'
 
     # —— 前端 UI 插件（aemeath 设计语言；browser 半区经 dsh.client 进入 __DSH_BOOT__）——
-    #    这里只负责**挂载**这一行（插件默认值）。前端上报的 locale / TTS 开关
-    #    写回的是下面 insert 之外的顶层 `- id: aemeath-ui` 条目，原因见那里。
+    #    这里只负责**挂载**这一行（插件默认值）。设置页 / TTS 开关的写回
+    #    落在下面 insert 之外的顶层 `- id: aemeath-ui` 条目，原因见那里。
     - id: aemeath-ui
       name: '@aemeath/dsh-plugin-ui'
       config:
@@ -138,19 +138,19 @@
           baseUrl: 'https://api.deepseek.com'
           model: 'deepseek-v4-flash'
 
-# —— aemeath-ui 的运行时设置（volatile：locale / ttsEnabled / ttsVolume）——
-#    ⚠️ 这一条必须是**顶层**条目，且 locale 预先写成前端会上报的值（zh）。
-#    dsh 的 configEditor 写回时只找 insert 之外的顶层 `- id: aemeath-ui`，
-#    找不到就往文件末尾**追加**一条。上面 insert 里那行只负责挂载插件；
-#    之前只有它，于是每次在浏览器里打开都会多出一份 aemeath-ui，
+# —— aemeath-ui 的运行时设置（volatile：ttsEnabled / ttsVolume / 外观）——
+#    ⚠️ 这一条必须是**顶层**条目。dsh 的 configEditor 写回时只找 insert 之外的
+#    顶层 `- id: aemeath-ui`，找不到就往文件末尾**追加**一条。上面 insert 里那行
+#    只负责挂载插件；之前只有它，于是每次在浏览器里打开都会多出一份 aemeath-ui，
 #    git 跟踪的文件变脏，mac 上还会挡住 git pull。
-#    aemeath-ui 只在值变化时才写：这里已经是 zh，打开页面就不再动文件。
-#    浏览器语言是英文时它会把 zh 改成 en —— 那是真实的设置变化，不是重复条目。
+#    前端上报的 locale **不写**这个文件（aemeath-ui 只把它留在内存里，见插件
+#    index.ts 的 reportedLocale）：早先写回时，英文 / 德语浏览器一打开就把文件改脏。
+#    现在只有用户在界面里改 TTS / 外观时才会动这里。
 #    不要在 config 里加注释：写回会整块替换 config，注释会丢。
 - id: aemeath-ui
   name: '@aemeath/dsh-plugin-ui'
   config:
-    locale: zh
+    locale: ''
     ttsEnabled: false
     ttsVolume: 1
 
