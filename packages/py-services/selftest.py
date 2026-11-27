@@ -106,11 +106,28 @@ class MCPClient:
 SERVERS = {
     "sympy": {
         "argv": [sys.executable, "packages/py-services/sympy_mcp/server.py"],
+        # (工具, 参数[, 回包里必须出现的文字])
         "smoke": [
             ("compute_symbolic", {"expression": "integrate(sin(x),x)"}),
             ("compute_numeric", {"code": "import numpy as np\nprint(np.sqrt(2))"}),
+            # 2026-11-27：沙箱里 `import sympy` 曾被导入闸门拦死（sympy 自己的惰性导入也被拦）
+            ("compute_numeric", {"code": "import sympy as sp\nt = sp.Symbol('t')\nf = sp.Function('f')\n"
+                                         "print(sp.nsolve(sp.cos(t) - t, t, 1))\n"
+                                         "print(sp.dsolve(f(t).diff(t, 2) + f(t), f(t)))\n"
+                                         "print(sp.lambdify(t, t**2)(3), sp.sympify('x + x'))",
+                                 "timeout": 30},
+             "0.739085133215161"),
+            ("compute_numeric", {"code": "from uncertainties import ufloat\nprint(ufloat(1.0, 0.1) * 2)"}, "2.00+/-0.20"),
             ("compute_plot", {"expression": "x**2"}),
             ("compare_answers", {"a": "x**2-1", "b": "(x-1)*(x+1)"}),
+        ],
+        # 必须失败的调用（沙箱闸门）：用户代码导入 os、借 sympy 的 import_module 代导入、借 np.__builtins__ 拿 exec
+        "must_fail": [
+            ("compute_numeric", {"code": "import os\nprint(os.getcwd())"}),
+            ("compute_numeric", {"code": "from sympy.external import import_module\nprint(import_module('os').getcwd())",
+                                 "timeout": 30}),
+            ("compute_numeric", {"code": "print(np.__builtins__['exec']('1'))"}),
+            ("compute_numeric", {"code": "print(np.vectorize(np.__builtins__['__import__'], otypes=['O'])('os'))"}),
         ],
     },
     "vision": {
@@ -156,19 +173,32 @@ def main():
             lst = client.send("tools/list")
             tools = {t["name"] for t in lst["result"]["tools"]}
             print(f"  tools ({len(tools)}): {sorted(tools)}")
-            for tool_name, targs in spec["smoke"]:
-                if tool_name not in tools:
-                    print(f"  ✗ {tool_name}: 未注册")
-                    failed.append(name)
-                    continue
+            def call(tool_name, targs):
                 res = client.send("tools/call", {"name": tool_name, "arguments": targs})
                 result = res.get("result", {})
                 content = result.get("content", [{}])
                 text = content[0].get("text", "") if content else ""
                 parsed = json.loads(text) if text else {}
-                ok = parsed.get("success", False) and not result.get("isError")
+                return parsed.get("success", False) and not result.get("isError"), text
+
+            for entry in spec["smoke"]:
+                tool_name, targs = entry[0], entry[1]
+                expect = entry[2] if len(entry) > 2 else None
+                if tool_name not in tools:
+                    print(f"  ✗ {tool_name}: 未注册")
+                    failed.append(name)
+                    continue
+                ok, text = call(tool_name, targs)
+                if ok and expect is not None and expect not in text:
+                    ok = False
+                    text = f"缺少期望输出 {expect!r}：{text}"
                 print(f"  {'✅' if ok else '✗'} {tool_name}: {text[:200]}")
                 if not ok:
+                    failed.append(name)
+            for tool_name, targs in spec.get("must_fail", []):
+                ok, text = call(tool_name, targs)
+                print(f"  {'✗ 本应被拦下' if ok else '✅ 已拦下'} {tool_name}: {text[-160:]}")
+                if ok:
                     failed.append(name)
             print(f"  {name}: {'✅ 通过' if name not in failed else '✗ 失败'}")
         except Exception as e:  # noqa: BLE001

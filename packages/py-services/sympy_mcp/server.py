@@ -10,10 +10,11 @@
 #   - 所有 parse/simplify/求值一律在子进程执行（主进程不 eval 任何模型输入）；
 #   - parse_expr 统一走 safe_parse：token 黑名单（拒绝 __ 开头的名称与 . 属性访问）
 #     + global_dict={'__builtins__': {}}（eval 时无任何内建）+ 长度上限；
-#   - compute_numeric 子进程：预载科学栈后安装严格导入白名单（仅
-#     numpy/scipy/sympy/math/uncertainties 五模块）+ 用户命名空间只暴露
-#     白名单内建（无 type/object/getattr/globals 等内省面）+ import 闸门 +
-#     子进程环境白名单（不泄漏凭据类变量）+ 内存限制（尽力而为，Windows 不生效）+
+#   - compute_numeric 子进程：预载 numpy/scipy 后安装按调用方分权的导入闸门
+#     （用户代码只许 numpy/scipy/sympy/mpmath/math/uncertainties；库代码可导入，
+#     但库函数运行时不许导入 os/sys/subprocess 等）+ exec/eval/compile 只给库代码用 +
+#     用户命名空间只暴露白名单内建（无 type/object/getattr/globals 等内省面）+
+#     子进程环境白名单（不泄漏凭据类变量）+ 内存限制（尽力而为，只在 Linux 设）+
 #     超时钳制 + 输出上限。
 #   真实边界 = 子进程隔离（受限但**非安全沙箱**：属性内省可在 CPython 内部分
 #   绕过白名单，等同本用户权限的任意代码执行；请勿放入敏感信息）。
@@ -237,10 +238,20 @@ print(json.dumps(out, ensure_ascii=False))
 # ============================================================
 # compute_numeric：受限数值沙箱子进程（严格导入白名单 + 隔离命名空间）
 # ============================================================
-# 流程：闸门开启时预载科学栈（其内部 stdlib 导入在此完成）→ 安装严格白名单
-#（仅 _ALLOWED 五模块）→ 置空危险内建 → 用户代码在隔离命名空间执行。
-# 相比旧版：删除 _STDLIB/sys.modules/level>0/`_` 前缀直通分支（旧版可 import os；
-# 且 sys.modules 已预置 os/subprocess，删除分支后仍可通过 _orig_import/_sys 泄漏绕过）。
+# 流程：闸门开启前预载 numpy/scipy → 安装**按调用方分权**的导入/执行闸门 →
+# 置空 open/input/breakpoint → 用户代码在隔离命名空间执行。
+#
+# 按调用方分权（2026-11-27）：早先闸门对**所有**导入一视同仁，库自己在运行时的导入也被拦 ——
+# `import sympy` 在沙箱里根本起不来（sympy 函数内部大量相对导入、`import_module('gmpy2')`，
+# 导入机制自己还要 `_io`），exec/eval/compile 全局置空又让 lambdify 和"没有 .pyc 的模块"跑不了。
+# 现在：
+#   · 用户代码（`<user>`）、以及 exec/eval 出来的字符串、lambdify 生成的代码（文件名以 `<` 开头）
+#     → 只许导入 _ALLOWED，不许相对导入，不能调用 exec/eval/compile；
+#   · 库代码（真实文件里的代码、冻结的导入机制）→ 可以导入；但**库函数在运行时**去导入
+#     _DENY（进程/文件/网络/解释器控制）会被拦 —— 只有库的**模块初始化**（调用链在碰到用户代码之前
+#     先碰到某个库文件的模块体）才放行，例如 sympy 初始化时 `__sympy_debug()` 里的 `import os`。
+#     这样 `sympy.external.import_module('os')` 这类"替你导入"的库函数拿不到 os。
+# 这仍然是**提高成本**，不是安全边界：属性内省（例如 `__import__.__globals__`）可以绕过，见 README。
 SANDBOX_PRELUDE = '''
 import builtins
 import sys as _sys
@@ -252,41 +263,112 @@ except Exception:
     pass
 
 # 1) 闸门开启时预载科学栈（其内部 stdlib/ctypes 等导入在此完成；scipy.quad
-#    会惰性 import ctypes，先预热一次，运行时不再触发）
+#    会惰性 import ctypes，先预热一次，运行时不再触发）。sympy/uncertainties 不预载：
+#    闸门放行库的模块初始化，用户 import 时再加载，不用的调用不多花 0.5s。
 import math
 import numpy as np
 from scipy import integrate, optimize, signal
 integrate.quad(lambda _x: 0.0, 0.0, 1.0)
-try:
-    import resource
-    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
-except Exception:
-    pass
+# 地址空间上限只在 Linux 上设：macOS 上 RLIMIT_AS 要么被内核拒绝（EINVAL，进程的虚拟地址
+# 空间远大于 512MB），要么不生效；真生效的话 numpy 之后的任何分配都会失败。Windows 没有 resource。
+if _sys.platform.startswith('linux'):
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+    except Exception:
+        pass
 
-# 2) 保存执行原语（sanitize 后 builtins.exec/compile 被置空，直接查名会拿 None）
+# 2) 保存执行原语（下面 builtins.exec/compile 会换成闸门版，用户代码由这里的原版执行）
 _exec = exec
 _compile = compile
+_getframe = _sys._getframe
 
-# 3) 严格导入白名单：仅允许白名单五模块（拒绝相对导入）
+# 3) 导入闸门
 _orig_import = builtins.__import__
-_ALLOWED = {'numpy', 'scipy', 'sympy', 'math', 'uncertainties'}
+# mpmath：sympy 的数值后端（nsolve / lambdify(modules='mpmath') 会 `from mpmath import *`）
+_ALLOWED = {'numpy', 'scipy', 'sympy', 'mpmath', 'math', 'uncertainties'}
+# 库函数在运行时不许导入的模块（进程 / 文件 / 网络 / 解释器控制）。
+# builtins 不在内：lambdify 运行时要 `import builtins` 放进生成函数的命名空间；它上面的
+# exec/eval/compile 是闸门版、open 是 None、__import__ 是 _gate_import，与 np.__builtins__ 等价。
+_DENY = frozenset({
+    'os', 'posix', 'nt', 'sys', 'subprocess', '_posixsubprocess', '_winapi', 'msvcrt', 'winreg',
+    'socket', '_socket', 'ssl', 'select', 'selectors', 'shutil', 'pathlib', 'glob', 'tempfile',
+    'io', '_io', 'fcntl', 'pty', 'tty', 'termios', 'pwd', 'grp', 'resource', 'signal',
+    'ctypes', '_ctypes', 'importlib', 'runpy', 'code', 'codeop', 'marshal', 'pickle',
+    'multiprocessing', '_multiprocessing', 'webbrowser', 'urllib', 'http', 'ftplib', 'smtplib',
+})
 
-def _safe_import(name, *args, **kwargs):
-    if len(args) > 3:
-        level = args[3]
-    else:
-        level = kwargs.get('level', 0)
+def _import_level(args, kwargs):
+    return args[3] if len(args) > 3 else kwargs.get('level', 0)
+
+def _check_user_import(name, level):
     if level > 0:
         raise ImportError("相对导入被禁止")
-    base = name.split('.')[0]
-    if base not in _ALLOWED:
+    if name.split('.')[0] not in _ALLOWED:
+        raise ImportError(f"禁止导入模块: {name}")
+
+def _trusted(code):
+    # 真实文件里的代码与冻结的导入机制；`<user>`、`<string>`（exec/eval）、`<lambdifygenerated-N>` 都不算
+    fn = code.co_filename
+    return not fn.startswith('<') or fn.startswith('<frozen ')
+
+# 4 的 exec/eval/compile 闸门版（先定义：导入闸门要认得它的栈帧）
+def _library_only(fn, label):
+    def guarded(*args, **kwargs):
+        if not _trusted(_getframe(1).f_code):
+            raise TypeError(f"{label}() 在沙箱内不可用")
+        return fn(*args, **kwargs)
+    return guarded
+
+# 闸门版自己的栈帧（这段序言经 `python -c` 运行，文件名是 `<string>`）不算调用方：
+# 编译含 `\\N{...}` 的源码时编译器会从 C 里导入 unicodedata，最内层的 Python 栈帧就是闸门版 compile。
+# 它只替可信调用方干活，所以跳过它、看是谁调的它。
+_GUARD_CODE = _library_only(None, '').__code__
+
+def _skip_guards(frame):
+    while frame is not None and frame.f_code is _GUARD_CODE:
+        frame = frame.f_back
+    return frame
+
+def _in_library_init(frame):
+    # 从调用方往外找：碰到用户代码之前先碰到某个库文件的模块体 → 这是库在初始化
+    f = frame
+    while f is not None:
+        code = f.f_code
+        if code is not _GUARD_CODE:
+            if not _trusted(code):
+                return False
+            if code.co_name == '<module>' and not code.co_filename.startswith('<frozen '):
+                return True
+        f = f.f_back
+    return False
+
+def _user_import(name, *args, **kwargs):
+    # 用户代码看到的 __import__（_SAFE_BUILTINS 里）：永远只许白名单
+    _check_user_import(name, _import_level(args, kwargs))
+    return _orig_import(name, *args, **kwargs)
+
+def _gate_import(name, *args, **kwargs):
+    # 库代码、导入机制、C 扩展（PyImport_Import）看到的 __import__
+    caller = _skip_guards(_getframe(1))
+    if caller is None:  # 栈上没有 Python 帧（解释器自身）
+        return _orig_import(name, *args, **kwargs)
+    code = caller.f_code
+    level = _import_level(args, kwargs)
+    if not _trusted(code):
+        _check_user_import(name, level)
+    elif (level == 0 and name.split('.')[0] in _DENY
+          and not code.co_filename.startswith('<frozen ') and not _in_library_init(caller)):
         raise ImportError(f"禁止导入模块: {name}")
     return _orig_import(name, *args, **kwargs)
 
-builtins.__import__ = _safe_import
+builtins.__import__ = _gate_import
 
-# 4) 置空危险内建（直接调用即 TypeError；import 由白名单把关）
-for _bad in ('eval', 'exec', 'open', 'compile', 'input', 'breakpoint'):
+# 4) 危险内建：exec/eval/compile 只给库代码用（sympy 的 lambdify / sympify、导入机制编译没有 .pyc 的
+#    模块）；用户代码、以及它们执行出来的字符串调用即 TypeError。open/input/breakpoint 一律置空。
+for _name in ('exec', 'eval', 'compile'):
+    setattr(builtins, _name, _library_only(getattr(builtins, _name), _name))
+for _bad in ('open', 'input', 'breakpoint'):
     setattr(builtins, _bad, None)
 
 # 4.5) 用户可见内建白名单：不提供 type/object/getattr/setattr/globals/locals/
@@ -304,10 +386,9 @@ _SAFE_BUILTINS = {
     'hex': hex, 'oct': oct, 'bin': bin, 'hash': hash, 'id': id,
     'divmod': divmod, 'isinstance': isinstance, 'issubclass': issubclass,
     'callable': callable,
-    # import 语句在 exec 命名空间中解析 __import__；这里放的是已被替换为
-    # _safe_import 的闸门函数（builtins.__import__ = _safe_import 在前面执行），
-    # 既让 import 语句工作，又保持白名单导入限制
-    '__import__': builtins.__import__,
+    # import 语句在 exec 命名空间中解析 __import__：用户代码拿到的是只认白名单的 _user_import
+    # （不是库用的 _gate_import —— 否则把它交给 np.vectorize 之类的库函数代调就能绕过）
+    '__import__': _user_import,
     'print': print,
     'True': True, 'False': False, 'None': None,
     'Exception': Exception, 'ValueError': ValueError, 'TypeError': TypeError,
@@ -318,9 +399,9 @@ _SAFE_BUILTINS = {
 }
 
 # 5) 用户命名空间：只暴露公共名（math/np/integrate/optimize/signal），
-#    不泄漏 _sys/_orig_import/_safe_import/builtins/_ALLOWED 等内部名；
+#    不泄漏 _sys/_orig_import/_gate_import/builtins/_ALLOWED 等内部名；
 #    __builtins__ 用白名单字典（不含 type/object/getattr/globals 等内省面；
-#    import 语句仍由 builtins.__import__ 的 _safe_import 闸门把关）
+#    import 语句由其中的 _user_import 把关）
 _ns = {k: globals()[k] for k in ('math', 'np', 'integrate', 'optimize', 'signal') if k in globals()}
 _ns['__builtins__'] = _SAFE_BUILTINS
 '''
@@ -505,7 +586,8 @@ def compute_symbolic(expression: str, vars=None, timeout=15):  # noqa: A002
     "返回 {stdout, stderr, returncode}——stdout 为代码真实输出（stdout/stderr 各截断"
     " 10KB，超限带 stdout_truncated 标记）；失败/超时返回 error 字段。"
     "预置 import math / numpy as np / scipy 的 integrate、optimize、signal。"
-    "导入仅限 numpy/scipy/sympy/math/uncertainties（含 os/subprocess 在内的其余模块被拒），"
+    "导入仅限 numpy/scipy/sympy/mpmath/math/uncertainties（含 os/subprocess 在内的其余模块被拒；"
+    "sympy 可整套使用，含 lambdify/nsolve/dsolve/units），exec/eval/open 不可用，"
     "内建为白名单子集。⚠ 注意：这是受限环境而非安全沙箱，属性内省可能绕过限制，"
     "等价于以你的用户权限执行代码——请勿在代码中放入密钥/敏感信息，仅用于纯计算。",
     {

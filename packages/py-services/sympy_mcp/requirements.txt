@@ -1,6 +1,7 @@
-# sympy_mcp — SymPy 计算（系统 Python 3.10+）
-# 注意：受限子进程沙箱白名单五模块 = numpy/scipy/sympy/math/uncertainties（server.py _ALLOWED），
-#       计算工具 compute_numeric/compare_answers 直接依赖 scipy 与 uncertainties，必须一并安装。
+# sympy_mcp — SymPy 计算（系统 Python 3.10+；macOS 用 python3 -m pip install -r …）
+# 注意：受限子进程沙箱白名单 = numpy/scipy/sympy/mpmath/math/uncertainties（server.py _ALLOWED；
+#       mpmath 随 sympy 安装），计算工具 compute_numeric/compare_answers 直接依赖 scipy 与
+#       uncertainties，必须一并安装。
 sympy>=1.13
 numpy>=1.26
 scipy>=1.10

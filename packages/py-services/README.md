@@ -55,6 +55,25 @@ python packages/py-services/selftest.py --server sympy    # 单个
 
 - symbolic/numeric 沿用 v1 的受限子进程沙箱（白名单 import + 禁用危险内建 + 内存限制
   + 超时钳制）；这是"尽力而为"，真实边界是本地子进程隔离。
+- `compute_numeric` 的导入闸门**按调用方分权**（2026-11-27）：
+  - 用户代码只许导入 `numpy / scipy / sympy / mpmath / math / uncertainties`，不许相对导入，
+    `exec / eval / compile / open` 不可用（经 `np.__builtins__` 拿到也一样）；
+  - 库代码（真实文件、冻结的导入机制）可以导入 —— 早先闸门连库自己的惰性导入也拦，
+    `import sympy` 在沙箱里**根本起不来**（`禁止导入模块: _io`）；
+  - 但库**函数**在运行时导入 `os / sys / subprocess / socket / ctypes / importlib …` 仍被拦，
+    只有库的**模块初始化**放行 —— 所以 `sympy.external.import_module('os')` 这类"替你导入"拿不到 os；
+  - `exec / eval / compile` 只给库代码用（lambdify / sympify / 编译没有 `.pyc` 的模块）。
+  - 已知局限（未变）：属性内省仍可绕过，例如 `__import__.__globals__['_orig_import']`；
+    别把它当安全边界，别在代码里放密钥。
+  - 内存上限（`RLIMIT_AS` 512MB）只在 Linux 设：macOS 上它要么被内核拒绝要么不生效，
+    真生效的话 numpy 之后的任何分配都会失败；Windows 没有 `resource`。
+- 自检 `selftest.py --server sympy` 覆盖：沙箱里 sympy（nsolve / dsolve / lambdify / sympify）
+  与 uncertainties 可用，且 `import os`、借 sympy 代导入、借 `np.__builtins__` 拿 exec /
+  借 `np.vectorize` 代调导入都必须被拦。
+- 习题模式的「计算 =」也调这里（`sympy_mcp/server.py` 的 `do_symbolic`，由
+  `packages/exercise/dsh-plugin-exercise/src/py-compute.ts` 直接 import），**不经 MCP**；
+  macOS 上它找 Homebrew / python.org 的 `python3`，没装命令行工具时不碰 `/usr/bin/python3`
+  （否则会弹"安装开发者工具"的窗口）。
 - `control` 系列工具会真实操作键鼠/窗口，建议在 dsh 侧对 `mcp__control__*` 挂审批
   （tools/pre-execute ask），当前 profile 默认放行（本地个人使用，与 v1 AUTH_TOKEN 本地态等价）。
 - TTS 合成产物写入 `voices/tts/`（`.gitignore` 已忽略 `.wav`）。
