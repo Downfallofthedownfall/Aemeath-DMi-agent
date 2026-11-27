@@ -4,7 +4,8 @@
 //   · findComputeTargets：在答案里找"待算式"—— 公式里以 `=`（或 `= ?`、`\approx`）结尾的那一行，
 //     要算的是最后一个等号之前的那一段（`v = \sqrt{2gh} =` → `\sqrt{2gh}`）。
 //     **只有学生自己写了结尾 `=` 的地方才算**：算什么由学生决定，不由模型决定。
-//   · latexSymbolBases / latexNumberTokens：防"做题"的确定性护栏用（转写里不许出现式子里没有的量和数）
+//   · latexSymbolBases / latexNumbers / quoteInText：防"做题"的确定性护栏用
+//     （转写里不许出现式子里没有的量和数；数按数值比，不按数字串的子串比）
 //   · formatComputed：结果写成 LaTeX（默认 4 位有效数字；有舍入就把 `=` 换成 `\approx`）
 //   · applyComputeFills：把结果填回答案；答案在计算途中被改过就按上下文重新定位，找不到就跳过
 //
@@ -300,30 +301,74 @@ export function symbolInLatex(name: string, latex: string): boolean {
 }
 
 /**
- * 原文里的数字串（只要数字，去掉小数点/小数逗号）：`9{,}81` → `981`、`1.5` → `15`、`\frac12` → `12`。
- * 用来核对"转写/数值里的数确实写在原文里"。
+ * 原文里写出来的**数**（按数值比，不按数字串比）。
+ *
+ * 早先比的是"有效数字串是否被包含"（`9{,}81` → `981`）：子串匹配让 `120` 里的 12、20、2 都算"写过"，
+ * 去掉小数点又让 `1{,}5` 抄成 15 / 0.15 也算对 —— 恰好是模型最常见的两种抄错，护栏全放过去了。
+ * 现在：
+ *   · 小数逗号 `1{,}5` / `1,5` → 1.5；千分位 `1\,000` → 1000；`1.000`（德式千分位）两种读法都算
+ *   · `\frac12` → 1、2（TeX 的单字符参数简写）
+ *   · `a \times 10^{n}` / `a \cdot 10^{n}` / `10^{n}` / `1.5e3` 另外再算出整体的值
+ *   · 一元负号（`= -5`、`{-19}`、`\approx -3`）记成负数；`a - 5` 里的减号不算
  */
-export function latexNumberTokens(latex: string): string[] {
+export function latexNumbers(latex: string): number[] {
   const s = latex
     .replace(/\{,\}/g, '.')
-    .replace(/(\d)\\[,;: ](?=\d{3}\b)/g, '$1') // 1\,000
-    .replace(/(\d),(?=\d)/g, '$1.');
-  return [...s.matchAll(/\d+(?:\.\d+)?/g)].map((m) => m[0].replace('.', ''));
+    .replace(/(\d)\\[,;: ](?=\d{3}(?!\d))/g, '$1') // 1\,000
+    .replace(/(\d),(?=\d)/g, '$1.')
+    .replace(/\\[dt]?frac\s*(\d)\s*(\d)/g, ' $1 / $2 ')
+    .replace(/−/g, '-');
+  const out: number[] = [];
+  const push = (v: number): void => {
+    if (Number.isFinite(v)) out.push(v);
+  };
+  /** 位置 at 的数前面是不是一元负号 */
+  const negativeAt = (at: number): boolean => {
+    let j = at - 1;
+    while (j >= 0 && /\s/.test(s[j]!)) j--;
+    if (j < 0 || s[j] !== '-') return false;
+    let k = j - 1;
+    while (k >= 0 && /\s/.test(s[k]!)) k--;
+    if (k < 0) return true;
+    const c = s[k]!;
+    if (/[\d)}\]|.]/.test(c)) return false; // `3 - 5`、`(a) - 5`、`^{2} - 5`
+    if (/[A-Za-z]/.test(c)) {
+      // `\approx -5`（命令）是一元；`a - 5`（字母量）是二元
+      let b = k;
+      while (b > 0 && /[A-Za-z]/.test(s[b - 1]!)) b--;
+      return s[b - 1] === '\\';
+    }
+    return true; // `= -5`、`{-19}`、`(-3`
+  };
+  for (const m of s.matchAll(/\d+(?:\.\d+)?|\.\d+/g)) {
+    const sign = negativeAt(m.index!) ? -1 : 1;
+    push(sign * Number(m[0]));
+    // `1.000` 可能是德式千分位（= 1000）
+    if (/^\d{1,3}(?:\.\d{3})+$/.test(m[0])) push(sign * Number(m[0].replace(/\./g, '')));
+  }
+  // 按字符串拼成 `1.6e-19` 再转数：和 JS 读字面量同一个舍入（`1.6 * 10 ** -19` 会差一个 ulp）
+  for (const m of s.matchAll(/(\d+(?:\.\d+)?)[eE]([+-]?\d+)/g)) {
+    push((negativeAt(m.index!) ? -1 : 1) * Number(`${m[1]}e${m[2]}`));
+  }
+  const sci = /(?:(\d+(?:\.\d+)?)\s*(?:\\times|\\cdot|\*|×|·)\s*)?(?<![\d.])10\s*\^\s*(?:\{\s*([+-]?)\s*(\d+)\s*\}|([+-]?)(\d))/g;
+  for (const m of s.matchAll(sci)) {
+    const e = `${(m[2] ?? m[4]) === '-' ? '-' : ''}${m[3] ?? m[5]}`;
+    push((negativeAt(m.index!) ? -1 : 1) * Number(`${m[1] ?? '1'}e${e}`));
+  }
+  return out;
 }
 
-/** 数的有效数字串：`9.81` → `981`、`0.002` → `2`、`3000` → `3`、`1.5e3` → `15`。 */
-export function mantissaDigits(text: string | number): string {
-  const v = typeof text === 'number' ? text : Number(text);
-  if (!Number.isFinite(v) || v === 0) return '0';
-  const exp = Math.abs(v).toExponential(); // "9.81e+0"
-  const mant = exp.split('e')[0]!.replace('.', '').replace(/0+$/, '');
-  return mant || '0';
-}
-
-/** 数（有效数字串）在原文的某个数字串里出现了吗。 */
-export function numberInTokens(value: string | number, tokens: readonly string[]): boolean {
-  const d = mantissaDigits(value);
-  return tokens.some((t) => t.includes(d));
+/**
+ * 数在原文的数里吗：数值相等（相对 1e-9）。
+ * `signed`：符号也要对（字母的取值）；算式里的字面量不带符号（负号是单独的运算），只比大小。
+ */
+export function numberIn(value: number, numbers: readonly number[], signed = true): boolean {
+  if (!Number.isFinite(value)) return false;
+  const v = signed ? value : Math.abs(value);
+  return numbers.some((n0) => {
+    const n = signed ? n0 : Math.abs(n0);
+    return Math.abs(n - v) <= 1e-9 * Math.max(Math.abs(n), Math.abs(v));
+  });
 }
 
 /** 去掉空白/排版命令/花括号，用来做"原文片段确实在原文里"的比较。 */
@@ -332,6 +377,25 @@ export function normalizeQuote(s: string): string {
     .replace(/\{,\}/g, ',')
     .replace(/\\[,;:! ]|\\q?quad|~/g, '')
     .replace(/[\s{}$]/g, '');
+}
+
+/**
+ * 原文片段（已 normalizeQuote）在原文（已 normalizeQuote）里吗 —— 而且**不能从一个数的中间切出来**：
+ * 片段 `5` 不算出现在 `m=25` 里，`F=12` 不算出现在 `F=120` 里。
+ */
+export function quoteInText(quote: string, text: string): boolean {
+  if (!quote) return false;
+  const numChar = /[\d.,]/;
+  const startsNum = numChar.test(quote[0]!) || quote[0] === '-';
+  const endsNum = numChar.test(quote[quote.length - 1]!);
+  for (let at = text.indexOf(quote); at !== -1; at = text.indexOf(quote, at + 1)) {
+    if (startsNum && at > 0 && /[\d.,]/.test(text[at - 1]!)) continue;
+    const after = text[at + quote.length];
+    if (endsNum && after !== undefined && /\d/.test(after)) continue;
+    if (endsNum && after !== undefined && /[.,]/.test(after) && /\d/.test(text[at + quote.length + 1] ?? '')) continue;
+    return true;
+  }
+  return false;
 }
 
 // ============================================================
@@ -360,8 +424,11 @@ export function formatComputed(value: number, digits = 4): FormattedNumber {
   }
   const exp = Math.floor(Math.log10(Math.abs(value)));
   if (exp >= -3 && exp < 6) {
-    // 整数位比有效数字还多（12345.6 取 4 位）：toPrecision 会给 1.235e+4，这里改成取整
-    const fixed = exp >= d ? String(Math.round(value)) : stripZeros(value.toPrecision(d));
+    // 整数位比有效数字还多（12345.6 取 4 位）：toPrecision 会给 1.235e+4，这里改成取整。
+    // 舍入进位到下一个量级时（9999.96 取 4 位）toPrecision 同样改用指数写法（"1.000e+4"），
+    // 那不是 LaTeX —— 按数值重写成普通写法（10000）。
+    const p = exp >= d ? String(Math.round(value)) : value.toPrecision(d);
+    const fixed = /e/i.test(p) ? String(Number(p)) : stripZeros(p);
     const exact = Math.abs(Number(fixed) - value) <= Math.abs(value) * 1e-12;
     return { latex: fixed, plain: fixed, exact };
   }

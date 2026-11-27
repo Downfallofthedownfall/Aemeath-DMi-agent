@@ -179,8 +179,16 @@ function breakStaleLock(lock: string): boolean {
  * 释放时只删自己的锁（万一自己慢到被当成死锁清掉，也不会顺手删掉接手者的锁）。
  * 锁目录不以 .json 结尾，worldbook 的扫描看不到它。
  */
+/**
+ * 本进程已经拿着的锁（可重入）：锁里调到的函数再锁同一个文件时直接执行，不自己等自己 ——
+ * 例如 updateSheet 的回调里改错题（错题本另一把锁）、writeSheet 再锁一次 sheet.json。
+ * fn 是同步的，所以"本进程拿着"不会和本进程的别的调用交错。
+ */
+const heldLocks = new Set<string>();
+
 export function withFileLockSync<T>(file: string, fn: () => T): T {
   const lock = `${file}.lock`;
+  if (heldLocks.has(lock)) return fn();
   const ownerFile = join(lock, LOCK_OWNER_FILE);
   const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const deadline = Date.now() + LOCK_WAIT_MS;
@@ -211,9 +219,11 @@ export function withFileLockSync<T>(file: string, fn: () => T): T {
     rmSync(lock, { recursive: true, force: true });
     throw e;
   }
+  heldLocks.add(lock);
   try {
     return fn();
   } finally {
+    heldLocks.delete(lock);
     let mine = false;
     try {
       mine = readFileSync(ownerFile, 'utf-8') === token;
@@ -304,7 +314,20 @@ export class ExerciseStore {
     this.writeJson(join(dir, 'index.json'), index);
   }
 
+  /**
+   * index.json 的读-改-写都在这把跨进程锁里。
+   * 早先不锁：一边新建 ub03（写入含 ub03 的索引）、另一个进程同时保存 ub01 的答案（读到旧索引、整份写回），
+   * ub03 就从课程列表里消失了 —— 文件还在，只是索引里没有它。
+   */
+  private withIndexLock<T>(courseId: string, fn: () => T): T {
+    return withFileLockSync(join(this.courseDir(courseId), 'index.json'), fn);
+  }
+
   ensureCourse(courseId: string, title: string, semester = '', moduleCode = ''): CourseIndex {
+    return this.withIndexLock(courseId, () => this.ensureCourseLocked(courseId, title, semester, moduleCode));
+  }
+
+  private ensureCourseLocked(courseId: string, title: string, semester: string, moduleCode: string): CourseIndex {
     const existing = this.readIndex(courseId);
     if (existing) {
       // 幂等：已有课程时允许补全标题/学期（用户后来填的）
@@ -338,6 +361,11 @@ export class ExerciseStore {
 
   /** 新增/更新索引里的一套题摘要（由 sheet.json 派生）。 */
   upsertSheetMeta(courseId: string, sheet: Sheet): CourseIndex {
+    if (!this.readIndex(courseId)) throw new Error(tr(`课程不存在: ${courseId}`, `Course not found: ${courseId}`));
+    return this.withIndexLock(courseId, () => this.upsertSheetMetaLocked(courseId, sheet));
+  }
+
+  private upsertSheetMetaLocked(courseId: string, sheet: Sheet): CourseIndex {
     const index = this.readIndex(courseId);
     if (!index) throw new Error(tr(`课程不存在: ${courseId}`, `Course not found: ${courseId}`));
     const prog = sheetProgress(sheet);
@@ -386,11 +414,35 @@ export class ExerciseStore {
     }
   }
 
+  /**
+   * 改一套题：**锁 → 读磁盘上的最新版 → 改 → 写**。
+   *
+   * 为什么：主 profile 与独立 exercise profile 共用数据目录，两边都会写 sheet.json（自动保存、检查结果、
+   * 附图……）。早先是"先读一份、改完整份写回"：原子写只保证文件不写坏，挡不住后写的盖掉先写的；
+   * 进程内要等模型/渲染的路径（检查、重新分块、生成 PDF）也会把等待期间别处写的东西冲掉。
+   * 读-改-写放在一把跨进程锁里、并且总是在**最新**的那份上改，这两种丢更新都没了。
+   *
+   * @param fn 在最新的 sheet 上原地修改；返回 false = 这次不写
+   * @returns 改后的 sheet；题集不存在 / 读不出 → null
+   */
+  updateSheet(courseId: string, sheetId: string, fn: (sheet: Sheet) => boolean | void): Sheet | null {
+    const file = this.sheetFile(courseId, sheetId);
+    if (!existsSync(file)) return null;
+    return withFileLockSync(file, () => {
+      const sheet = this.readSheet(courseId, sheetId);
+      if (!sheet) return null;
+      if (fn(sheet) === false) return sheet;
+      this.writeSheet(courseId, sheet);
+      return sheet;
+    });
+  }
+
   writeSheet(courseId: string, sheet: Sheet): string {
     const dir = this.sheetDir(courseId, sheet.id);
     this.ensureDir(dir);
     const file = this.sheetFile(courseId, sheet.id);
-    this.writeJson(file, sheet);
+    // 单独的整份写也排在别人的读-改-写后面（锁可重入：updateSheet 里调到这里不会自己等自己）
+    withFileLockSync(file, () => this.writeJson(file, sheet));
     // 索引跟着走（单一写入口，避免"界面已更新、索引还是旧的"）
     try {
       this.upsertSheetMeta(courseId, sheet);
@@ -431,21 +483,21 @@ export class ExerciseStore {
 
   /** 追加一条检查记录（**只由手动触发路径调用**，见 index.ts 的注释）。 */
   appendCheck(courseId: string, sheetId: string, problemId: string, check: Check): Sheet {
-    const sheet = this.readSheet(courseId, sheetId);
+    const sheet = this.updateSheet(courseId, sheetId, (s) => {
+      const p = this.findProblem(s, problemId);
+      if (!p) throw new Error(tr(`题目不存在: ${problemId}`, `Problem not found: ${problemId}`));
+      p.checks.push(check);
+    });
     if (!sheet) throw new Error(tr(`题集不存在: ${courseId}/${sheetId}`, `Sheet not found: ${courseId}/${sheetId}`));
-    const p = this.findProblem(sheet, problemId);
-    if (!p) throw new Error(tr(`题目不存在: ${problemId}`, `Problem not found: ${problemId}`));
-    p.checks.push(check);
-    this.writeSheet(courseId, sheet);
     return sheet;
   }
 
   /** 追加一条经验。 */
   appendLesson(courseId: string, sheetId: string, lesson: Lesson): Sheet {
-    const sheet = this.readSheet(courseId, sheetId);
+    const sheet = this.updateSheet(courseId, sheetId, (s) => {
+      s.lessons.push(lesson);
+    });
     if (!sheet) throw new Error(tr(`题集不存在: ${courseId}/${sheetId}`, `Sheet not found: ${courseId}/${sheetId}`));
-    sheet.lessons.push(lesson);
-    this.writeSheet(courseId, sheet);
     return sheet;
   }
 
@@ -663,14 +715,17 @@ export class ExerciseStore {
   // ============================================================
 
   deleteSheet(courseId: string, sheetId: string): boolean {
-    const index = this.readIndex(courseId);
-    if (!index) return false;
-    const i = index.sheets.findIndex((s) => s.id === safeSheetId(sheetId));
-    if (i === -1) return false;
-    rmSync(this.sheetDir(courseId, sheetId), { recursive: true, force: true });
-    index.sheets.splice(i, 1);
-    this.writeIndex(index);
-    return true;
+    if (!this.readIndex(courseId)) return false;
+    return this.withIndexLock(courseId, () => {
+      const index = this.readIndex(courseId);
+      if (!index) return false;
+      const i = index.sheets.findIndex((s) => s.id === safeSheetId(sheetId));
+      if (i === -1) return false;
+      rmSync(this.sheetDir(courseId, sheetId), { recursive: true, force: true });
+      index.sheets.splice(i, 1);
+      this.writeIndex(index);
+      return true;
+    });
   }
 
   deleteCourse(courseId: string): boolean {
@@ -856,12 +911,11 @@ export class ExerciseStore {
       return hit;
     });
     if (!victim) return false;
-    const sheet = this.readSheet(victim.course_id, victim.sheet_id);
-    const p = sheet ? this.findProblem(sheet, victim.problem_id) : null;
-    if (sheet && p?.mistakes.includes(id)) {
+    this.updateSheet(victim.course_id, victim.sheet_id, (sheet) => {
+      const p = this.findProblem(sheet, victim.problem_id);
+      if (!p?.mistakes.includes(id)) return false;
       p.mistakes = p.mistakes.filter((x) => x !== id);
-      this.writeSheet(victim.course_id, sheet);
-    }
+    });
     return true;
   }
 

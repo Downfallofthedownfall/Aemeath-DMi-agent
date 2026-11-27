@@ -41,7 +41,7 @@ import {
   safeSheetId,
   type StoreOptions,
 } from './store.js';
-import { safeCourseId } from './store.js';
+import { safeCourseId, safeProblemId } from './store.js';
 import { extractPdfText, type PdfExtractResult } from './pdf-text.js';
 import { splitProblems, type SplitProblem } from './split.js';
 import { segmentWithLlm } from './llm-split.js';
@@ -1140,71 +1140,80 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
    *   与当前答案无关的"正确/错误"徽章 —— 那比不给结论更误导。
    */
   const updateProblem = async (input: UpdateProblemInput): Promise<{ ok: boolean; error?: string; sheet?: Sheet; stale?: number }> => {
-    const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: tr(`题集不存在: ${input.courseId}/${input.sheetId}`, `Sheet not found: ${input.courseId}/${input.sheetId}`) };
-    const p = store.findProblem(sheet, input.problemId);
-    if (!p) return { ok: false, error: tr(`题目不存在: ${input.problemId}`, `Problem not found: ${input.problemId}`) };
-
     let staled = 0;
-    const nextAnswer = typeof input.patch.answer === 'string' ? input.patch.answer : p.answer;
-    const answerChanged = normalizeAnswer(nextAnswer) !== normalizeAnswer(p.answer);
-    if (answerChanged) {
-      const sha = answerFingerprint(normalizeAnswer(nextAnswer));
-      for (const c of p.checks) {
-        if (!c.stale && c.answer_sha !== sha) {
-          c.stale = true;
-          staled++;
+    let found = false as boolean;
+    // 锁住读-改-写（store.updateSheet）：另一个 profile 同时保存别的题时，谁也不盖掉谁
+    const sheet = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      const p = store.findProblem(s, input.problemId);
+      if (!p) return false;
+      found = true;
+      const nextAnswer = typeof input.patch.answer === 'string' ? input.patch.answer : p.answer;
+      const answerChanged = normalizeAnswer(nextAnswer) !== normalizeAnswer(p.answer);
+      if (answerChanged) {
+        const sha = answerFingerprint(normalizeAnswer(nextAnswer));
+        for (const c of p.checks) {
+          if (!c.stale && c.answer_sha !== sha) {
+            c.stale = true;
+            staled++;
+          }
         }
+        p.answer = input.patch.answer ?? p.answer;
+        p.answer_updated_at = Date.now();
+        p.answer_edited_by = input.editedBy ?? 'user';
       }
-      p.answer = input.patch.answer ?? p.answer;
-      p.answer_updated_at = Date.now();
-      p.answer_edited_by = input.editedBy ?? 'user';
-    }
-    if (typeof input.patch.text === 'string' && input.patch.text !== p.text) {
-      p.text = input.patch.text;
-      if (!p.title || p.title === deriveTitle(p.text)) p.title = deriveTitle(p.text);
-    }
-    if (typeof input.patch.title === 'string') p.title = input.patch.title;
-    if (input.patch.points !== undefined) p.points = input.patch.points;
-    if (typeof input.patch.notes === 'string') p.notes = input.patch.notes;
+      if (typeof input.patch.text === 'string' && input.patch.text !== p.text) {
+        p.text = input.patch.text;
+        if (!p.title || p.title === deriveTitle(p.text)) p.title = deriveTitle(p.text);
+      }
+      if (typeof input.patch.title === 'string') p.title = input.patch.title;
+      if (input.patch.points !== undefined) p.points = input.patch.points;
+      if (typeof input.patch.notes === 'string') p.notes = input.patch.notes;
+    });
+    if (!sheet) return { ok: false, error: tr(`题集不存在: ${input.courseId}/${input.sheetId}`, `Sheet not found: ${input.courseId}/${input.sheetId}`) };
+    if (!found) return { ok: false, error: tr(`题目不存在: ${input.problemId}`, `Problem not found: ${input.problemId}`) };
 
-    store.writeSheet(input.courseId, sheet);
     store.writeSheetMarkdown(input.courseId, sheet);
     if (staled) log(`答案已改（${input.problemId}）→ ${staled} 条旧检查标记过期`);
     return { ok: true, sheet, stale: staled };
   };
 
   const addProblem = async (input: { courseId: string; sheetId: string; label?: string; text?: string }) => {
-    const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     const text = (input.text ?? '').trim();
-    const p: Problem = {
-      id: problemIdOf(sheet.problems.length),
-      label: input.label ?? `Aufgabe ${sheet.problems.length + 1}`,
-      title: deriveTitle(text),
-      text,
-      points: parsePoints(text),
-      page: 0,
-      has_figure: false,
-      figure_note: '',
-      answer: '',
-      answer_updated_at: 0,
-      answer_edited_by: 'user',
-      checks: [],
-      rebuttals: [],
-      images: [],
-      mistakes: [],
-      notes: '',
-      group: '',
-      part: '',
-    };
-    // 避免 id 冲突（删过题之后 length 可能与已用 id 重复）
-    const used = new Set(sheet.problems.map((x) => x.id));
-    let n = sheet.problems.length;
-    while (used.has(problemIdOf(n))) n++;
-    p.id = problemIdOf(n);
-    sheet.problems.push(p);
-    store.writeSheet(input.courseId, sheet);
+    // 错题本里还指着本套题某个题号的错题（老数据：删题后没和题号脱钩）—— 这些题号也不复用，
+    // 否则新题一出生就"已在错题本"，再判错还会改写那条别的题的错题
+    const takenByMistakes = store
+      .readMistakes()
+      .filter((m) => safeCourseId(m.course_id) === safeCourseId(input.courseId) && safeSheetId(m.sheet_id) === safeSheetId(input.sheetId))
+      .map((m) => m.problem_id);
+    const sheet = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      const p: Problem = {
+        id: problemIdOf(s.problems.length),
+        label: input.label ?? `Aufgabe ${s.problems.length + 1}`,
+        title: deriveTitle(text),
+        text,
+        points: parsePoints(text),
+        page: 0,
+        has_figure: false,
+        figure_note: '',
+        answer: '',
+        answer_updated_at: 0,
+        answer_edited_by: 'user',
+        checks: [],
+        rebuttals: [],
+        images: [],
+        mistakes: [],
+        notes: '',
+        group: '',
+        part: '',
+      };
+      // 避免 id 冲突（删过题之后 length 可能与已用 id 重复）
+      const used = new Set([...s.problems.map((x) => x.id), ...takenByMistakes]);
+      let n = s.problems.length;
+      while (used.has(problemIdOf(n))) n++;
+      p.id = problemIdOf(n);
+      s.problems.push(p);
+    });
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
     return { ok: true, sheet };
   };
 
@@ -1221,7 +1230,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
    * 重新分块时题号可能互换（旧 p01 → 新 p02、旧 p02 → 新 p01），逐对调用会把
    * 刚改到 p02 的错题又当成"旧 p02"改回去。
    */
-  const repointMistakes = (courseId: string, sheetId: string, moves: ReadonlyMap<string, Problem>): void => {
+  const repointMistakes = (courseId: string, sheetId: string, moves: ReadonlyMap<string, Pick<Problem, 'id' | 'label'>>): void => {
     const oldRefs = new Set<string>();
     for (const m of store.readMistakes()) {
       if (m.course_id !== courseId || m.sheet_id !== sheetId) continue;
@@ -1240,9 +1249,14 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
   /** 把一道题按 a) b) 拆成小题；答案 / 检查 / 错题一起搬（见 parts.ts 的 distributeIntoParts）。 */
   const splitIntoParts = (input: { courseId: string; sheetId: string; problemId: string }) => {
-    const sheet = store.readSheet(input.courseId, input.sheetId);
+    let ids = null as string[] | null;
+    const sheet = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      ids = splitProblemInSheet(s, input.problemId);
+      if (!ids) return false;
+      const first = s.problems.find((x) => x.id === ids![0])!;
+      repointMistakes(input.courseId, s.id, new Map([[input.problemId, first]]));
+    });
     if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
-    const ids = splitProblemInSheet(sheet, input.problemId);
     if (!ids) {
       return {
         ok: false,
@@ -1252,35 +1266,40 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         ),
       };
     }
-    const first = sheet.problems.find((x) => x.id === ids[0])!;
-    repointMistakes(input.courseId, sheet.id, new Map([[input.problemId, first]]));
-    store.writeSheet(input.courseId, sheet);
-    log(`拆小题：${input.problemId} → ${ids.join(' / ')}`);
-    return { ok: true, sheet, parts: ids };
+    const parts: string[] = ids;
+    log(`拆小题：${input.problemId} → ${parts.join(' / ')}`);
+    return { ok: true, sheet, parts };
   };
 
   /** 合并一个大题的小题（拆错了时用）。 */
   const mergeParts = (input: { courseId: string; sheetId: string; groupId: string }) => {
-    const sheet = store.readSheet(input.courseId, input.sheetId);
+    let before: string[] = [];
+    let merged = null as Problem | null;
+    const sheet = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      before = s.problems.filter((x) => x.group === input.groupId).map((x) => x.id);
+      merged = mergeGroupInSheet(s, input.groupId);
+      if (!merged) return false;
+      const to = merged;
+      repointMistakes(input.courseId, s.id, new Map(before.map((id) => [id, to])));
+    });
     if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
-    const before = sheet.problems.filter((x) => x.group === input.groupId).map((x) => x.id);
-    const merged = mergeGroupInSheet(sheet, input.groupId);
     if (!merged) return { ok: false, error: tr('大题不存在', 'Problem group not found') };
-    repointMistakes(input.courseId, sheet.id, new Map(before.map((id) => [id, merged])));
-    store.writeSheet(input.courseId, sheet);
-    log(`合并小题：${before.join(' / ')} → ${merged.id}`);
+    log(`合并小题：${before.join(' / ')} → ${(merged as Problem).id}`);
     return { ok: true, sheet };
   };
 
   /** 改大题的共用题干 / 标题（OCR 漏字时手补）。 */
   const updateGroup = (input: { courseId: string; sheetId: string; groupId: string; patch: { text?: unknown; title?: unknown } }) => {
-    const sheet = store.readSheet(input.courseId, input.sheetId);
+    let found = false as boolean;
+    const sheet = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      const g = (s.groups ?? []).find((x) => x.id === input.groupId);
+      if (!g) return false;
+      found = true;
+      if (typeof input.patch.text === 'string') g.text = input.patch.text.slice(0, 20_000);
+      if (typeof input.patch.title === 'string') g.title = input.patch.title.slice(0, 200);
+    });
     if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
-    const g = (sheet.groups ?? []).find((x) => x.id === input.groupId);
-    if (!g) return { ok: false, error: tr('大题不存在', 'Problem group not found') };
-    if (typeof input.patch.text === 'string') g.text = input.patch.text.slice(0, 20_000);
-    if (typeof input.patch.title === 'string') g.title = input.patch.title.slice(0, 200);
-    store.writeSheet(input.courseId, sheet);
+    if (!found) return { ok: false, error: tr('大题不存在', 'Problem group not found') };
     return { ok: true, sheet };
   };
 
@@ -1348,14 +1367,28 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     return { ok: true, reply: result.parsed.reply, questions: result.parsed.questions, provider: llmProvider() };
   });
 
+  /**
+   * 删一道题。
+   *
+   * 错题本里指向它的错题**留着**（错题本是自包含的快照，和删套题/删课同一个原则），但要和题号**脱钩**：
+   * 早先什么都不做，「加一题」/重新分块再用到这个题号时，新题一出生就"已在错题本"，
+   * 再判错还会把那条别的题的错题当成自己的刷新掉。现在把它们的 problem_id 改成 `p03-deleted-…`
+   * （世界书里旧题号的条目撤回，下次同步按新 ref 重写 —— 教训本身仍然有效）。
+   */
   const deleteProblem = async (input: { courseId: string; sheetId: string; problemId: string }) => {
-    const sheet = store.readSheet(input.courseId, input.sheetId);
+    let gone = null as Problem | null;
+    const sheet = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      const i = s.problems.findIndex((p) => p.id === safeProblemId(input.problemId));
+      if (i === -1) return false;
+      gone = s.problems.splice(i, 1)[0] ?? null;
+      pruneEmptyGroups(s);
+      if (gone) {
+        const detached = { id: `${gone.id}-deleted-${Date.now().toString(36)}`, label: gone.label || gone.id };
+        repointMistakes(input.courseId, s.id, new Map([[gone.id, detached]]));
+      }
+    });
     if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
-    const i = sheet.problems.findIndex((p) => p.id === input.problemId);
-    if (i === -1) return { ok: false, error: tr('题目不存在', 'Problem not found') };
-    sheet.problems.splice(i, 1);
-    pruneEmptyGroups(sheet);
-    store.writeSheet(input.courseId, sheet);
+    if (!gone) return { ok: false, error: tr('题目不存在', 'Problem not found') };
     return { ok: true, sheet };
   };
 
@@ -1379,10 +1412,14 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         const rendered = await renderPdfPages(new Uint8Array(pdfBytes));
         for (const page of rendered) store.writePageImage(input.courseId, input.sheetId, page.page, page.bytes);
         if (rendered.length) {
-          sheet.has_page_images = true;
-          sheet.source_pages = Math.max(sheet.source_pages, rendered.length);
+          // ⚠️ 渲染要好几秒，期间答案还在自动保存：只在**最新**的 sheet 上改这两个字段。
+          //    早先把开头读的那份整份写回 —— 等待期间保存的答案在磁盘上被退回旧版，
+          //    后面"以磁盘最新版为准"的对齐读到的也已经是被冲掉的版本。
+          store.updateSheet(input.courseId, input.sheetId, (s) => {
+            s.has_page_images = true;
+            s.source_pages = Math.max(s.source_pages, rendered.length);
+          });
           pageNumbers = rendered.map((p) => p.page);
-          store.writeSheet(input.courseId, sheet);
           log(
             `补渲染页面截图：${rendered.length} 页（${Math.round(rendered.reduce((n, p) => n + p.bytes.byteLength, 0) / 1024)} KB）`,
           );
@@ -1439,9 +1476,43 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
     if (!parts.length) return { ok: false, error: tr('没识别出题目（多模态/LLM 与规则都没有结果）', 'No problems recognised (neither multimodal/LLM nor rules produced a result)') };
 
-    // 分块要等多模态/LLM，期间答案可能还在自动保存 → 以磁盘上的最新版为准对齐
-    const latest = store.readSheet(input.courseId, input.sheetId) ?? sheet;
+    // 分块要等多模态/LLM，期间答案可能还在自动保存 → 在锁里读磁盘上的最新版、对齐、写回（store.updateSheet）
     const grouped = groupFreshProblems(problemsFromSplit(parts));
+    let kept = 0;
+    let leftovers: Problem[] = [];
+    const written = store.updateSheet(input.courseId, input.sheetId, (latest) => {
+      const r = realignResplit(input.courseId, latest, grouped);
+      kept = r.kept;
+      leftovers = r.leftovers;
+      latest.split_by = by;
+    });
+    if (!written) return { ok: false, error: tr('重新分块期间题集被删除了', 'The sheet was deleted while it was being re-split') };
+    if (leftovers.length) {
+      const labels = leftovers.map((p) => p.label || p.id).join('、');
+      warn(`重新分块：${leftovers.length} 道旧题没对上新题号，已原样保留在末尾（${labels}）`);
+      note = [
+        note,
+        tr(
+          `${leftovers.length} 道有作答的旧题没对上新的题号，已原样保留在最后（${labels}）—— 核对后可手动删掉多余的`,
+          `${leftovers.length} old problem(s) with your work did not match any new label and were kept at the end (${labels}) — check them and delete any duplicates`,
+        ),
+      ]
+        .filter(Boolean)
+        .join('；');
+    }
+    log(`重新分块：${written.problems.length} 题（${by}，保留 ${kept} 题的作答${leftovers.length ? `，另有 ${leftovers.length} 道旧题原样保留` : ''}）`);
+    return { ok: true, sheet: written, used_llm: by !== 'rules', note };
+  };
+
+  /**
+   * 重新分块的对齐（在 updateSheet 的锁里、对磁盘上最新的 sheet 调用）：把旧题的用户数据搬到新题上，
+   * 错题本跟着改题号，最后把 sheet 换成新题。
+   */
+  const realignResplit = (
+    courseId: string,
+    latest: Sheet,
+    grouped: ReturnType<typeof groupFreshProblems>,
+  ): { kept: number; leftovers: Problem[] } => {
     const fresh = grouped.problems;
     // 按 label 对齐旧题的全部用户数据（题号是最稳的锚点；重新分块不该丢任何用户写的东西）。
     //
@@ -1500,15 +1571,26 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       mergePartsInto(p, oldParts);
       kept++;
     }
+    // ④ 有作答、但哪一道新题都没认领的旧题（LLM 把 "Aufgabe 3" 写成 "Aufgabe 3:"、少切了一题……）：
+    //    早先直接被新题列表盖掉 —— 答案/附图/检查全丢，它的错题还按旧题号挂到了恰好同号的另一道新题上。
+    //    现在原样留在末尾（换一个不冲突的题号、脱离原来的大题），交给用户核对。
+    const leftovers = latest.problems.filter((o) => !claimed.has(o) && hasUserData(o));
+    const usedIds = new Set(fresh.map((p) => p.id));
+    for (const o of leftovers) {
+      let n = fresh.length;
+      while (usedIds.has(problemIdOf(n))) n++;
+      const id = usedIds.has(o.id) ? problemIdOf(n) : o.id;
+      usedIds.add(id);
+      const keptOld: Problem = { ...o, id, group: '', part: '' };
+      moveTo(o, keptOld);
+      fresh.push(keptOld);
+    }
     // 题目上的 mistakes 已经搬好；错题本里的 problem_id 也得改，否则跳转找不到题、
     // 再检查判错会另收一条，旧的那条成了孤儿
-    if (moves.size) repointMistakes(input.courseId, latest.id, moves);
+    if (moves.size) repointMistakes(courseId, latest.id, moves);
     latest.problems = fresh;
     latest.groups = grouped.groups;
-    latest.split_by = by;
-    store.writeSheet(input.courseId, latest);
-    log(`重新分块：${latest.problems.length} 题（${by}，保留 ${kept} 题的作答）`);
-    return { ok: true, sheet: latest, used_llm: by !== 'rules', note };
+    return { kept, leftovers };
   };
 
   // ============================================================
@@ -1579,8 +1661,11 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (existing) {
       // 老数据/手改过的 JSON 可能没有题目 → 补一道空的，保证界面总有东西可写
       if (!existing.problems.length) {
-        existing.problems = blankScratchSheet().problems;
-        store.writeSheet(SCRATCH_COURSE, existing);
+        const filled = store.updateSheet(SCRATCH_COURSE, SCRATCH_SHEET, (s) => {
+          if (s.problems.length) return false;
+          s.problems = blankScratchSheet().problems;
+        });
+        return filled ?? existing;
       }
       return existing;
     }
@@ -1621,14 +1706,16 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     } catch (e) {
       warn(`极简模式：PDF 页面渲染失败（仍可用文本）：${(e as Error).message}`);
     }
-    // 抽文本 + 渲染要一会儿，期间答案可能已经自动保存过 → 写回前重新读，别用开头那份旧的覆盖
-    const latest = store.readSheet(SCRATCH_COURSE, SCRATCH_SHEET) ?? sheet;
-    const lp = latest.problems[0] ?? p;
-    if (extracted.hasText) lp.text = extracted.text.slice(0, 12_000).trim();
-    latest.has_page_images = pages > 0;
-    store.writeSheet(SCRATCH_COURSE, latest);
-    log(`极简模式：导入题目 PDF（${extracted.pageCount} 页，文本 ${lp.text.length} 字，截图 ${pages} 张）`);
-    return { ok: true, sheet: latest, text_length: lp.text.length, pages };
+    // 抽文本 + 渲染要一会儿，期间答案可能已经自动保存过 → 在锁里对最新版改，别用开头那份旧的覆盖
+    const latest = store.updateSheet(SCRATCH_COURSE, SCRATCH_SHEET, (s) => {
+      if (!s.problems.length) s.problems = blankScratchSheet().problems;
+      if (extracted.hasText) s.problems[0]!.text = extracted.text.slice(0, 12_000).trim();
+      s.has_page_images = pages > 0;
+    });
+    if (!latest) return { ok: false, error: tr('极简工作区读不出来', 'The scratch workspace could not be read') };
+    const textLength = latest.problems[0]?.text.length ?? 0;
+    log(`极简模式：导入题目 PDF（${extracted.pageCount} 页，文本 ${textLength} 字，截图 ${pages} 张）`);
+    return { ok: true, sheet: latest, text_length: textLength, pages };
   };
   /**
    * 思路检查（**可重复、临时**，不落盘）。
@@ -1847,11 +1934,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     //    别的题（自动保存）、甚至改这一题。开头读的那份 sheet 已经旧了 ——
     //    早先直接把它整份写回，检查期间写的答案在磁盘和界面上都被退回旧版；
     //    两题同时检查时，后完成的还会把先完成的结果抹掉。
-    //    所以这里重新读一次，只把这条检查合进去。
-    const fresh = store.readSheet(input.courseId, input.sheetId);
-    const fp = fresh ? store.findProblem(fresh, p.id) : null;
-    if (!fresh || !fp) return { ok: false, error: tr('检查期间题目被删除了', 'The problem was deleted while it was being checked') };
-
+    //    所以这里在锁里重新读一次（store.updateSheet），只把这条检查合进去。
     const now = Date.now();
     const checkedSha = answerFingerprint(normalizeAnswer(p.answer));
     const check: Check = {
@@ -1865,16 +1948,23 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       next_steps: result.check?.next_steps ?? [],
       raw: (result.raw ?? '').slice(0, 4000),
       answer_sha: checkedSha,
-      // 检查期间答案又改过 → 这条结论针对的是旧答案，一落地就是过期的
-      stale: answerFingerprint(normalizeAnswer(fp.answer)) !== checkedSha,
+      stale: false,
       provider: llmProvider(),
       reasoning: llmReasoningState(),
       withdrawn: [],
       remaining: [],
       rebutted_at: 0,
     };
-    fp.checks.push(check);
-    store.writeSheet(input.courseId, fresh);
+    let checks: Check[] | null = null as Check[] | null;
+    const fresh = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      const fp = store.findProblem(s, p.id);
+      if (!fp) return false;
+      // 检查期间答案又改过 → 这条结论针对的是旧答案，一落地就是过期的
+      check.stale = answerFingerprint(normalizeAnswer(fp.answer)) !== checkedSha;
+      fp.checks.push(check);
+      checks = fp.checks;
+    });
+    if (!fresh || !checks) return { ok: false, error: tr('检查期间题目被删除了', 'The problem was deleted while it was being checked') };
 
     if (!result.ok) {
       warn(`检查失败（${p.id}）：${result.error}`);
@@ -1884,7 +1974,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     // 错 → 自动进错题本（可手动删/标注；autoCollectMistakes=false 时只提示）
     // 极简模式（临时做题）不进错题本：没有多项目管理，错题本只会变成垃圾场。
     let mistake: Mistake | undefined;
-    if (input.courseId !== SCRATCH_COURSE && shouldCollectMistake(fp.checks)) {
+    if (input.courseId !== SCRATCH_COURSE && shouldCollectMistake(checks)) {
       if (autoCollect) {
         mistake =
           collectMistakeInternal({
@@ -1953,11 +2043,22 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       role: input.role === 'problem' ? 'problem' : 'answer',
       created_at: now,
     };
-    p.images.push(image);
-    store.writeSheet(input.courseId, sheet);
-    store.writeSheetMarkdown(input.courseId, sheet);
+    // 在锁里挂到**最新**的那份上（上面那份可能已经旧了：另一个 profile 刚保存过答案）
+    let refused = '';
+    const latest = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      const lp = store.findProblem(s, input.problemId);
+      if (!lp) refused = tr('题目不存在', 'Problem not found');
+      else if (lp.images.length >= 8) refused = tr('这题最多 8 张图（够画示意图了）', 'At most 8 images per problem (enough for a sketch)');
+      if (refused || !lp) return false;
+      lp.images.push(image);
+    });
+    if (!latest || refused) {
+      store.deleteImage(input.courseId, input.sheetId, name); // 没挂上的图别留在磁盘上
+      return { ok: false, error: refused || tr('题集不存在', 'Sheet not found') };
+    }
+    store.writeSheetMarkdown(input.courseId, latest);
     log(`附图：${p.label || p.id} + ${name}（${Math.round(bytes.length / 1024)} KB）`);
-    return { ok: true, image, sheet };
+    return { ok: true, image, sheet: latest };
   };
 
   const deleteAttachment = async (input: {
@@ -1966,15 +2067,24 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     problemId: string;
     imageId: string;
   }): Promise<{ ok: boolean; error?: string; sheet?: Sheet }> => {
-    const sheet = store.readSheet(input.courseId, input.sheetId);
+    let refused = '';
+    let gone = null as ProblemImage | null;
+    const sheet = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      const p = store.findProblem(s, input.problemId);
+      if (!p) {
+        refused = tr('题目不存在', 'Problem not found');
+        return false;
+      }
+      const idx = p.images.findIndex((i) => i.id === input.imageId);
+      if (idx < 0) {
+        refused = tr('图片不存在', 'Image not found');
+        return false;
+      }
+      gone = p.images.splice(idx, 1)[0] ?? null;
+    });
     if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
-    const p = store.findProblem(sheet, input.problemId);
-    if (!p) return { ok: false, error: tr('题目不存在', 'Problem not found') };
-    const idx = p.images.findIndex((i) => i.id === input.imageId);
-    if (idx < 0) return { ok: false, error: tr('图片不存在', 'Image not found') };
-    const [gone] = p.images.splice(idx, 1);
-    if (gone) store.deleteImage(input.courseId, input.sheetId, gone.name);
-    store.writeSheet(input.courseId, sheet);
+    if (refused) return { ok: false, error: refused };
+    if (gone) store.deleteImage(input.courseId, input.sheetId, (gone as ProblemImage).name);
     store.writeSheetMarkdown(input.courseId, sheet);
     return { ok: true, sheet };
   };
@@ -2053,14 +2163,6 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
 
     if (!result.ok || !result.rebuttal) return { ok: false, error: result.error ?? tr('答辩失败', 'Rebuttal failed') };
 
-    // 与 checkProblem 同理：答辩也要跑一两分钟，期间写的东西不能被开头那份旧 sheet 冲掉。
-    const fresh = store.readSheet(input.courseId, input.sheetId);
-    const fp = fresh ? store.findProblem(fresh, p.id) : null;
-    const freshTarget = fp?.checks.find((c) => c.id === target.id) ?? null;
-    if (!fresh || !fp || !freshTarget) {
-      return { ok: false, error: tr('答辩期间题目或那次检查被删除了', 'The problem or that check was deleted during the rebuttal') };
-    }
-
     const now = Date.now();
     const rb: Rebuttal = {
       id: `rb${now.toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
@@ -2074,12 +2176,23 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       check_id: target.id,
       model: llmProvider(),
     };
-    fp.rebuttals.push(rb);
 
-    // 被撤回的 issue 记在那次检查上（UI 划掉；原始记录保留，可追溯）
-    freshTarget.withdrawn = [...new Set([...freshTarget.withdrawn, ...rb.withdrawn])];
-    freshTarget.remaining = rb.remaining;
-    freshTarget.rebutted_at = now;
+    // 与 checkProblem 同理：答辩也要跑一两分钟，期间写的东西不能被开头那份旧 sheet 冲掉 → 在锁里对最新版改
+    let freshTarget = null as Check | null;
+    const fresh = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      const fp = store.findProblem(s, p.id);
+      const tc = fp?.checks.find((c) => c.id === target.id);
+      if (!fp || !tc) return false;
+      fp.rebuttals.push(rb);
+      // 被撤回的 issue 记在那次检查上（UI 划掉；原始记录保留，可追溯）
+      tc.withdrawn = [...new Set([...tc.withdrawn, ...rb.withdrawn])];
+      tc.remaining = rb.remaining;
+      tc.rebutted_at = now;
+      freshTarget = tc;
+    });
+    if (!fresh || !freshTarget) {
+      return { ok: false, error: tr('答辩期间题目或那次检查被删除了', 'The problem or that check was deleted during the rebuttal') };
+    }
 
     // 爱弥斯认错 → 该题错题自动标"已掌握"（否则错题本永远挂着一条被撤回的"错误"）
     if (rb.outcome === 'conceded') {
@@ -2097,7 +2210,6 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       }
     }
 
-    store.writeSheet(input.courseId, fresh);
     store.writeSheetMarkdown(input.courseId, fresh);
     log(`答辩：outcome=${rb.outcome}（撤回 ${rb.withdrawn.length} 条，保留 ${rb.remaining.length} 条）`);
     return { ok: true, rebuttal: rb, sheet: fresh, check: freshTarget };
@@ -2165,6 +2277,13 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         next.issues = (check?.issues ?? []).map((i) => i.text).slice(0, 6);
         next.source_check_id = check?.id ?? existing.source_check_id;
         next.updated_at = now;
+        // 又错了 = 没掌握：早先 mastered 原样保留，世界书不提醒、检查也不再参考这条；
+        // 答辩认错时自动写的"原批改有误，答案本身是对的"和新结论矛盾，一并清掉
+        if (existing.mastered) {
+          next.mastered = false;
+          next.in_worldbook = false;
+          if (/^(答辩后确认：原批改有误|Confirmed after rebuttal: the original grading was wrong)/.test(existing.lesson)) next.lesson = '';
+        }
       }
       if (input.lesson) next.lesson = input.lesson.slice(0, 2000);
       if (input.tags?.length) next.tags = input.tags.slice(0, 8);
@@ -2178,12 +2297,15 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         .filter((x) => x.course_id === m.course_id && x.sheet_id === m.sheet_id && x.problem_id === m.problem_id)
         .map((x) => x.id),
     );
-    const linked = p.mistakes.filter((id) => mine.has(id));
-    if (!linked.includes(m.id)) linked.push(m.id);
-    if (linked.length !== p.mistakes.length || linked.some((id, i) => id !== p.mistakes[i])) {
-      p.mistakes = linked;
-      store.writeSheet(input.courseId, sheet);
-    }
+    // 在锁里对最新版改（开头那份 sheet 只用来取题干/答案快照）
+    store.updateSheet(input.courseId, input.sheetId, (s) => {
+      const lp = store.findProblem(s, p.id);
+      if (!lp) return false;
+      const linked = lp.mistakes.filter((id) => mine.has(id));
+      if (!linked.includes(m.id)) linked.push(m.id);
+      if (linked.length === lp.mistakes.length && linked.every((id, i) => id === lp.mistakes[i])) return false;
+      lp.mistakes = linked;
+    });
     log(`错题本 +1：${m.id}（${m.course_id}/${m.sheet_id}/${m.problem_id}）`);
     return m;
   };
@@ -2200,42 +2322,54 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     text?: string;
     tags?: string[];
   }) => {
-    const sheet = store.readSheet(input.courseId, input.sheetId);
-    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
-    if (input.op === 'add') {
-      const text = (input.text ?? '').trim();
-      if (!text) return { ok: false, error: tr('经验内容为空', 'Lesson content is empty') };
-      const lesson: Lesson = {
-        id: `l${Date.now().toString(36)}`,
-        text: text.slice(0, 2000),
-        tags: (input.tags ?? []).slice(0, 6),
-        source: 'user',
-        created_at: Date.now(),
-        in_worldbook: false,
-      };
-      sheet.lessons.push(lesson);
-    } else {
-      const i = sheet.lessons.findIndex((l) => l.id === input.lessonId);
-      if (i === -1) return { ok: false, error: tr('经验条目不存在', 'Lesson not found') };
-      if (input.op === 'delete') {
-        const [gone] = sheet.lessons.splice(i, 1);
-        // 经验删了，世界书里那条也撤回（否则主 agent 还会继续引用一条用户已经删掉的经验）
-        if (gone?.in_worldbook) {
-          const cid = store.readIndex(input.courseId)?.course_id ?? input.courseId;
-          retractWorldbook((e) => e.ref === lessonRef(cid, sheet.id, gone.id), '经验已删除');
-        }
-      } else {
-        if (input.text !== undefined) {
-          sheet.lessons[i]!.text = input.text.slice(0, 2000);
-          sheet.lessons[i]!.in_worldbook = false; // 内容变了要重新同步
-        }
-        if (input.tags) {
-          sheet.lessons[i]!.tags = input.tags.slice(0, 6);
-          sheet.lessons[i]!.in_worldbook = false; // 标签进触发词，同样要重新同步
-        }
+    const text = (input.text ?? '').trim();
+    if (input.op === 'add' && !text) return { ok: false, error: tr('经验内容为空', 'Lesson content is empty') };
+    let missing = false as boolean;
+    let gone = null as Lesson | null;
+    // 在锁里对最新版改（另一个 profile 同时保存答案时，谁也不盖掉谁）
+    const sheet = store.updateSheet(input.courseId, input.sheetId, (s) => {
+      if (input.op === 'add') {
+        // 同一毫秒加两条（agent 连发）不能撞 id：删/改都按 id 找
+        const taken = new Set(s.lessons.map((l) => l.id));
+        const base = `l${Date.now().toString(36)}`;
+        let id = base;
+        for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
+        s.lessons.push({
+          id,
+          text: text.slice(0, 2000),
+          tags: (input.tags ?? []).slice(0, 6),
+          source: 'user',
+          created_at: Date.now(),
+          in_worldbook: false,
+        });
+        return;
       }
+      const i = s.lessons.findIndex((l) => l.id === input.lessonId);
+      if (i === -1) {
+        missing = true;
+        return false;
+      }
+      if (input.op === 'delete') {
+        gone = s.lessons.splice(i, 1)[0] ?? null;
+        return;
+      }
+      if (input.text !== undefined) {
+        s.lessons[i]!.text = input.text.slice(0, 2000);
+        s.lessons[i]!.in_worldbook = false; // 内容变了要重新同步
+      }
+      if (input.tags) {
+        s.lessons[i]!.tags = input.tags.slice(0, 6);
+        s.lessons[i]!.in_worldbook = false; // 标签进触发词，同样要重新同步
+      }
+    });
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found') };
+    if (missing) return { ok: false, error: tr('经验条目不存在', 'Lesson not found') };
+    // 经验删了，世界书里那条也撤回（否则主 agent 还会继续引用一条用户已经删掉的经验）
+    const removed = gone as Lesson | null;
+    if (removed?.in_worldbook) {
+      const cid = store.readIndex(input.courseId)?.course_id ?? input.courseId;
+      retractWorldbook((e) => e.ref === lessonRef(cid, sheet.id, removed.id), '经验已删除');
     }
-    store.writeSheet(input.courseId, sheet);
     store.writeSheetMarkdown(input.courseId, sheet);
     return { ok: true, sheet };
   };
@@ -2384,16 +2518,16 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       bySheet.set(k, g);
     }
     for (const g of bySheet.values()) {
-      const fresh = store.readSheet(g.courseDir, g.sheetId);
-      if (!fresh) continue;
-      let dirty = false;
-      for (const l of fresh.lessons) {
-        if (g.lessonIds.has(l.id) && !l.in_worldbook) {
-          l.in_worldbook = true;
-          dirty = true;
+      store.updateSheet(g.courseDir, g.sheetId, (fresh) => {
+        let dirty = false;
+        for (const l of fresh.lessons) {
+          if (g.lessonIds.has(l.id) && !l.in_worldbook) {
+            l.in_worldbook = true;
+            dirty = true;
+          }
         }
-      }
-      if (dirty) store.writeSheet(g.courseDir, fresh);
+        return dirty;
+      });
     }
     store.setMistakesInWorldbook(mistakeFlags);
 
@@ -2553,12 +2687,17 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
 
     // 只有正式提交件才记"已提交"：草稿若也写 submitted_at，握手包会把这套题报成已交。
+    // ⚠️ 生成 PDF 要等 Chrome 好几秒，期间答案还在自动保存：只在锁里对**最新**的 sheet 改这三个字段
+    //    （早先把开头读的那份整份写回，等待期间保存的答案被退回旧版）。
     if (!draft) {
-      sheet.submitted_at = Date.now();
-      sheet.submission_pdf = outPdf.split(/[\\/]/).pop() ?? submissionFileName(input.courseId, sheet);
-      sheet.submission_pages = res.pages ?? 0;
-      store.writeSheet(input.courseId, sheet);
-      store.writeSheetMarkdown(input.courseId, sheet);
+      const submittedAt = Date.now();
+      const pdfName = outPdf.split(/[\\/]/).pop() ?? submissionFileName(input.courseId, sheet);
+      const latest = store.updateSheet(input.courseId, input.sheetId, (s) => {
+        s.submitted_at = submittedAt;
+        s.submission_pdf = pdfName;
+        s.submission_pages = res.pages ?? 0;
+      });
+      if (latest) store.writeSheetMarkdown(input.courseId, latest);
     }
 
     // 公式里有没有 KaTeX 不认识的命令（讲义 MathLive 宏已在渲染期归一，

@@ -36,9 +36,11 @@ import {
   findComputeTargets,
   formatComputed,
   fullPrecision,
-  latexNumberTokens,
+  latexNumbers,
   normalizeQuote,
-  numberInTokens,
+  numberIn,
+  quoteInText,
+  symbolBase,
   symbolInLatex,
   type ComputeFill,
   type ComputeTarget,
@@ -266,6 +268,25 @@ export function parseComputeOutput(raw: string | null): RawTranscription[] | nul
 // 护栏 + 计算
 // ============================================================
 
+/**
+ * 原文里有没有给这个量赋数值（`g = 9{,}81`、`v_{0} = -3`、`\varepsilon_0 \approx 8.85`）。
+ * 算式里的名字是 `底_下标`（`v_0`、`epsilon_0`）；底名多于一个字母的按 LaTeX 命令找（`\varepsilon`）。
+ */
+export function assignedInText(sym: string, text: string): boolean {
+  if (!text) return false;
+  // 不用 normalizeQuote：它连空白一起删，"Lichtgeschwindigkeit c = 3" 会粘成 "keitc=3"，认不出 c
+  const norm = text
+    .replace(/\{,\}/g, ',')
+    .replace(/\\[,;:! ]|\\q?quad|~/g, ' ')
+    .replace(/[{}$]/g, '');
+  const base = symbolBase(sym);
+  const sub = sym.includes('_') ? sym.slice(sym.indexOf('_') + 1) : '';
+  const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const head = base.length === 1 ? `(?<![A-Za-z\\\\])${esc(base)}` : `\\\\(?:var)?${esc(base)}(?![A-Za-z])`;
+  const tail = sub ? `\\s*_\\s*${esc(sub)}(?![A-Za-z0-9])` : '(?!\\s*_)';
+  return new RegExp(`${head}${tail}\\s*(?:=|\\\\approx)\\s*[-−+]?\\s*\\.?\\d`).test(norm);
+}
+
 const RANGE_ERROR = (): string =>
   tr('超出实数范围（负数开平方、对数里 ≤ 0、除以 0 或溢出）', 'Outside the real numbers (root of a negative, log of ≤ 0, division by 0 or overflow)');
 
@@ -317,11 +338,12 @@ export function evaluateTranscription(
     return { item };
   }
   // ---- 护栏 2：数必须是式子里的数（不许模型把算好的中间值塞进来）----
-  const tokens = latexNumberTokens(target.latex);
-  const allowed = new Set(['1']);
-  if (exprUsesPi(node)) allowed.add('180');
-  if (/\\%|%/.test(target.latex)) allowed.add('100');
-  const strayNumbers = exprNumbers(node).filter((n) => !allowed.has(String(Number(n))) && !numberInTokens(n, tokens));
+  // 按数值比（`9{,}81` 与 9.81 相同，但 0.981 / 98.1 / 120 里的 12 都不算）；字面量不带符号，只比大小
+  const written = latexNumbers(target.latex);
+  const allowed = [1];
+  if (exprUsesPi(node)) allowed.push(180);
+  if (/\\%|%/.test(target.latex)) allowed.push(100);
+  const strayNumbers = exprNumbers(node).filter((n) => !numberIn(Number(n), allowed, false) && !numberIn(Number(n), written, false));
   if (strayNumbers.length) {
     item.status = 'rejected';
     item.reason = tr(
@@ -337,6 +359,8 @@ export function evaluateTranscription(
   const values = new Map<string, number>();
   const missing: string[] = [];
   const bad: string[] = [];
+  /** 草稿/题目里有数值、模型却拿了常数表的 */
+  const overridden: string[] = [];
   for (const sym of symbols) {
     const v = r.values.find((x) => x.symbol === sym);
     if (!v || r.missing.includes(sym)) {
@@ -352,14 +376,21 @@ export function evaluateTranscription(
         bad.push(sym);
         continue;
       }
+      // 学生（或题目）自己给了这个量的数值（`g = 9.81`）：计算器按学生写的数算，不许常数表顶替
+      if (assignedInText(sym, ctx.draft) || assignedInText(sym, ctx.problemText)) {
+        missing.push(sym);
+        overridden.push(sym);
+        continue;
+      }
       values.set(sym, c.value);
       item.values.push({ symbol: sym, value: c.value, unit: c.unit, source: 'constant', quote: tr(c.zh, c.en) });
       continue;
     }
+    // 片段要真在原文里（且不是从某个数的中间切出来的），数值要和片段里写的某个数**相等**（含符号）
     const q = normalizeQuote(v.quote);
-    const inDraft = !!q && draftNorm.includes(q);
-    const inProblem = !!q && problemNorm.includes(q);
-    if (!Number.isFinite(v.value) || !(inDraft || inProblem) || !numberInTokens(v.value, latexNumberTokens(v.quote))) {
+    const inDraft = quoteInText(q, draftNorm);
+    const inProblem = quoteInText(q, problemNorm);
+    if (!Number.isFinite(v.value) || !(inDraft || inProblem) || !numberIn(v.value, latexNumbers(v.quote))) {
       missing.push(sym);
       bad.push(sym);
       continue;
@@ -376,7 +407,12 @@ export function evaluateTranscription(
   if (missing.length) {
     item.status = 'missing';
     item.missing = missing;
-    item.reason = bad.length
+    item.reason = overridden.length
+      ? tr(
+          `${overridden.join('、')} 你在草稿或题目里给了数值，但转写用了常数表的值 —— 没有算，再点一次「计算」`,
+          `You gave a value for ${overridden.join(', ')} in the draft or problem, but the transcription used the constant table instead - nothing was computed; press "Compute" again`,
+        )
+      : bad.length
       ? tr(
           `${bad.join('、')} 的数值在草稿和题目里都没找到原文：在草稿里写一行赋值（例如 $${bad[0]} = …$）再算`,
           `No source found for ${bad.join(', ')} in the draft or problem: add an assignment to the draft (e.g. $${bad[0]} = …$) and compute again`,

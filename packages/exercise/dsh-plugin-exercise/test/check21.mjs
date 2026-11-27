@@ -21,10 +21,12 @@ import {
   applyComputeFills,
   findComputeTargets,
   formatComputed,
-  latexNumberTokens,
+  latexNumbers,
+  normalizeQuote,
+  quoteInText,
   symbolInLatex,
 } from '../lib/compute-fill.js';
-import { evaluateTranscription, runCompute, sameNumber } from '../lib/compute.js';
+import { assignedInText, evaluateTranscription, runCompute, sameNumber } from '../lib/compute.js';
 import { createPyVerify, findPyComputeServer, pythonCandidates } from '../lib/py-compute.js';
 
 let passed = 0;
@@ -107,6 +109,12 @@ await t('格式化：默认 4 位有效数字；有舍入 → \\approx；精确 
   assert.equal(formatComputed(1.602176634e-19).latex, '1.602 \\times 10^{-19}');
   assert.equal(formatComputed(1e-7).latex, '10^{-7}');
   assert.equal(formatComputed(5.424942396, 6).latex, '5.42494');
+  // 舍入进位到下一个量级：toPrecision 会给 "1.000e+4"，那不是 LaTeX
+  assert.deepEqual(formatComputed(9999.96), { latex: '10000', plain: '10000', exact: false });
+  assert.equal(formatComputed(-9999.96).latex, '-10000');
+  assert.equal(formatComputed(99.97, 2).latex, '100');
+  assert.equal(formatComputed(9.97, 1).latex, '10');
+  assert.equal(formatComputed(0.0099996).latex, '0.01');
 });
 
 // ───────────── 3. 护栏 ─────────────
@@ -184,7 +192,82 @@ await t('护栏辅助：字母底名匹配（希腊字母、var 前缀、Δt 合
   assert.ok(symbolInLatex('v_0', 'v_{0} t'));
   assert.ok(!symbolInLatex('theta', '\\sqrt{2gh}'));
   assert.ok(!symbolInLatex('m', 'F_{\\mathrm{m}}')); // 单位/文字里的字母不算量
-  assert.deepEqual(latexNumberTokens('9{,}81 \\cdot 1,5 + \\frac12 + 1\\,000'), ['981', '15', '12', '1000']);
+  assert.deepEqual(latexNumbers('9{,}81 \\cdot 1,5 + \\frac12 + 1\\,000'), [9.81, 1.5, 1, 2, 1000]);
+  assert.deepEqual(latexNumbers('q = -1{,}6 \\cdot 10^{-19}'), [-1.6, 10, -19, -1.6e-19]);
+  assert.deepEqual(latexNumbers('U_1 - 5 \\approx -3'), [1, 5, -3]);
+  assert.ok(latexNumbers('m = 1.000\\,\\mathrm{kg}').includes(1000)); // 德式千分位两种读法都算
+});
+
+await t('护栏：数按数值比 —— 子串（120 里的 12）、小数点挪位（1{,}5 → 15）、片段从数中间切出来，都不算', async () => {
+  const draft = '$F = 120\\,\\mathrm{N}$ $m = 0{,}25$\n$a = \\frac{F}{m} =$';
+  const tg = target(draft);
+  const run = (vals) => evaluateTranscription(tg, base({ expr: 'F/m', values: vals }), { draft, problemText: '' }).item;
+  const good = run([val('F', 120, 'F = 120'), val('m', 0.25, 'm = 0{,}25')]);
+  assert.equal(good.status, 'ok');
+  assert.equal(good.value, 480);
+  // 早先这些都通过了护栏（数字串子串匹配 / 去掉小数点）
+  for (const vals of [
+    [val('F', 12, 'F = 120'), val('m', 0.25, 'm = 0{,}25')],
+    [val('F', 20, 'F = 120'), val('m', 0.25, 'm = 0{,}25')],
+    [val('F', 120, 'F = 120'), val('m', 25, 'm = 0{,}25')],
+    [val('F', 120, 'F = 120'), val('m', 2, 'm = 0{,}25')],
+    [val('F', 120, 'F = 120'), val('m', 0.25, '25')], // 片段 "25" 是从 0{,}25 中间切出来的
+    [val('F', 2, '2'), val('m', 0.25, 'm = 0{,}25')],
+  ]) {
+    const r = run(vals);
+    assert.equal(r.status, 'missing', JSON.stringify(vals));
+  }
+  // 小数点挪位：题目写 1{,}5，模型抄成 15
+  const d2 = '$g = 9.81$\n$v = \\sqrt{2 g h} =$';
+  const problem = 'aus $h = 1{,}5\\,\\mathrm{m}$ Höhe';
+  const shifted = evaluateTranscription(
+    target(d2),
+    base({ expr: 'sqrt(2*g*h)', values: [val('g', 9.81, 'g = 9.81'), val('h', 15, 'h = 1{,}5\\,\\mathrm{m}', 'problem')] }),
+    { draft: d2, problemText: problem },
+  );
+  assert.equal(shifted.item.status, 'missing');
+  // 算式字面量同理：式子写 9{,}81，转写成 98.1 / 0.981 → 多出来的数
+  const d3 = '$v = \\sqrt{2 \\cdot 9{,}81 \\cdot h} =$ $h = 2$';
+  for (const expr of ['sqrt(2*98.1*h)', 'sqrt(2*0.981*h)', 'sqrt(20*9.81*h)']) {
+    const r = evaluateTranscription(target(d3), base({ expr, values: [val('h', 2, 'h = 2')] }), { draft: d3, problemText: '' });
+    assert.equal(r.item.status, 'rejected', expr);
+  }
+  const fine = evaluateTranscription(target(d3), base({ expr: 'sqrt(2*9.81*h)', values: [val('h', 2, 'h = 2')] }), { draft: d3, problemText: '' });
+  assert.equal(fine.item.status, 'ok');
+  // 负号也要对
+  const d4 = '$U = -230$ $q = 2$\n$W = q U =$';
+  const sign = (v) => evaluateTranscription(target(d4), base({ expr: 'q*U', values: [val('q', 2, 'q = 2'), val('U', v, 'U = -230')] }), { draft: d4, problemText: '' }).item;
+  assert.equal(sign(-230).status, 'ok');
+  assert.equal(sign(230).status, 'missing');
+  // 片段边界
+  assert.ok(quoteInText(normalizeQuote('m = 0{,}25'), normalizeQuote('$m = 0{,}25$, v = 3')));
+  assert.ok(!quoteInText(normalizeQuote('m = 0{,}2'), normalizeQuote('$m = 0{,}25$')));
+  assert.ok(!quoteInText('5', normalizeQuote('$m = 25$')));
+});
+
+await t('护栏：草稿/题目自己给了数值的量，不许用常数表顶替', async () => {
+  const draft = '$g = 9{,}81\\,\\mathrm{m/s^2}$ $h = 2$\n$v = \\sqrt{2 g h} =$';
+  const r = evaluateTranscription(
+    target(draft),
+    base({ expr: 'sqrt(2*g*h)', values: [val('g', 9.80665, '', 'constant', 'g_n'), val('h', 2, 'h = 2')] }),
+    { draft, problemText: '' },
+  );
+  assert.equal(r.item.status, 'missing');
+  assert.deepEqual(r.item.missing, ['g']);
+  assert.match(r.item.reason, /常数表|constant table/);
+  // 没给数值 → 常数表照用
+  const d2 = '$h = 2$\n$v = \\sqrt{2 g h} =$';
+  const ok = evaluateTranscription(
+    target(d2),
+    base({ expr: 'sqrt(2*g*h)', values: [val('g', 9.80665, '', 'constant', 'g_n'), val('h', 2, 'h = 2')] }),
+    { draft: d2, problemText: '' },
+  );
+  assert.equal(ok.item.status, 'ok');
+  assert.ok(assignedInText('epsilon_0', '$\\varepsilon_{0} = 8{,}85 \\cdot 10^{-12}$'));
+  assert.ok(assignedInText('c', 'Lichtgeschwindigkeit c = 3 \\cdot 10^8 m/s'));
+  assert.ok(!assignedInText('c', '$E = m c^2 =$'));
+  assert.ok(!assignedInText('hbar', '$E = \\hbar \\omega =$ 其中 $\\omega = 2$'));
+  assert.ok(!assignedInText('g', '$g_0 = 3$'));
 });
 
 // ───────────── 4. 整条流水线（假模型 + 假复算）─────────────
