@@ -26,7 +26,8 @@ import {
   quoteInText,
   symbolInLatex,
 } from '../lib/compute-fill.js';
-import { assignedInText, evaluateTranscription, runCompute, sameNumber } from '../lib/compute.js';
+import { assignedInText, buildComputePrompt, evaluateTranscription, runCompute, sameNumber } from '../lib/compute.js';
+import { statementSourcesFor } from '../lib/parts.js';
 import { createPyVerify, findPyComputeServer, pythonCandidates } from '../lib/py-compute.js';
 
 let passed = 0;
@@ -270,6 +271,89 @@ await t('护栏：草稿/题目自己给了数值的量，不许用常数表顶�
   assert.ok(!assignedInText('g', '$g_0 = 3$'));
 });
 
+// ───────────── 3b. 出处：大题题干 / 前面的小题（2026-11-28）─────────────
+const partsSheet = {
+  groups: [{ id: 'p01', text: 'Ein Stein der Masse $m = 2\\,\\mathrm{kg}$ fällt frei.' }],
+  problems: [
+    { id: 'p01a', group: 'p01', part: 'a', text: 'Er fällt aus $h = 1{,}5\\,\\mathrm{m}$. Berechnen Sie $v$.', answer: '$v = \\sqrt{2 g h} \\approx 5.425$' },
+    { id: 'p01b', group: 'p01', part: 'b', text: 'Berechnen Sie die kinetische Energie.', answer: '' },
+    { id: 'p01c', group: 'p01', part: 'c', text: 'Berechnen Sie den Impuls.', answer: 'später' },
+    { id: 'p02', group: '', part: '', text: 'Andere Aufgabe', answer: 'x' },
+  ],
+};
+
+await t('出处列表：本小题 → 大题题干 → 前面的小题（近的先，题干先于解答）；后面的小题和空的不算', async () => {
+  const shape = (p) => statementSourcesFor(partsSheet, p).map((s) => `${s.kind}${s.part ? `:${s.part}` : ''}`);
+  assert.deepEqual(shape(partsSheet.problems[2]), ['problem:c', 'stem', 'part:b', 'part:a', 'answer:a']);
+  assert.deepEqual(shape(partsSheet.problems[0]), ['problem:a', 'stem']);
+  assert.deepEqual(shape(partsSheet.problems[3]), ['problem']);
+});
+
+await t('出处：prompt 分段列出大题题干、前面小题的题干与解答；独立题仍只有「题目」', async () => {
+  const draft = '$p = m v =$';
+  const prompt = buildComputePrompt({ draft, sources: statementSourcesFor(partsSheet, partsSheet.problems[2]), targets: findComputeTargets(draft), lang: 'zh' });
+  for (const h of ['## 本小题 c) 的题干', '## 大题共用题干', '## 前面的小题 b) 的题干', '## 前面的小题 a) 的题干', '## 前面的小题 a) —— 学生自己的解答']) {
+    assert.ok(prompt.includes(h), h);
+  }
+  assert.ok(prompt.indexOf('前面的小题 b)') < prompt.indexOf('前面的小题 a)'));
+  assert.ok(prompt.includes('v = \\sqrt{2 g h} \\approx 5.425'));
+  assert.doesNotMatch(prompt, /später/); // 后面的小题不进来
+  const solo = buildComputePrompt({ draft, problemText: 'Andere Aufgabe', targets: findComputeTargets(draft), lang: 'zh' });
+  assert.ok(solo.includes('## 题目') && !solo.includes('大题共用题干'));
+});
+
+await t('出处：数值可以引自大题题干、前面小题的题干和解答，结果框标出是哪一处；哪儿都没有 → 缺数值', async () => {
+  const sources = statementSourcesFor(partsSheet, partsSheet.problems[2]);
+  const draft = '$p = m v =$';
+  const r = evaluateTranscription(
+    target(draft),
+    base({ expr: 'm*v', values: [val('m', 2, 'm = 2\\,\\mathrm{kg}', 'stem'), val('v', 5.425, 'v = \\sqrt{2 g h} \\approx 5.425', 'answer')] }),
+    { draft, sources },
+  );
+  assert.equal(r.item.status, 'ok', r.item.reason);
+  assert.ok(Math.abs(r.item.value - 10.85) < 1e-12);
+  assert.deepEqual(r.item.values.map((v) => [v.source, v.part ?? '']), [['stem', ''], ['answer', 'a']]);
+  // 前面小题的题干
+  const d2 = '$g = 9.81$\n$E = m g h =$';
+  const r2 = evaluateTranscription(
+    target(d2),
+    base({ expr: 'm*g*h', values: [val('m', 2, 'm = 2'), val('g', 9.81, 'g = 9.81'), val('h', 1.5, 'h = 1{,}5\\,\\mathrm{m}', 'part')] }),
+    { draft: d2, sources },
+  );
+  assert.equal(r2.item.status, 'ok', r2.item.reason);
+  assert.deepEqual(r2.item.values.map((v) => [v.source, v.part ?? '']), [['stem', ''], ['draft', ''], ['part', 'a']]);
+  // 模型报的 source 不算数：片段先在草稿里找到就记草稿
+  assert.equal(r2.item.values[1].source, 'draft');
+  // 哪儿都没有
+  const r3 = evaluateTranscription(target(draft), base({ expr: 'm*v', values: [val('m', 2, 'm = 2'), val('v', 7, 'v = 7', 'answer')] }), { draft, sources });
+  assert.equal(r3.item.status, 'missing');
+  assert.match(r3.item.reason, /前面的小题|earlier sub-parts/);
+});
+
+await t('出处：草稿/本小题给了另一个数 → 不许拿大题题干或前面小题的；一样的数照用；前面小题给了数也不许用常数表', async () => {
+  const sources = statementSourcesFor(partsSheet, partsSheet.problems[2]);
+  const d = '$m = 3$\n$p = m v =$';
+  const vals = [val('m', 2, 'm = 2\\,\\mathrm{kg}', 'stem'), val('v', 5.425, 'v = \\sqrt{2 g h} \\approx 5.425', 'answer')];
+  const r = evaluateTranscription(target(d), base({ expr: 'm*v', values: vals }), { draft: d, sources });
+  assert.equal(r.item.status, 'missing');
+  assert.deepEqual(r.item.missing, ['m']);
+  assert.match(r.item.reason, /另有数值|different value/);
+  // 草稿里写的就是同一个数（例如把 a) 的结果抄了一遍）→ 照用
+  const same = '$v \\approx 5.425$\n$p = m v =$';
+  const ok = evaluateTranscription(target(same), base({ expr: 'm*v', values: vals }), { draft: same, sources });
+  assert.equal(ok.item.status, 'ok', ok.item.reason);
+  // a) 的解答里 g = 9.81 → 常数表的 9.80665 不许顶替
+  const withG = [...sources, { kind: 'answer', part: 'z', text: '$g = 9{,}81$' }];
+  const d3 = '$h = 2$\n$v = \\sqrt{2 g h} =$';
+  const r3 = evaluateTranscription(
+    target(d3),
+    base({ expr: 'sqrt(2*g*h)', values: [val('g', 9.80665, '', 'constant', 'g_n'), val('h', 2, 'h = 2')] }),
+    { draft: d3, sources: withG },
+  );
+  assert.equal(r3.item.status, 'missing');
+  assert.match(r3.item.reason, /常数表|constant table/);
+});
+
 // ───────────── 4. 整条流水线（假模型 + 假复算）─────────────
 const fakeLlm = (payload, seen = []) => async (prompt, opts) => {
   seen.push({ prompt, opts });
@@ -447,10 +531,11 @@ await t('HTTP：POST action=compute 用前端传来的草稿算，结果不落�
   const services = { webServer: { register: (r) => (routes.set(r.path, r.handler), () => {}) }, connection: { requestRejection: () => undefined } };
   const realFetch = globalThis.fetch;
   const prompts = [];
+  let nextTranscription = transcription1;
   globalThis.fetch = async (url, init) => {
     const body = JSON.parse(init.body);
     prompts.push(body);
-    const content = JSON.stringify(transcription1);
+    const content = JSON.stringify(nextTranscription);
     return new Response(JSON.stringify({ choices: [{ message: { content }, finish_reason: 'stop' }] }), { status: 200 });
   };
   try {
@@ -509,6 +594,50 @@ await t('HTTP：POST action=compute 用前端传来的草稿算，结果不落�
     assert.ok(!JSON.stringify(stored).includes('5.425'), JSON.stringify(stored));
     const none = await post({ action: 'compute', course_id: 'physik-1', sheet_id: S, problem_id: P, draft: '没有等号' });
     assert.equal(none.status, 400);
+
+    // 拆成小题：m 在大题题干里，h 在 a) 的题干里，v 是学生在 a) 里算出来的
+    const big = await post({
+      action: 'add_problem',
+      course_id: 'physik-1',
+      sheet_id: S,
+      text: 'Ein Stein der Masse $m = 2\\,\\mathrm{kg}$ fällt frei.\na) Er fällt aus $h = 1{,}5\\,\\mathrm{m}$. Berechnen Sie $v$.\nb) Berechnen Sie den Impuls.',
+    });
+    const bigId = big.data.sheet.problems.at(-1).id;
+    const split = await post({ action: 'split_parts', course_id: 'physik-1', sheet_id: S, problem_id: bigId });
+    assert.equal(split.status, 200, JSON.stringify(split.data));
+    const parts = split.data.sheet.problems.filter((p) => p.group);
+    const pa = parts.find((p) => p.part === 'a');
+    const pb = parts.find((p) => p.part === 'b');
+    assert.ok(pa && pb, JSON.stringify(split.data.sheet.problems.map((p) => [p.id, p.part, p.group])));
+    await post({
+      action: 'update_problem',
+      course_id: 'physik-1',
+      sheet_id: S,
+      problem_id: pa.id,
+      patch: { answer: '$v = \\sqrt{2 g h} \\approx 5.425$' },
+    });
+    nextTranscription = {
+      targets: [
+        {
+          id: 't1',
+          status: 'ok',
+          expr: 'm*v',
+          values: [val('m', 2, 'm = 2\\,\\mathrm{kg}', 'stem'), val('v', 5.425, 'v = \\sqrt{2 g h} \\approx 5.425', 'answer')],
+          missing: [],
+        },
+      ],
+    };
+    const before = prompts.length;
+    const rb = await post({ action: 'compute', course_id: 'physik-1', sheet_id: S, problem_id: pb.id, draft: '$p = m v =$' });
+    assert.equal(rb.status, 200, JSON.stringify(rb.data));
+    const sent = prompts[before].messages[0].content;
+    assert.ok(sent.includes('## 大题共用题干') && sent.includes('m = 2'), '大题题干进了 prompt');
+    assert.ok(sent.includes('## 前面的小题 a) 的题干') && sent.includes('h = 1{,}5'), 'a) 的题干进了 prompt');
+    assert.ok(sent.includes('学生自己的解答') && sent.includes('\\approx 5.425'), 'a) 的解答进了 prompt');
+    const item = rb.data.items[0];
+    assert.equal(item.status, 'ok', item.reason);
+    assert.deepEqual(item.values.map((v) => [v.source, v.part ?? '']), [['stem', ''], ['answer', 'a']]);
+    assert.equal(item.display, '= 10.85');
   } finally {
     globalThis.fetch = realFetch;
   }

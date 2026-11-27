@@ -326,6 +326,36 @@ export function statementFor(sheet: Pick<Sheet, 'groups' | 'problems'>, p: Probl
 }
 
 /**
+ * 「计算 =」找数值时能引用的原文（按优先级排好）：
+ *   本题 / 本小题题干 → 大题共用题干 → 前面的小题（**越近越先**；每个小题先题干、再学生自己的解答）。
+ *
+ * 用户 2026-11-28："有时候一些常数会出现在题干里，并且有可能是在之前的小题或者当前大题里面"。
+ * 拆小题时"已知 m = 2 kg"常常落进 a) 的题干，b)、c) 就看不到；a) 里算出来的 v 也要能在 b) 里接着用。
+ * 后面的小题不算（还没做到那里，题目也不会让前面的小题用后面才给的数）。
+ */
+export interface StatementSource {
+  kind: 'problem' | 'stem' | 'part' | 'answer';
+  /** 小题号（part / answer；本小题的 problem 也带上） */
+  part?: string;
+  text: string;
+}
+
+export function statementSourcesFor(sheet: Pick<Sheet, 'groups' | 'problems'>, p: Problem): StatementSource[] {
+  const g = p.group ? (sheet.groups ?? []).find((x) => x.id === p.group) : undefined;
+  const out: StatementSource[] = [{ kind: 'problem', ...(p.part ? { part: p.part } : {}), text: p.text }];
+  if (g) {
+    out.push({ kind: 'stem', text: g.text });
+    const siblings = sheet.problems.filter((x) => x.group === g.id);
+    const idx = siblings.findIndex((x) => x.id === p.id);
+    for (const s of siblings.slice(0, Math.max(0, idx)).reverse()) {
+      out.push({ kind: 'part', part: s.part, text: s.text });
+      out.push({ kind: 'answer', part: s.part, text: s.answer });
+    }
+  }
+  return out.filter((s) => s.text.trim());
+}
+
+/**
  * 「检查这道大题」该检查哪些小题：有答案、且最近一次结论不是 correct 的
  * （改过答案的 correct 已经过期，会被重新检查）。
  */

@@ -123,6 +123,7 @@ import {
   pruneEmptyGroups,
   splitProblemInSheet,
   statementFor,
+  statementSourcesFor,
 } from './parts.js';
 
 export const name = 'aemeath-exercise';
@@ -1824,7 +1825,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     if (!draft.trim()) return { ok: false, error: tr('答案还是空的', 'The answer is empty'), ...empty };
     const t0 = Date.now();
     const result = await runCompute(
-      { draft, problemText: statementFor(sheet, p).text, lang: uiLang(), digits: computeDigits },
+      // 本小题 → 大题题干 → 前面的小题（题干 + 学生的解答）：常数常常写在大题或前面的小题里
+      { draft, sources: statementSourcesFor(sheet, p), lang: uiLang(), digits: computeDigits },
       askLlm,
       pyVerify,
     );

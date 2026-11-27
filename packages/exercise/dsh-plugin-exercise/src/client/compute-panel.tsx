@@ -20,7 +20,9 @@ export interface ComputeValueView {
   symbol: string;
   value: number;
   unit: string;
-  source: 'draft' | 'problem' | 'constant';
+  source: 'draft' | 'problem' | 'stem' | 'part' | 'answer' | 'constant';
+  /** 前面哪个小题（source 是 part / answer 时） */
+  part?: string;
   quote: string;
 }
 
@@ -69,6 +71,9 @@ const STATUS_KEY: Record<string, string> = {
 const SOURCE_KEY: Record<string, string> = {
   draft: 'exercise.compute.source.draft',
   problem: 'exercise.compute.source.problem',
+  stem: 'exercise.compute.source.stem',
+  part: 'exercise.compute.source.part',
+  answer: 'exercise.compute.source.answer',
   constant: 'exercise.compute.source.constant',
 };
 
@@ -153,7 +158,7 @@ export function ComputeBox({
                       <span key={v.symbol} title={v.quote}>
                         {i ? t('exercise.common.listSep') : ''}
                         <code>{v.symbol}</code> = {shortNumber(v.value)}
-                        {v.unit ? ` ${v.unit}` : ''}（{t(SOURCE_KEY[v.source] ?? SOURCE_KEY.draft!)}）
+                        {v.unit ? ` ${v.unit}` : ''}（{t(SOURCE_KEY[v.source] ?? SOURCE_KEY.draft!, { part: v.part ?? '' })}）
                       </span>
                     ))}
                   </div>
