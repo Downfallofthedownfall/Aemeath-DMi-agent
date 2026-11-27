@@ -12,7 +12,7 @@
 | **Node 24.9+** | 唯一的硬依赖。脚本会自己找（Homebrew / nvm / volta / fnm 都试，挑够新的那个）。低于 24.9 直接拒绝：dsh 0.2.2 起不再支持 Node 22 |
 | **Chrome 或 Edge**（可选） | 用来把提交页打印成 PDF。没有也能用：界面会给「打开打印页」，你按 **⌘P → 存储为 PDF** 一样出文件 |
 | **DeepSeek API Key**（可选） | 只有「让爱弥斯检查」需要。**不用单独填**：用的是主 agent 那把全局 key（界面「设置 → Models」或 `$DSH_HOME/.credentials.yaml`）。不填也能导入/做题/生成 PDF/记错题 |
-| 不需要 Python | 习题模式不调 sympy / vision / tts / control（那是 Windows 主 agent 的事） |
+| 不需要 Python | 习题模式不调 vision / tts / control（那是 Windows 主 agent 的事）。**唯一的例外是可选的**：「计算 =」想让 SymPy 复算一遍时要有装了 sympy 的 `python3`（见「做题」一节）；没有也照常算，只是标"未经 SymPy 复算" |
 
 ---
 
@@ -140,6 +140,33 @@ AEMEATH_EXERCISE_PORT=4000 ./scripts/exercise-mac.sh
 - 答案**永远可改**：改完之前那次检查会被标成"针对旧答案"（不删历史）
 - 右栏「符号」是 250+ 符号面板：点一下插到光标处（没有聚焦答案框时 = 复制到剪贴板）
 - 备注框写"这题我老忘什么"，会跟题目一起保存
+
+#### 一键计算「计算 =」（计算器，不解题）
+
+式子自己写好，在要算的地方**末尾写一个 `=`**，点答案框顶栏的 **「计算 =」**，数就填进去：
+
+```
+$g = 9.81$
+$v = \sqrt{2 g h} =$        →   $v = \sqrt{2 g h} \approx 5.425$
+```
+
+- 只算你写了结尾 `=`（或 `= ?`）的地方；等号前只有一个字母（`$F =$`）不算 —— 式子得你自己写
+- 字母的数取自：草稿里的赋值 → 题目里给的数据 → 常数表（`g` 没写时用 9.80665，想用 9.81 就在草稿里写 `$g = 9.81$`）
+- 模型只把你的式子转写成算式，**不出数、不推导**；数由计算器算。下面的结果框逐处列出"按什么算的、每个字母取了多少、出自哪里"，没算的会说原因（缺数值等）
+- 默认 4 位有效数字，有舍入时 `=` 换成 `\approx`；不做单位换算（和计算器一样，单位自己写）
+- 「撤销填入」恢复填之前的答案；结果框是临时的，点「清除」收起
+
+**SymPy 复算（可选）**：装了 sympy 的 `python3` 在，就会把每个结果交给仓库里的 py-compute（SymPy）再算一遍，
+一致才标「✓ SymPy 复算一致」、不一致就不填。没有也完全能用（标"未经 SymPy 复算"）。想开的话：
+
+```bash
+brew install python            # 或用 python.org 的安装包
+python3 -m pip install sympy   # 只需要 sympy
+```
+
+它会自动找 Homebrew（`/opt/homebrew/bin`、`/usr/local/bin`）、python.org、MacPorts、pyenv 的 `python3`；
+**不会**去碰系统的 `/usr/bin/python3`，除非你装过命令行工具（否则那个会弹"安装开发者工具"的窗口）。
+要指定解释器：启动前 `export EXERCISE_PYTHON=/path/to/python3`，或配 `pythonCommand`。
 
 ### 4. 画图/贴图（答案附图）
 
@@ -277,6 +304,9 @@ packages/library/physicist/exercises/
 | `chromePath` | 空 | 空 = 自动找 Chrome/Edge；填绝对路径可指定 |
 | `llm.provider` / `llm.model` | 空 | **一般不用填**：留空就走全局 dsh 的 LLM（与主 agent 同一个 provider/模型/凭据）。只有想单独指定检查模型时才填 |
 | `textExportDir` | `packages/library/physicist-md` | 纯文本导出目录（markdown）。**默认 gitignored**：内容数据和 harness 分开管理；需要版本化就到该目录独立 `git init` |
+| `computeDigits` | `4` | 「计算 =」填入的有效数字（结果框里另有 12 位完整值） |
+| `pythonCommand` | 空 | 「计算 =」复算用的 Python；空 = 自动找（见「做题」一节）。环境变量 `EXERCISE_PYTHON` 同义 |
+| `pyComputeServer` | 空 | py-compute 的 `server.py` 路径；空 = 仓库里的 `packages/py-services/sympy_mcp/server.py` |
 | ui-theme.preference | dark | **与主 agent 保持一致**；改外观时两处一起改 |
 
 ---
@@ -301,6 +331,9 @@ packages/library/physicist/exercises/
 | 原题截图打不开 / 空白（旧题集） | 多模态之前导入的套题只有 source.pdf、没有页面截图 | 点左侧「LLM 重新分块」：会**先补渲染页面**（`pages/`）再读图；也可以重新导入一次 PDF |
 | 日志里出现 `LLM 分块不可用（…）` | 模型这次没给出可用的锚点（推理/截断/改写原句） | 已内置"关推理 + 换直连通道重试"；仍失败会退回规则分块，界面会显示原因。可以隔一会儿再点一次「LLM 重新分块」 |
 | 长题干看不到下面的解答框 | 旧版中栏不是滚动容器 | 已修：中栏整体滚动，题干在自己的框里滚（`max-height:34vh`）；升级后刷新页面即可 |
+| 「计算 =」按钮是灰的 | 答案里没有以 `=` 结尾的公式 | 在公式里、要算的式子末尾写 `=`（例如 `$v = \sqrt{2gh} =$`），必须在 `$…$` 里 |
+| 「计算 =」结果都标"未经 SymPy 复算" | 没找到装了 sympy 的 `python3`（结果框底部会写原因） | 可选：`brew install python && python3 -m pip install sympy`，重开；不装也不影响计算 |
+| 某处"缺数值" | 那个字母在草稿和题目里都没有写数 | 在草稿里加一行赋值（`$m = 2$`）再点一次；中间量要先算出来写进去 —— 它不会替你推 |
 | 端口被占用 | 旧进程还在 | `lsof -nP -iTCP:3084 -sTCP:LISTEN` 找到后 `kill <PID>`，或 `--port 4000` |
 | 改了代码界面没变 | 产物没重建 | 重启脚本（会自动比时间戳重建），或手动 `npm run build` |
 | `profile not found` | `$DSH_HOME/profiles/exercise` 链接丢了 | 重跑 `./scripts/exercise-mac.sh --setup-only` |

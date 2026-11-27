@@ -17,6 +17,7 @@ import { API_BASE, apiGet, apiPost, fileToBase64 } from './api.ts';
 import { AnswerEditor, insertIntoActiveEditor } from './answer-editor.tsx';
 import { CheckPanel } from './check-panel.tsx';
 import type { ApproachResult } from './approach-panel.tsx';
+import type { ComputeResultView } from './compute-panel.tsx';
 import { ProblemTools, type AskResult } from './problem-tools.tsx';
 import { SymbolPanel } from './symbol-palette.tsx';
 import { useT } from './i18n.ts';
@@ -286,6 +287,14 @@ export function ScratchWorkspace({ onToast }: ScratchWorkspaceProps): JSX.Elemen
                 onAttachImage={attachImage}
                 onDeleteImage={(id) => void deleteImage(id)}
                 imageUrl={imageUrl}
+                onCompute={(draft: string) =>
+                  apiPost<ComputeResultView>('compute', {
+                    course_id: SCRATCH_COURSE,
+                    sheet_id: SCRATCH_SHEET,
+                    problem_id: SCRATCH_PROBLEM,
+                    draft,
+                  })
+                }
               />
 
               <ProblemTools

@@ -19,8 +19,8 @@
 //   exercise_progress / exercise_export_handoff / exercise_import_handoff
 // ============================================================
 
-import { join, isAbsolute } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join, isAbsolute } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
@@ -59,6 +59,8 @@ import {
 } from './digest.js';
 import { buildCheckPrompt, parseCheckOutput, runApproach, runCheck, runRebuttal, type AskLlm } from './checker.js';
 import { runAsk, type AskTurn } from './ask.js';
+import { runCompute, type ComputeResult } from './compute.js';
+import { createPyVerify } from './py-compute.js';
 import { answerFingerprint } from './hash.js';
 import {
   buildExerciseHandoff,
@@ -168,6 +170,16 @@ export const Config = z.object({
   checkReasoning: z.string().default('high'),
   /** 浏览器路径（空 = 自动发现 Chrome/Edge/Chromium）。 */
   chromePath: z.string().default(''),
+  /** 「计算」填入的有效数字（结果框里另有 12 位的完整值）。 */
+  computeDigits: z.number().default(4),
+  /**
+   * 「计算」复算用的 Python（空 = 依次试 python、python3、py -3）。
+   * 复算调的是现有的 py-compute（packages/py-services/sympy_mcp/server.py 的 do_numeric）；
+   * 没有 Python 也能算，只是结果标"未经 SymPy 复算"。
+   */
+  pythonCommand: z.string().default(''),
+  /** py-compute 的 server.py 路径（空 = 仓库里的 packages/py-services/sympy_mcp/server.py）。 */
+  pyComputeServer: z.string().default(''),
   llm: z.object({
     /** 显式覆盖（一般留空）：空 = 走全局 dsh 的 LLM 运行时（主 agent 同一个模型）。 */
     provider: z.string().default(''),
@@ -192,6 +204,9 @@ export interface ExerciseConfig {
   submissionOrder?: string;
   chromePath?: string;
   checkReasoning?: string;
+  computeDigits?: number;
+  pythonCommand?: string;
+  pyComputeServer?: string;
   llm?: { provider?: string; apiKey?: string; baseUrl?: string; model?: string };
 }
 
@@ -324,6 +339,14 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
   // 默认不合并原卷：只留自己生成的页面（用户定案：习题自己的 pdf 就不要了）
   const includeSourceDefault = config.includeSourcePdf ?? false;
   const submissionOrder = config.submissionOrder === 'solutions-first' ? 'solutions-first' : 'sheet-first';
+  // 「计算」：有效数字 + 用现有 py-compute（sympy_mcp）复算
+  const computeDigits = Number.isFinite(config.computeDigits) ? Math.min(12, Math.max(1, Math.round(config.computeDigits!))) : 4;
+  const pyVerify = createPyVerify({
+    python: (process.env.EXERCISE_PYTHON ?? '').trim() || config.pythonCommand || '',
+    serverPath: config.pyComputeServer || '',
+    searchRoots: [process.cwd(), dirname(fileURLToPath(import.meta.url))],
+    log,
+  });
   const llm = {
     /** 显式覆盖（一般留空）：空 = 走全局 dsh 的 LLM 运行时。 */
     apiKey: config.llm?.apiKey ?? '',
@@ -1694,6 +1717,42 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       reasoning: llmReasoningState(),
     };
   });
+  /**
+   * 「计算」：把学生在式子末尾写了 `=` 的地方算出来（计算器，不解题；见 compute.ts）。
+   * 用前端传来的**当前草稿**（自动保存有 900ms 延迟，存盘的答案可能落后一拍）；
+   * 结果不落盘，前端把数填进答案后照常自动保存。
+   */
+  const computeProblem = traced(async (input: {
+    courseId: string;
+    sheetId: string;
+    problemId: string;
+    draft?: string;
+  }): Promise<ComputeResult & { provider?: string }> => {
+    const empty = { items: [], verifier: { kind: 'none' as const }, digits: computeDigits };
+    const sheet = store.readSheet(input.courseId, input.sheetId);
+    if (!sheet) return { ok: false, error: tr('题集不存在', 'Sheet not found'), ...empty };
+    const p = store.findProblem(sheet, input.problemId);
+    if (!p) return { ok: false, error: tr('题目不存在', 'Problem not found'), ...empty };
+    const draft = typeof input.draft === 'string' ? input.draft : p.answer;
+    if (!draft.trim()) return { ok: false, error: tr('答案还是空的', 'The answer is empty'), ...empty };
+    const t0 = Date.now();
+    const result = await runCompute(
+      { draft, problemText: statementFor(sheet, p).text, lang: uiLang(), digits: computeDigits },
+      askLlm,
+      pyVerify,
+    );
+    const counts = result.items.reduce<Record<string, number>>((acc, it) => ({ ...acc, [it.status]: (acc[it.status] ?? 0) + 1 }), {});
+    if (result.ok) {
+      log(
+        `计算（${p.id}）：${result.items.length} 处 · ${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(' ')} · ` +
+          `复算=${result.verifier.kind}${result.verifier.note ? `（${result.verifier.note}）` : ''} · ${Date.now() - t0}ms`,
+      );
+    } else {
+      warn(`计算失败（${p.id}）：${result.error}`);
+    }
+    return { ...result, provider: llmProvider() };
+  });
+
   /** 重置极简工作区：清空题目/答案/检查/附图。 */
   const resetScratch = (): Sheet => {
     const fresh = blankScratchSheet();
@@ -3554,6 +3613,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
         }
       },
       onApproach: (input) => checkApproach(input),
+      onCompute: (input) => computeProblem(input),
       onAsk: (input) => askAboutProblem(input),
       onSplitParts: async (input) => {
         const r = splitIntoParts(input);
@@ -3739,11 +3799,6 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     }
   });
 
-  log(
-    '工具已注册：exercise_list / exercise_new_sheet / exercise_open / exercise_problem / ' +
-      'exercise_save_answer / exercise_resplit / exercise_check / exercise_collect_mistake / exercise_lessons / ' +
-        'exercise_scratch / exercise_attach_image / exercise_export_text / ' +
-      'exercise_sync_worldbook / exercise_build_submission / exercise_progress / ' +
-      'exercise_export_handoff / exercise_import_handoff',
-  );
+  // 从注册表取名字（早先是手写的一串，漏了 exercise_rebut，和上一行的「N 个」对不上）
+  log(`工具已注册（${toolDefs.length} 个）：${toolDefs.map((d) => (d as { name?: string }).name ?? '?').join(' / ')}`);
 }

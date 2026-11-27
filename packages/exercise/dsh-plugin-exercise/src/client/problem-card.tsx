@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { AskTurnView, ProblemView } from './api.ts';
 import { AnswerEditor } from './answer-editor.tsx';
 import type { ApproachResult } from './approach-panel.tsx';
+import type { ComputeResultView } from './compute-panel.tsx';
 import { CheckPanel } from './check-panel.tsx';
 import { MathText } from './math.tsx';
 import { Menu } from './menu.tsx';
@@ -51,6 +52,8 @@ export interface ProblemCardProps {
   onApproach?: () => Promise<ApproachResult & { ok: boolean; error?: string }>;
   /** 提问（苏格拉底式提示，临时） */
   onAsk?: (question: string, history: AskTurnView[]) => Promise<AskResult>;
+  /** 「计算 =」：算答案里以 = 结尾的式子（计算器，不解题） */
+  onCompute?: (draft: string) => Promise<ComputeResultView>;
   /** 按 a) b) 拆成小题（独立题才有） */
   onSplitParts?: () => void;
   /** 上传/删除答案附图，以及拼图片 URL */
@@ -73,6 +76,7 @@ export function ProblemCard({
   onRebuttal,
   onApproach,
   onAsk,
+  onCompute,
   onSplitParts,
   onAttachImage,
   onDeleteImage,
@@ -218,6 +222,7 @@ export function ProblemCard({
         imageUrl={imageUrl}
         compact
         showNotes={showNotes}
+        onCompute={onCompute}
       />
 
       <ProblemTools

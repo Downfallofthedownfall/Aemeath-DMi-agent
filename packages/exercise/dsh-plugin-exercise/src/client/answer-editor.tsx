@@ -17,6 +17,9 @@
 //    之后 active 永远是 null（用户实测报的就是这个）。
 //
 // 保存：900ms 防抖 + 失焦；答案一改，host 会把旧检查标 stale（D6）。
+//
+// 「计算 =」（2026-11-27）：顶栏按钮把式子末尾写了 `=` 的地方算出来、直接填进答案
+// （计算器，不解题：见 src/compute.ts）。填入走和打字一样的保存路径；「撤销填入」恢复填之前的答案。
 // ============================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -24,6 +27,8 @@ import type { ProblemView } from './api.ts';
 import { MathText } from './math.tsx';
 import { useT, useLocale } from './i18n.ts';
 import { hasMath } from '../math-parse.ts';
+import { applyComputeFills, findComputeTargets } from '../compute-fill.ts';
+import { ComputeBox, type ComputeOutcome, type ComputeResultView } from './compute-panel.tsx';
 import { collectMathLiveReplacements, collectMathIssuesInText } from '../mathlive-compat.ts';
 
 export type Inserter = (text: string, caretOffset: number) => boolean;
@@ -84,6 +89,8 @@ export interface AnswerEditorProps {
    */
   compact?: boolean;
   showNotes?: boolean;
+  /** 「计算 =」：把当前草稿发给 host 算（不传 = 不显示按钮） */
+  onCompute?: (draft: string) => Promise<ComputeResultView>;
 }
 
 const SAVE_DEBOUNCE_MS = 900;
@@ -102,6 +109,7 @@ export function AnswerEditor({
   imageUrl,
   compact = false,
   showNotes = false,
+  onCompute,
 }: AnswerEditorProps): JSX.Element {
   const t = useT();
   const locale = useLocale();
@@ -111,6 +119,11 @@ export function AnswerEditor({
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [mode, setMode] = useState<EditorMode>('split');
+  const [computeBusy, setComputeBusy] = useState(false);
+  const [computed, setComputed] = useState<ComputeOutcome | null>(null);
+  /** 撤销填入：只有答案还是"刚填完"的样子才能整体恢复 */
+  const [undoFill, setUndoFill] = useState<{ before: string; after: string } | null>(null);
+  const hasComputeTarget = useMemo(() => !!onCompute && findComputeTargets(draft).length > 0, [draft, onCompute]);
   // 公式内容层面的提示（渲染期兼容 + 未知命令）
   const mathReplacements = useMemo(() => collectMathLiveReplacements(draft, locale === 'en' ? 'en' : 'zh'), [draft, locale]);
   const mathIssues = useMemo(() => collectMathIssuesInText(draft, locale === 'en' ? 'en' : 'zh'), [draft, locale]);
@@ -252,6 +265,51 @@ export function AnswerEditor({
     pv.scrollTop = (ta.scrollTop / max) * Math.max(0, pv.scrollHeight - pv.clientHeight);
   }, []);
 
+  /** 改答案（和打字同一条保存路径） */
+  const replaceDraft = (next: string): void => {
+    setDraft(next);
+    scheduleRef.current({ answer: next });
+  };
+
+  const runCompute = async (): Promise<void> => {
+    if (!onCompute) return;
+    const sent = taRef.current?.value ?? draft;
+    setComputeBusy(true);
+    try {
+      const r = await onCompute(sent);
+      const fills = r.items.map((i) => i.fill).filter((f): f is NonNullable<typeof f> => !!f);
+      // 计算途中可能又打了字：按**现在**的答案回填（位置变了就按上下文找，找不到就跳过）
+      const current = taRef.current?.value ?? sent;
+      const out = applyComputeFills(current, fills);
+      if (out.applied.length) {
+        replaceDraft(out.text);
+        setUndoFill({ before: current, after: out.text });
+      } else {
+        setUndoFill(null);
+      }
+      setComputed({ ...r, applied: out.applied, skipped: out.skipped });
+      const notFilled = r.items.length - out.applied.length;
+      onToast(
+        out.applied.length
+          ? notFilled
+            ? t('exercise.compute.filledPartial', { n: out.applied.length, m: notFilled })
+            : t('exercise.compute.filled', { n: out.applied.length })
+          : t('exercise.compute.noneFilled'),
+      );
+    } catch (e) {
+      onToast(t('exercise.compute.failed', { error: (e as Error).message }));
+    } finally {
+      setComputeBusy(false);
+    }
+  };
+
+  const undoCompute = (): void => {
+    if (!undoFill || (taRef.current?.value ?? draft) !== undoFill.after) return;
+    replaceDraft(undoFill.before);
+    setUndoFill(null);
+    onToast(t('exercise.compute.undone'));
+  };
+
   const savedLabel = saving
     ? t('exercise.common.saving')
     : dirty
@@ -266,6 +324,18 @@ export function AnswerEditor({
         <span>{t('exercise.answer.heading')}</span>
         <span className="lec-saved">{savedLabel}</span>
         <span className="lec-grow" />
+        {onCompute ? (
+          <button
+            type="button"
+            className="lec-btn lec-btn-ghost lec-compute-btn"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void runCompute()}
+            disabled={computeBusy || !hasComputeTarget}
+            title={hasComputeTarget ? t('exercise.compute.title') : t('exercise.compute.disabledTitle')}
+          >
+            {computeBusy ? t('exercise.compute.busy') : t('exercise.compute.button')}
+          </button>
+        ) : null}
         <div className="lec-toolrow" style={{ marginTop: 0 }}>
           <button type="button" className="lec-tab" data-active={mode === 'split' ? '1' : '0'} onClick={() => setMode('split')}>
             {t('exercise.answer.mode.split')}
@@ -319,6 +389,18 @@ export function AnswerEditor({
           )}
         </div>
       </div>
+
+      {computed ? (
+        <ComputeBox
+          result={computed}
+          canUndo={!!undoFill && draft === undoFill.after}
+          onUndo={undoFill ? undoCompute : undefined}
+          onClear={() => {
+            setComputed(null);
+            setUndoFill(null);
+          }}
+        />
+      ) : null}
 
       {onAttachImage && !compact ? (
         <div className="lec-toolrow" style={{ marginTop: 6 }}>

@@ -38,6 +38,7 @@ import { SymbolPanel } from './symbol-palette.tsx';
 import { ImportDialog } from './import-dialog.tsx';
 import { ScratchWorkspace } from './scratch.tsx';
 import type { ApproachResult } from './approach-panel.tsx';
+import type { ComputeResultView } from './compute-panel.tsx';
 import { insertIntoActiveEditor } from './answer-editor.tsx';
 import { MathText } from './math.tsx';
 import { EX_CLASS } from './styles.ts';
@@ -721,6 +722,9 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
                     onSplitParts={p.group ? undefined : () => void splitParts(p.id)}
                     onAsk={(question: string, history: AskTurnView[]) =>
                       apiPost<AskResult>('ask', { course_id: courseId, sheet_id: sheet.id, problem_id: p.id, question, history })
+                    }
+                    onCompute={(draft: string) =>
+                      apiPost<ComputeResultView>('compute', { course_id: courseId, sheet_id: sheet.id, problem_id: p.id, draft })
                     }
             onApproach={() =>
               apiPost<ApproachResult & { ok: boolean; error?: string }>('approach', {

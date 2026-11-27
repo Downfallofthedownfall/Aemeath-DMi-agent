@@ -1198,6 +1198,23 @@ const CSS = `
 .${EX_CLASS} .lec-linkbtn:hover:not(:disabled) { color: var(--aem-accent); }
 .${EX_CLASS} .lec-approach { margin-top: 8px; }
 .${EX_CLASS} .lec-approach-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+
+/* 「计算 =」：按钮在答案顶栏，结果框沿用思路检查的外框 */
+.${EX_CLASS} .lec-answer-head .lec-compute-btn { flex: none; padding: 3px 10px; font-size: 11.5px; border-radius: 7px; white-space: nowrap; }
+.${EX_CLASS} .lec-compute-box { display: flex; flex-direction: column; gap: 6px; }
+.${EX_CLASS} .lec-compute-row { padding-bottom: 6px; border-bottom: 1px dashed var(--aem-line); }
+.${EX_CLASS} .lec-compute-row:last-of-type { border-bottom: none; padding-bottom: 0; }
+.${EX_CLASS} .lec-compute-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.${EX_CLASS} .lec-compute-tex { color: var(--aem-ink-soft); }
+.${EX_CLASS} .lec-compute-result { font-weight: 600; color: var(--aem-ink); }
+.${EX_CLASS} .lec-compute-badge { flex: none; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--aem-line); color: var(--aem-ink-dim); }
+.${EX_CLASS} .lec-compute-badge[data-verify="sympy"] { border-color: #3f7d4a66; color: light-dark(#2f6b3a, #8fd19e); }
+.${EX_CLASS} .lec-compute-badge[data-verify="bad"] { border-color: #b3453f66; color: light-dark(#a33a35, #f0a29c); }
+.${EX_CLASS} .lec-compute-detail { margin-top: 2px; font-size: 11.5px; color: var(--aem-ink-dim); }
+.${EX_CLASS} .lec-compute-detail code { font-size: 11px; }
+.${EX_CLASS} .lec-compute-why { color: light-dark(#8a5a1c, #e3b874); }
+.${EX_CLASS} .lec-compute-row[data-status="mismatch"] .lec-compute-why,
+.${EX_CLASS} .lec-compute-row[data-status="rejected"] .lec-compute-why { color: light-dark(#a33a35, #f0a29c); }
 .${EX_CLASS} .lec-notes-input { flex: 1; min-width: 0; }
 .${EX_CLASS} .lec-answer-head .lec-tab { flex: none; padding: 3px 9px; font-size: 11.5px; border-radius: 7px; }
 .${EX_CLASS} .lec-answer-head .lec-toolrow { gap: 2px; }

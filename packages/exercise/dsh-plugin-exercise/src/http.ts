@@ -292,6 +292,16 @@ export interface ExerciseHttpDeps {
     reasoning?: string;
   }>;
 
+  /** POST compute：把答案里以 `=` 结尾的式子算出来（计算器，不解题；临时，不落盘） */
+  onCompute(input: { courseId: string; sheetId: string; problemId: string; draft?: string }): Promise<{
+    ok: boolean;
+    error?: string;
+    items: unknown[];
+    verifier: { kind: string; note?: string };
+    digits: number;
+    provider?: string;
+  }>;
+
   /** POST import_scratch_pdf：极简模式上传题目 PDF（base64） */
   onImportScratchPdf(input: { base64: string }): Promise<{
     ok: boolean;
@@ -810,6 +820,24 @@ export async function handleExerciseHttp(
             courseId,
             sheetId,
             problemId: str(parsed.problem_id, 40),
+          });
+          json(res, r.ok ? 200 : 400, r);
+          return;
+        }
+
+        case 'compute': {
+          const courseId = str(parsed.course_id ?? '', 120);
+          const sheetId = str(parsed.sheet_id ?? '', 40);
+          if (!courseId || !sheetId || !parsed.problem_id) {
+            jsonError(res, 400, 'course/sheet/problem required');
+            return;
+          }
+          const r = await deps.onCompute({
+            courseId,
+            sheetId,
+            problemId: str(parsed.problem_id, 40),
+            // 不能用 str()：它会 trim，填回时的位置就对不上了
+            draft: typeof parsed.draft === 'string' ? parsed.draft.slice(0, 40_000) : undefined,
           });
           json(res, r.ok ? 200 : 400, r);
           return;
