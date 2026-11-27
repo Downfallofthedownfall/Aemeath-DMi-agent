@@ -147,7 +147,12 @@ export DSH_HOME
 # ---- 装配（复用技术脚本，避免两份逻辑漂移）----
 echo "检查环境…（首次运行需要几分钟，之后很快）"
 echo
-if ! bash "$ROOT/scripts/profile-mac.sh" "$PROFILE" --setup-only; then
+bash "$ROOT/scripts/profile-mac.sh" "$PROFILE" --setup-only
+SETUP_RC=$?
+if [ "$SETUP_RC" -eq 3 ]; then
+  # 3 = 依赖要重装，但本仓库的 dsh 还在跑（见 profile-mac.sh 的 refuse_install_while_dsh_runs）
+  die_gui "依赖需要重装，但本仓库的 dsh 还在运行（另一个模式的窗口还开着？）。请先关掉那个窗口，再重新双击启动；终端里列出了是哪个进程。"
+elif [ "$SETUP_RC" -ne 0 ]; then
   die_gui "环境装配失败。请把上面终端里的报错发给开发者。"
 fi
 

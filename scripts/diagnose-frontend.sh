@@ -96,6 +96,7 @@ echo "════════ 8) 依赖跟上 git pull 了吗？ ════�
 # 不一致时 dsh 会把插件判为不兼容并停用（终端里有 disabling profile plugin row），
 # 浏览器里就是标准版 dsh —— 和"产物旧"症状一样，但 npm run build 修不好
 dsh_ver="$(node -p 'require("./node_modules/@deepseek-ai/dsh/package.json").version' 2>/dev/null || echo '?')"
+echo "  node: $(node -v 2>/dev/null || echo '找不到')（需要 24.9+）"
 echo "  已装 dsh: ${dsh_ver}"
 node scripts/check-deps.mjs 2>&1 | sed 's/^/  /'
 

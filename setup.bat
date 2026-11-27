@@ -31,8 +31,10 @@ if %errorlevel% neq 0 (
 echo [OK] Python found
 
 echo [3/7] Installing root npm dependencies (monorepo workspaces)...
-rem DSH 0.2.0：官方包的 peer 约束用 npm 默认严格解析会报 ERESOLVE，必须 --legacy-peer-deps
-call npm install --legacy-peer-deps --cache .npm-cache
+rem 经 scripts\setup-root.ps1：与课堂 / 习题启动器共用装配锁（两边同时 npm install 会弄坏 node_modules）。
+rem 不再 --legacy-peer-deps：dsh 0.2.2 起普通 npm install 就能装；带着它会删掉 peer 包
+rem @deepseek-ai/dsh-error，启动器的依赖核对随即判"缺包"、再整套重装一遍。原因见 setup-root.ps1。
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup-root.ps1" -Step install
 if %errorlevel% neq 0 (
     echo [FAIL] npm install failed
     pause
@@ -41,7 +43,7 @@ if %errorlevel% neq 0 (
 echo [OK] Root dependencies installed
 
 echo [4/7] Building plugins (TS -^> packages/*/lib)...
-call npm run build
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup-root.ps1" -Step build
 if %errorlevel% neq 0 (
     echo [FAIL] npm run build failed
     pause

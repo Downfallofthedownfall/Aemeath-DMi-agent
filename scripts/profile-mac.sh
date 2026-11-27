@@ -33,7 +33,7 @@ set -euo pipefail
 
 # 脚本版本戳：排查"你那边和我这边是不是同一份"时一眼可见。
 # （真机踩过：报错行号对不上，无法判断是环境差异还是代码差异。）
-PROFILE_MAC_VERSION="2026-11-24.2"
+PROFILE_MAC_VERSION="2026-11-27.1"
 
 # ---- 路径 ----
 # ⚠️ 用 BASH_SOURCE 定位脚本自身，再取上一级作为仓库根。
@@ -142,14 +142,21 @@ SETUP_LOCK_HELD=0
 setup_lock_owner_alive() {
   local cmd
   case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+  # 记录的就是自己：旧锁的主人早没了、pid 正好被本进程复用 —— 不能等自己
+  [[ "$1" != "$$" ]] || return 1
   cmd="$(ps -o command= -p "$1" 2>/dev/null || true)"
-  [[ "$cmd" == *profile-mac.sh* ]]
+  # 要求是 shell 在跑本脚本（bash …/profile-mac.sh）：pid 被复用成
+  # `vim scripts/profile-mac.sh`、`less …` 这类进程时不算活着的持有者
+  [[ "${cmd%% *}" == *sh && "$cmd" == *profile-mac.sh* ]]
 }
 
 break_stale_setup_lock() {
   local seen="${1:-}" brk="${SETUP_LOCK}.break"
   if mkdir "$brk" 2>/dev/null; then
-    if [[ "$(readlink "$SETUP_LOCK" 2>/dev/null || true)" == "$seen" ]]; then
+    # 锁得还在、且还是刚才看到的那个：持有者刚好正常放锁时 seen 是空的，
+    # 不能把"已经没了的锁"当旧锁清、再报一条误导人的警告
+    if [[ -e "$SETUP_LOCK" || -L "$SETUP_LOCK" ]] &&
+       [[ "$(readlink "$SETUP_LOCK" 2>/dev/null || true)" == "$seen" ]]; then
       rm -rf "$SETUP_LOCK"
       warn "清掉了旧的装配锁（记录的 pid ${seen:-?} 已不是在跑的启动器，多半是上次窗口被强关留下的）"
     fi
@@ -164,10 +171,20 @@ break_stale_setup_lock() {
 }
 
 acquire_setup_lock() {
-  local owner announced=0
-  while ! ln -sn "$$" "$SETUP_LOCK" 2>/dev/null; do
-    # 刚被释放：马上再抢
-    [[ -e "$SETUP_LOCK" || -L "$SETUP_LOCK" ]] || continue
+  local owner err announced=0 absent=0
+  while ! err="$(ln -sn "$$" "$SETUP_LOCK" 2>&1)"; do
+    if [[ ! -e "$SETUP_LOCK" && ! -L "$SETUP_LOCK" ]]; then
+      # 锁不在却没建成：多半是刚被释放，马上再抢。
+      # 但连着几次都这样，就不是"有人占着"而是根本建不出来 —— 早先这里无条件
+      # continue，磁盘满 / 目录不可写 / 磁盘不支持符号链接时会无输出地空转、吃满 CPU。
+      absent=$((absent + 1))
+      if [[ "$absent" -ge 5 ]]; then
+        die "建不了装配锁 ${SETUP_LOCK}：${err:-ln 没有给出原因}
+  常见原因：磁盘满了、仓库所在目录不可写、仓库所在的磁盘不支持符号链接。"
+      fi
+      continue
+    fi
+    absent=0
     owner="$(readlink "$SETUP_LOCK" 2>/dev/null || true)"
     if setup_lock_owner_alive "$owner"; then
       if [[ "$announced" == "0" ]]; then
@@ -198,6 +215,35 @@ release_setup_lock() {
 
 acquire_setup_lock
 
+# ---- 重装前：本仓库的 dsh 还在跑，就不要动 node_modules ----
+#
+# 装配锁只让"装配"串行，而且在启动 dsh **之前**就放开了 —— 它挡不住
+# "一个在重装、另一个模式的 dsh 正从同一份 node_modules 跑着"。
+# 早先只在缺 dsh 时才 npm install（dsh 在跑就说明不会装）；现在依赖一不一致就重装，
+# 会改写那边正在用的文件：mac 上那边会懒加载到新旧混杂的模块，Windows 上直接 EPERM。
+# 所以重装前先看一眼；有就停下，让用户先关掉那个窗口（退出码 3，launch-mac.sh 据此弹窗）。
+repo_dsh_processes() {
+  local pid cmd
+  # 先整个读进来再筛：要是 ps 的结果直接接 grep，grep 自己的命令行里也有这个路径，会把自己算进去
+  while read -r pid cmd; do
+    [[ -n "$pid" && "$pid" != "$$" ]] || continue
+    case "$cmd" in
+      *"$ROOT/node_modules/.bin/dsh"*|*"$ROOT/node_modules/@deepseek-ai/dsh/"*)
+        printf '    pid %s  %s\n' "$pid" "$cmd" ;;
+    esac
+  done < <(ps -Ao pid=,command= 2>/dev/null || true)
+}
+
+refuse_install_while_dsh_runs() {
+  local running
+  running="$(repo_dsh_processes)"
+  [[ -n "$running" ]] || return 0
+  printf '\033[31m[%s-mac] ✗ %s\033[0m\n' "$PROFILE" "依赖需要重装（已装的和 package-lock.json 对不上），但本仓库的 dsh 还在运行：
+${running}
+  重装会改写它正在用的 node_modules。请先关掉那个窗口（或在里面按 Control-C 停掉服务），再重新启动。" >&2
+  exit 3
+}
+
 # ---- 1) 依赖 ----
 #
 # ⚠️ 真机踩过（dsh 0.2.1 → 0.2.2 那次升级）：早先只在 node_modules/@deepseek-ai/dsh
@@ -210,6 +256,7 @@ if [[ ! -d "$ROOT/node_modules/@deepseek-ai/dsh" ]]; then
   say "首次运行：安装仓库依赖（只在仓库根安装）…"
   npm install || die "npm install 失败。请检查网络或代理后重试。"
 elif ! node "$ROOT/scripts/check-deps.mjs"; then
+  refuse_install_while_dsh_runs
   say "已装的依赖和 package-lock.json 对不上（多半是 git pull 带来了依赖升级）→ 在仓库根重新 npm install…"
   npm install || die "npm install 失败。请检查网络或代理后重试。
   旧依赖下插件会被 dsh 判为不兼容而停用，打开的会是标准版 dsh。"

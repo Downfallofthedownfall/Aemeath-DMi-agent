@@ -40,16 +40,9 @@ if ($Port -le 0) {
   if ($fromEnv -match '^\d+$') { $Port = [int]$fromEnv } else { $Port = $cfg.Port }
 }
 
-# 装配锁（见下面「装配锁」一节）。放开它的函数要在 Die 之前就有：Die 会调它。
-$script:setupLock = $null
-$script:setupLockHeld = $false
-function Exit-SetupLock {
-  if ($script:setupLockHeld) {
-    $script:setupLockHeld = $false
-    # 放不掉时要说出来：否则另一个窗口会一直等，直到本窗口的服务退出，却看不出为什么。
-    try { $script:setupLock.ReleaseMutex() } catch { Write-Warning "放开装配锁失败：$($_.Exception.Message)" }
-  }
-}
+# 装配锁（Enter-SetupLock / Exit-SetupLock，与 setup.bat 共用，见 setup-lock.ps1）。
+# 要在 Die 之前载入：Die 会调 Exit-SetupLock。
+. (Join-Path $PSScriptRoot 'setup-lock.ps1')
 
 # 失败时只报错、退出码 1 —— "按任意键关闭"交给 .bat（它在非 0 退出时会停住窗口）。
 # 这里再等一次回车的话，双击场景要按两次键才关得掉。
@@ -92,47 +85,34 @@ Write-Host ""
 #    同时改仓库根的 node_modules —— 一个报 ENOTEMPTY 退出，另一个刷了几十条
 #    TAR_ENTRY_ERROR 却返回 0，结果 node_modules 少了 308 个包（连 dsh 本身都没了），
 #    两个窗口都报"npm install 失败"，看着像网络问题。Windows 上同样会撞（还多了
-#    EPERM / EBUSY 文件占用）。mac 的修法在 scripts/profile-mac.sh 的「装配锁」。
+#    EPERM / EBUSY 文件占用）。锁的实现在 scripts\setup-lock.ps1（setup.bat 也走它），
+#    mac 的修法在 scripts/profile-mac.sh 的「装配锁」。
 #    依赖、构建产物、profile 链接都是两个模式共用的，所以下面"依赖 → 构建 → profile 链接"
 #    整段串行：后到的那个等前一个装配完再走，装配完各自启动、互不影响。
-#
-# 用具名 Mutex，不用锁文件：持有者的窗口被强关、或脚本中途出错退出时，系统会把锁
-# 收回（下一个等待者拿到的是 "abandoned"，照样算拿到），不会留下要手工删的旧锁。
-# 名字里带仓库路径的哈希：两份不同的 clone 互不阻塞。Local\ = 只在当前登录会话内。
-# 每秒醒一次再等，而不是无限期 WaitOne()：那样 Ctrl+C 中断不了。
-$sha = [System.Security.Cryptography.SHA256]::Create()
-try {
-  $rootHash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant())) |
-    Select-Object -First 8 | ForEach-Object { $_.ToString('x2') })
-} finally {
-  $sha.Dispose()
-}
-$script:setupLock = [System.Threading.Mutex]::new($false, "Local\aemeath-setup-$rootHash")
-
-function Enter-SetupLock {
-  $announced = $false
-  $waitMs = 0
-  while ($true) {
-    try {
-      if ($script:setupLock.WaitOne($waitMs)) { break }
-    } catch [System.Threading.AbandonedMutexException] {
-      # 上一个持有者没放锁就退出了：锁已归本进程。
-      # 它的 npm install / 构建可能做了一半 —— 不要紧，下面的依赖比对和构建检查会照常补上。
-      Write-Host "上一个启动器没放锁就退出了（窗口被关，或装配中途出错），锁已由系统收回。" -ForegroundColor DarkGray
-      break
-    }
-    if (-not $announced) {
-      Write-Host "另一个启动器正在装配（装依赖 / 构建），等它完成…" -ForegroundColor Yellow
-      Write-Host "  两个模式共用仓库根的同一份依赖，不能同时装。" -ForegroundColor DarkGray
-      $announced = $true
-    }
-    $waitMs = 1000
-  }
-  $script:setupLockHeld = $true
-  if ($announced) { Write-Host "轮到本窗口装配。" -ForegroundColor Green }
-}
-
 Enter-SetupLock
+
+# ---- 重装前：本仓库的 dsh 还在跑，就不要动 node_modules ----
+#
+# 装配锁只让"装配"串行，而且在启动 dsh **之前**就放开了 —— 它挡不住
+# "一个在重装、另一个模式（或主界面 dsh.ps1）的 dsh 正从同一份 node_modules 跑着"。
+# 早先只在缺 dsh 时才 npm install（dsh 在跑就说明不会装）；现在依赖一不一致就重装，
+# 会改写那边正在用的文件：Windows 上被占用的文件让 npm install 报 EPERM / EBUSY，
+# 最后只剩一句"npm install 失败"。所以重装前先看一眼，有就停下、说清楚是谁。
+# 认法：命令行里有本仓库的 node_modules，且跑的是 dsh（.bin\dsh.cmd 或 @deepseek-ai\dsh\…）。
+function Get-RepoDshProcess {
+  $nm = "$root\node_modules\"
+  try {
+    @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+      $_.ProcessId -ne $PID -and $_.CommandLine -and
+      $_.CommandLine.IndexOf($nm, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+      $_.CommandLine -match '@deepseek-ai[\\/]+dsh[\\/]|[\\/]\.bin[\\/]+dsh(\.cmd)?\b'
+    })
+  } catch {
+    # 查不了进程（WMI 出问题）：不拦，照常重装 —— 最坏也就是回到加这道检查之前的样子
+    Write-Warning "查不到正在运行的进程（$($_.Exception.Message)），跳过「dsh 是否在运行」的检查。"
+    @()
+  }
+}
 
 # ---- 依赖（只在仓库根安装；绝不在 profiles\* 里跑 npm install，见 scripts\dsh.ps1）----
 # 早先只在 dsh.cmd 不存在时才装：git pull 带来依赖升级（如 dsh 0.2.1 → 0.2.2）后
@@ -149,6 +129,11 @@ if (-not (Test-Path "$root\node_modules\.bin\dsh.cmd")) {
   }
 }
 if ($needInstall) {
+  $busy = @(Get-RepoDshProcess)
+  if ($busy.Count -gt 0) {
+    $list = ($busy | ForEach-Object { "    pid $($_.ProcessId)  $($_.CommandLine)" }) -join "`n"
+    Die "依赖需要重装（已装的和 package-lock.json 对不上），但本仓库的 dsh 还在运行：`n$list`n  重装会改写它正在用的 node_modules（文件被占用，npm install 会失败）。请先关掉那个窗口，再重新运行。"
+  }
   & npm install
   if ($LASTEXITCODE -ne 0) { Die "npm install 失败。" }
   & node "$root\scripts\check-deps.mjs"

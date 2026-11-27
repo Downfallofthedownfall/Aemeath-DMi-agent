@@ -21,9 +21,9 @@
 //   node scripts/check-deps.mjs --quiet    # 只看退出码
 // 退出码 0 = 一致（或没有 package-lock.json，无从判断）；1 = 缺包 / 版本不对
 // ============================================================
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const quiet = process.argv.includes('--quiet');
@@ -90,5 +90,16 @@ function main() {
   return 1;
 }
 
-// 被 import（测试）时不跑 main；仓库要求 Node 24.9+，import.meta.main 可用
-if (import.meta.main) process.exit(main());
+// 被 import（测试）时不跑 main。
+// ⚠️ 不能只认 import.meta.main：它从 Node 24.2 才有，更老的 Node 上是 undefined ——
+//    main 不跑、什么都不打、退出码 0，看着像"依赖一致"。启动器前面拦了 Node 版本，
+//    但 diagnose-frontend.sh 这类直接调用的地方没拦。没有它时退回比对入口文件路径。
+function isEntry() {
+  if (typeof import.meta.main === 'boolean') return import.meta.main;
+  try {
+    return Boolean(process.argv[1]) && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+if (isEntry()) process.exit(main());
