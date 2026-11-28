@@ -10,6 +10,8 @@
 //   ② 模型**转写**：LaTeX → 算式（`sqrt(2*g*h)`）+ 每个字母的数值与出处（原文片段）。
 //      prompt 禁止改写/化简/解方程/补公式/输出结果；推理关掉（这是结构化抄写）。
 //   ③ 确定性护栏（不信模型）：转写里的字母必须在式子里出现、数字必须在式子里出现；
+//      （字母可以按意思改名，例如 w_0 → omega_0：模型在 written 里报它在式子里的写法，护栏查那个写法真在式子里、且不被两个量共用；
+//       直接打出来的 γ、ω 按 \gamma、\omega 认）
 //      数值的原文片段必须真在草稿/题目里、且包含那个数；常数只认常数表的 id（值以表为准）。
 //      任何一条不过 → 这一处不算，告诉学生为什么。
 //   ④ 计算：compute-expr.ts 的双精度求值（模型不出数）。
@@ -37,11 +39,13 @@ import {
   formatComputed,
   fullPrecision,
   latexNumbers,
+  normalizeGreek,
   normalizeQuote,
   numberIn,
   quoteInText,
   symbolBase,
   symbolInLatex,
+  symbolNameOfWritten,
   type ComputeFill,
   type ComputeTarget,
 } from './compute-fill.js';
@@ -53,6 +57,8 @@ export type ComputeSource = 'draft' | 'problem' | 'stem' | 'part' | 'answer' | '
 
 export interface ComputeValue {
   symbol: string;
+  /** 这个字母在待算式里的写法（与 symbol 不同时才有：学生把 ω₀ 写成 `w_0`） */
+  written?: string;
   value: number;
   unit: string;
   source: ComputeSource;
@@ -148,7 +154,7 @@ interface RawTranscription {
   id: string;
   status: string;
   expr: string;
-  values: Array<{ symbol: string; value: number; unit: string; source: string; quote: string; constant: string }>;
+  values: Array<{ symbol: string; written: string; value: number; unit: string; source: string; quote: string; constant: string }>;
   missing: string[];
   reason: string;
   note: string;
@@ -189,8 +195,8 @@ export function buildComputePrompt(input: {
   const sourceEnum = standalone ? 'draft / problem / constant' : 'draft / problem / stem / part / answer / constant';
   const example =
     '{"targets":[{"id":"t1","status":"ok","expr":"sqrt(2*g*h)","values":[' +
-    '{"symbol":"g","value":9.81,"unit":"m/s^2","source":"draft","quote":"g = 9.81\\\\,\\\\mathrm{m/s^2}","constant":""},' +
-    '{"symbol":"h","value":1.5,"unit":"m","source":"problem","quote":"h = 1{,}5\\\\,\\\\mathrm{m}","constant":""}],' +
+    '{"symbol":"g","written":"g","value":9.81,"unit":"m/s^2","source":"draft","quote":"g = 9.81\\\\,\\\\mathrm{m/s^2}","constant":""},' +
+    '{"symbol":"h","written":"h","value":1.5,"unit":"m","source":"problem","quote":"h = 1{,}5\\\\,\\\\mathrm{m}","constant":""}],' +
     '"missing":[],"reason":"","note":""}]}';
 
   if (zh) {
@@ -212,7 +218,8 @@ export function buildComputePrompt(input: {
       '- 数字、`+ - * / ^`、括号；乘号一律写 `*`',
       '- 函数：sqrt(x)、root(x, n)、sin cos tan asin acos atan sinh cosh tanh（弧度）、exp(x)、ln(x)、log(x, b)、log10(x)、abs(x)、factorial(n)',
       '- 常数 pi；欧拉数写 exp(1)，不要写 e',
-      '- 字母命名 `底_下标`：\\alpha → alpha，v_0 → v_0，F_{\\text{N}} → F_N，\\Delta t → Delta_t，\\varepsilon_0 → epsilon_0',
+      '- 字母命名 `底_下标`：\\alpha → alpha，v_0 → v_0，F_{\\text{N}} → F_N，\\Delta t → Delta_t，\\varepsilon_0 → epsilon_0；' +
+        '直接打出来的希腊字母同样处理（γ → gamma，ω_0 → omega_0）。学生用别的字母代替希腊字母（把 ω₀ 写成 w_0）就照写 w_0',
       '- `\\frac{a}{b}` → (a)/(b)，`\\sqrt[3]{x}` → root(x, 3)，`10^{-3}` → 10^(-3)，`a \\cdot b`、`a \\times b`、`ab` → a*b',
       '- `\\lg` → log10，`\\ln` → ln，`\\log_b` → log(x, b)；不带底的 `\\log` 当 ln，并在 note 里说一句',
       '',
@@ -232,7 +239,8 @@ export function buildComputePrompt(input: {
       '只输出一个 JSON 对象，不要别的文字。示例：',
       example,
       '- status：ok（每个字母都有数值）/ missing（有字母找不到数值，名字列进 missing）/ unsupported',
-      `- values：算式里每个字母一条。source 写 ${sourceEnum}；quote 是数值所在位置的**原文片段**（从上面那段原文里逐字复制，包含那个数）；`,
+      `- values：算式里每个字母一条。written 是这个字母在待算式里的**原样写法**（\`w_0\`、\`γ\`、\`\\omega_0\`）；source 写 ${sourceEnum}；quote 是数值所在位置的**原文片段**（从上面那段原文里逐字复制，包含那个数）；`,
+      '  数值可以写在同一个量的另一种写法下（式子里是 w_0，题目里写的是 \\omega_0 = …）：quote 照抄那一处',
       '  常数：source 写 "constant"，constant 写表里的 id，quote 留空',
       '- 纯数字的待算式 values 留空数组',
     ].join('\n');
@@ -255,7 +263,8 @@ export function buildComputePrompt(input: {
     '- numbers, `+ - * / ^`, parentheses; always write `*` for multiplication',
     '- functions: sqrt(x), root(x, n), sin cos tan asin acos atan sinh cosh tanh (radians), exp(x), ln(x), log(x, b), log10(x), abs(x), factorial(n)',
     '- constant pi; Euler\'s number is exp(1), never e',
-    '- letters as `base_sub`: \\alpha → alpha, v_0 → v_0, F_{\\text{N}} → F_N, \\Delta t → Delta_t, \\varepsilon_0 → epsilon_0',
+    '- letters as `base_sub`: \\alpha → alpha, v_0 → v_0, F_{\\text{N}} → F_N, \\Delta t → Delta_t, \\varepsilon_0 → epsilon_0; ' +
+      'Greek letters typed directly work the same (γ → gamma, ω_0 → omega_0). If the student uses another letter for a Greek one (w_0 for ω₀), keep w_0',
     '- `\\frac{a}{b}` → (a)/(b), `\\sqrt[3]{x}` → root(x, 3), `10^{-3}` → 10^(-3), `a \\cdot b`, `a \\times b`, `ab` → a*b',
     '- `\\lg` → log10, `\\ln` → ln, `\\log_b` → log(x, b); a bare `\\log` is ln, and say so in note',
     '',
@@ -275,7 +284,8 @@ export function buildComputePrompt(input: {
     'Output a single JSON object and nothing else. Example:',
     example,
     '- status: ok (every letter has a value) / missing (some letter has no value; list it in missing) / unsupported',
-    `- values: one entry per letter. source is ${sourceEnum}; quote is the **verbatim snippet** of that text where the number is written (it must contain the number);`,
+    `- values: one entry per letter. written is how the letter appears **in the target** (\`w_0\`, \`γ\`, \`\\omega_0\`); source is ${sourceEnum}; quote is the **verbatim snippet** of that text where the number is written (it must contain the number);`,
+    '  the number may be written under another notation for the same quantity (w_0 in the target, \\omega_0 = … in the problem): quote that place',
     '  constants: source "constant", constant = the table id, quote empty',
     '- a purely numeric target has an empty values array',
   ].join('\n');
@@ -307,6 +317,7 @@ export function parseComputeOutput(raw: string | null): RawTranscription[] | nul
         .slice(0, 24)
         .map((v) => ({
           symbol: str(v.symbol, 40),
+          written: str(v.written, 60),
           value: typeof v.value === 'number' ? v.value : Number(str(v.value, 60)),
           unit: str(v.unit, 40),
           source: str(v.source, 20),
@@ -330,7 +341,7 @@ export function parseComputeOutput(raw: string | null): RawTranscription[] | nul
 export function assignedInText(sym: string, text: string): boolean {
   if (!text) return false;
   // 不用 normalizeQuote：它连空白一起删，"Lichtgeschwindigkeit c = 3" 会粘成 "keitc=3"，认不出 c
-  const norm = text
+  const norm = normalizeGreek(text)
     .replace(/\{,\}/g, ',')
     .replace(/\\[,;:! ]|\\q?quad|~/g, ' ')
     .replace(/[{}$]/g, '');
@@ -382,8 +393,25 @@ export function evaluateTranscription(
   item.expr = exprText(node);
 
   // ---- 护栏 1：量必须是式子里的量（不许模型自己代别的公式进来）----
+  // 名字按意思取的（学生把 ω₀ 写成 `w_0`，转写叫它 omega_0），由模型在 written 里说它在式子里怎么写：
+  // 那个写法要真在式子里，而且一个写法只能对应一个量（不许借式子里的一个字母塞进两个量）。
   const symbols = exprSymbols(node);
-  const foreign = symbols.filter((s) => !symbolInLatex(s, target.latex));
+  /** 改了名的量 → 它在式子里的名字 */
+  const writtenOf = new Map<string, string>();
+  const claimed = new Set(symbols.filter((s) => symbolInLatex(s, target.latex)));
+  const foreign: string[] = [];
+  for (const s of symbols) {
+    if (claimed.has(s)) continue;
+    const w = symbolNameOfWritten(r.values.find((v) => v.symbol === s)?.written ?? '');
+    if (w && symbolInLatex(w, target.latex) && !claimed.has(w)) {
+      claimed.add(w);
+      writtenOf.set(s, w);
+    } else foreign.push(s);
+  }
+  /** 给人看的名字（照学生的写法）；查"原文给没给这个字母赋值"时两个名字都查 */
+  const shown = (sym: string): string => writtenOf.get(sym) ?? sym;
+  const assignedIn = (sym: string, text: string): boolean =>
+    assignedInText(sym, text) || (writtenOf.has(sym) && assignedInText(writtenOf.get(sym)!, text));
   if (foreign.length) {
     item.status = 'rejected';
     item.reason = tr(
@@ -427,7 +455,7 @@ export function evaluateTranscription(
   for (const sym of symbols) {
     const v = r.values.find((x) => x.symbol === sym);
     if (!v || r.missing.includes(sym)) {
-      missing.push(sym);
+      missing.push(shown(sym));
       continue;
     }
     if (v.source === 'constant') {
@@ -435,26 +463,26 @@ export function evaluateTranscription(
       const id = v.constant || v.symbol;
       const c = Object.prototype.hasOwnProperty.call(COMPUTE_CONSTANTS, id) ? COMPUTE_CONSTANTS[id] : undefined;
       if (!c) {
-        missing.push(sym);
-        bad.push(sym);
+        missing.push(shown(sym));
+        bad.push(shown(sym));
         continue;
       }
       // 学生（或题目、前面的小题）自己给了这个量的数值（`g = 9.81`）：计算器按写出来的数算，不许常数表顶替
-      if (texts.some((t) => assignedInText(sym, t.raw))) {
-        missing.push(sym);
-        overridden.push(sym);
+      if (texts.some((t) => assignedIn(sym, t.raw))) {
+        missing.push(shown(sym));
+        overridden.push(shown(sym));
         continue;
       }
       values.set(sym, c.value);
-      item.values.push({ symbol: sym, value: c.value, unit: c.unit, source: 'constant', quote: tr(c.zh, c.en) });
+      item.values.push({ symbol: sym, ...(writtenOf.has(sym) ? { written: shown(sym) } : {}), value: c.value, unit: c.unit, source: 'constant', quote: tr(c.zh, c.en) });
       continue;
     }
     // 片段要真在原文里（且不是从某个数的中间切出来的），数值要和片段里写的某个数**相等**（含符号）
     const q = normalizeQuote(v.quote);
     const found = texts.find((t) => quoteInText(q, t.norm));
     if (!Number.isFinite(v.value) || !found || !numberIn(v.value, latexNumbers(v.quote))) {
-      missing.push(sym);
-      bad.push(sym);
+      missing.push(shown(sym));
+      bad.push(shown(sym));
       continue;
     }
     // 草稿和本小题题干说了算：它们给了这个字母**另一个**数，转写却拿了更靠后的出处（大题题干、前面的小题）→ 不算。
@@ -462,15 +490,16 @@ export function evaluateTranscription(
     const foundAt = texts.indexOf(found);
     const shadow = texts
       .slice(0, foundAt)
-      .find((t) => (t.source === 'draft' || t.source === 'problem') && assignedInText(sym, t.raw) && !numberIn(v.value, latexNumbers(t.raw)));
+      .find((t) => (t.source === 'draft' || t.source === 'problem') && assignedIn(sym, t.raw) && !numberIn(v.value, latexNumbers(t.raw)));
     if (shadow) {
-      missing.push(sym);
-      shadowed.push(sym);
+      missing.push(shown(sym));
+      shadowed.push(shown(sym));
       continue;
     }
     values.set(sym, v.value);
     item.values.push({
       symbol: sym,
+      ...(writtenOf.has(sym) ? { written: shown(sym) } : {}),
       value: v.value,
       unit: v.unit,
       source: found.source,
@@ -600,7 +629,8 @@ export async function runCompute(input: ComputeInput, askLlm: AskLlm, verify?: P
   }
 
   // ---- py-compute 复算 ----
-  let verifier: ComputeResult['verifier'] = { kind: 'none', note: tr('没有配置 py-compute', 'py-compute is not configured') };
+  // 配了 py-compute、只是这次没有一处算出数（转写越界、缺数值……）时不报"没配置"：那是假话
+  let verifier: ComputeResult['verifier'] = verify ? { kind: 'none' } : { kind: 'none', note: tr('没有配置 py-compute', 'py-compute is not configured') };
   if (jobs.length && verify) {
     const v = await verify(jobs).catch((e: Error) => ({ ok: false as const, error: e.message }));
     if (v.ok) {

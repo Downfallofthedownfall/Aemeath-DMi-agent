@@ -25,6 +25,7 @@ import {
   normalizeQuote,
   quoteInText,
   symbolInLatex,
+  symbolNameOfWritten,
 } from '../lib/compute-fill.js';
 import { assignedInText, buildComputePrompt, evaluateTranscription, runCompute, sameNumber } from '../lib/compute.js';
 import { statementSourcesFor } from '../lib/parts.js';
@@ -354,6 +355,90 @@ await t('出处：草稿/本小题给了另一个数 → 不许拿大题题干�
   assert.match(r3.item.reason, /常数表|constant table/);
 });
 
+// ───────────── 3c. 直接打的希腊字母 / 换了写法的字母（2026-11-28）─────────────
+// 截图里的式子：ω₀ 写成 w_0、γ 直接打出来，转写成 omega_0 / gamma 后被"式子里没有的量"拒掉。
+const omegaDraft = [
+  '$=\\frac{w_0^2}{\\sqrt{w_0^4-32\\pi^2w_0^2+256\\pi^4+64γ^2\\pi^2}}=\\frac{w_0^4}{w_0^4-32\\pi^2w_0^2+256\\pi^4+64γ^2\\pi^2}\\approx$',
+  '$w_0\\approx22,68$, $γ\\approx0,073\\text{Hz}$',
+].join('\n');
+const omegaExpected = 22.68 ** 4 / (22.68 ** 4 - 32 * Math.PI ** 2 * 22.68 ** 2 + 256 * Math.PI ** 4 + 64 * 0.073 ** 2 * Math.PI ** 2);
+const omegaExpr = (w) => `(${w}^4)/(${w}^4-32*pi^2*${w}^2+256*pi^4+64*gamma^2*pi^2)`;
+const wVal = (symbol, written) => ({ ...val(symbol, 22.68, 'w_0\\approx22,68'), written });
+const gVal = (written = '') => ({ ...val('gamma', 0.073, 'γ\\approx0,073'), written });
+
+await t('希腊字母：直接打的 γ 与 \\gamma 同等（式子里的量、赋值、原文片段、只有一个字母）', async () => {
+  assert.equal(symbolInLatex('gamma', '64γ^2\\pi^2'), true);
+  assert.equal(symbolInLatex('omega_0', '\\frac{1}{ω_0}'), true);
+  assert.equal(symbolInLatex('gamma', '64x^2'), false);
+  assert.equal(assignedInText('gamma', '$γ\\approx0,073\\text{Hz}$'), true);
+  assert.equal(quoteInText(normalizeQuote('\\gamma \\approx 0{,}073'), normalizeQuote('$w_0\\approx22,68$, $γ\\approx0,073$')), true);
+  assert.equal(findComputeTargets('$γ =$')[0].skip, 'bare_symbol');
+  assert.equal(symbolNameOfWritten('w_0'), 'w_0');
+  assert.equal(symbolNameOfWritten('γ'), 'gamma');
+  assert.equal(symbolNameOfWritten('\\omega_{0}'), 'omega_0');
+  assert.equal(symbolNameOfWritten('\\varepsilon_0'), 'epsilon_0');
+  assert.equal(symbolNameOfWritten('F_{\\text{N}}'), 'F_N');
+  assert.equal(symbolNameOfWritten('ab'), '', '两个字母是 a·b，不是一个字母');
+  assert.equal(symbolNameOfWritten('w_0 + 1'), '');
+});
+
+await t('截图那一处：照学生的字母转写（w_0、γ → gamma）→ 算出来', async () => {
+  const r = evaluateTranscription(target(omegaDraft), base({ expr: omegaExpr('w_0'), values: [wVal('w_0'), gVal()] }), { draft: omegaDraft, problemText: '' });
+  assert.equal(r.item.status, 'ok', r.item.reason);
+  assert.ok(Math.abs(r.item.value - omegaExpected) < 1e-9 * omegaExpected);
+});
+
+await t('按意思改名（omega_0）+ written 报出式子里的写法 w_0 → 认；结果框标出对应', async () => {
+  const r = evaluateTranscription(
+    target(omegaDraft),
+    base({ expr: omegaExpr('omega_0'), values: [wVal('omega_0', 'w_0'), gVal('γ')] }),
+    { draft: omegaDraft, problemText: '' },
+  );
+  assert.equal(r.item.status, 'ok', r.item.reason);
+  assert.ok(Math.abs(r.item.value - omegaExpected) < 1e-9 * omegaExpected);
+  assert.deepEqual(r.item.values.map((v) => [v.symbol, v.written]), [['omega_0', 'w_0'], ['gamma', undefined]]);
+});
+
+await t('改名的护栏：没报 written / written 不在式子里 / 一个写法给两个量 → 仍然拒绝', async () => {
+  const run = (expr, values) => evaluateTranscription(target(omegaDraft), base({ expr, values }), { draft: omegaDraft, problemText: '' }).item;
+  const noWritten = run(omegaExpr('omega_0'), [wVal('omega_0', ''), gVal()]);
+  assert.equal(noWritten.status, 'rejected');
+  assert.match(noWritten.reason, /omega_0/);
+  const notInFormula = run(omegaExpr('omega_0'), [wVal('omega_0', 'x_0'), gVal()]);
+  assert.equal(notInFormula.status, 'rejected');
+  // w_0 已经直接用了，omega_0 再借 w_0 → 式子里一个字母变成了两个量
+  const twice = run('(w_0^4)/(w_0^4-32*pi^2*omega_0^2+256*pi^4+64*gamma^2*pi^2)', [wVal('w_0', 'w_0'), wVal('omega_0', 'w_0'), gVal()]);
+  assert.equal(twice.status, 'rejected');
+  assert.match(twice.reason, /omega_0/);
+});
+
+await t('改名的量：原文给了 w 的数，常数表不许顶替；缺数值时按学生的写法提示', async () => {
+  const draft = '$w = 3$ $t = 2$\n$x = w \\cdot t =$';
+  const over = evaluateTranscription(
+    target(draft),
+    base({ expr: 'omega*t', values: [{ ...val('omega', 9.80665, '', 'constant', 'g_n'), written: 'w' }, val('t', 2, 't = 2')] }),
+    { draft, problemText: '' },
+  );
+  assert.equal(over.item.status, 'missing');
+  assert.match(over.item.reason, /常数表/);
+  const miss = evaluateTranscription(
+    target('$x = w \\cdot t =$'),
+    base({ expr: 'omega*t', values: [{ ...val('omega', 3, 'w = 3'), written: 'w' }], missing: ['t'] }),
+    { draft: '$x = w \\cdot t =$', problemText: '' },
+  );
+  assert.equal(miss.item.status, 'missing');
+  assert.deepEqual(miss.item.missing, ['w', 't']);
+});
+
+await t('prompt：要求 written、直接打的希腊字母、换了写法的数值可以引用', async () => {
+  for (const lang of ['zh', 'en']) {
+    const p = buildComputePrompt({ draft: omegaDraft, problemText: '', targets: findComputeTargets(omegaDraft), lang });
+    assert.match(p, /"written":"g"/);
+    assert.match(p, /γ → gamma/);
+    assert.match(p, /w_0/);
+  }
+});
+
 // ───────────── 4. 整条流水线（假模型 + 假复算）─────────────
 const fakeLlm = (payload, seen = []) => async (prompt, opts) => {
   seen.push({ prompt, opts });
@@ -396,6 +481,21 @@ await t('流水线：与 py-compute 不一致 → 不填、标出两个数；py-
   assert.ok(r2.items[0].fill);
   assert.equal(r2.verifier.kind, 'none');
   assert.equal(r2.verifier.note, 'Python not found');
+});
+
+await t('流水线：配了 py-compute、只是这次一处都没算出来 → 不报"没有配置"；真没配才报', async () => {
+  const rejected = { targets: [{ id: 't1', status: 'ok', expr: 'sqrt(2*g*h)*cos(theta)', values: [] }] };
+  let called = 0;
+  const verify = async () => {
+    called++;
+    return { ok: true, results: new Map() };
+  };
+  const r = await runCompute({ draft: draft1, problemText: '', lang: 'zh' }, fakeLlm(rejected), verify);
+  assert.equal(r.items[0].status, 'rejected');
+  assert.equal(called, 0, '没有要复算的就不调 py-compute');
+  assert.deepEqual(r.verifier, { kind: 'none' });
+  const noPy = await runCompute({ draft: draft1, problemText: '', lang: 'zh' }, fakeLlm(rejected));
+  assert.match(noPy.verifier.note ?? '', /没有配置 py-compute/);
 });
 
 await t('流水线：没有结尾 = → 报错且不调模型；只有一个字母 → 不调模型；sin(pi) 这种相消按 0', async () => {

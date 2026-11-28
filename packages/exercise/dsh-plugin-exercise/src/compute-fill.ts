@@ -201,7 +201,7 @@ function lastLink(text: string): string {
 
 /** 去掉排版用的空白命令，判断"只有一个字母"。 */
 function isBareSymbol(latex: string): boolean {
-  const s = latex
+  const s = normalizeGreek(latex)
     .replace(/\\[,;:! ]|\\q?quad|~/g, '')
     .replace(/\\(?:left|right|displaystyle)\b/g, '')
     .replace(/\s+/g, '');
@@ -266,10 +266,43 @@ const NON_SYMBOL_COMMANDS = new Set([
 /** 内容是单位/文字的命令：里面的字母不是量。 */
 const TEXT_COMMANDS = /\\(?:mathrm|text|textrm|operatorname|unit|si|SI)\s*\{[^{}]*\}/g;
 
-/** 式子里出现的"量"的底名：单个字母（`v`）与希腊字母等命令（`alpha`，去掉 var 前缀）。 */
+/**
+ * 直接打出来的希腊字母（`γ`、`ω`）→ LaTeX 命令。KaTeX 照样渲染它们，学生也常这么写；
+ * 不换的话护栏只认 ASCII 字母和 `\命令`，`64γ^2` 里的 γ 就不算式子里的量。
+ */
+const UNICODE_GREEK: Record<string, string> = {
+  α: 'alpha', β: 'beta', γ: 'gamma', δ: 'delta', ε: 'varepsilon', ϵ: 'epsilon', ζ: 'zeta', η: 'eta', θ: 'theta', ϑ: 'vartheta',
+  ι: 'iota', κ: 'kappa', λ: 'lambda', μ: 'mu', µ: 'mu', ν: 'nu', ξ: 'xi', π: 'pi', ϖ: 'varpi', ρ: 'rho', ϱ: 'varrho',
+  σ: 'sigma', ς: 'varsigma', τ: 'tau', υ: 'upsilon', φ: 'varphi', ϕ: 'phi', χ: 'chi', ψ: 'psi', ω: 'omega',
+  Γ: 'Gamma', Δ: 'Delta', Θ: 'Theta', Λ: 'Lambda', Ξ: 'Xi', Π: 'Pi', Σ: 'Sigma', Υ: 'Upsilon', Φ: 'Phi', Ψ: 'Psi', Ω: 'Omega',
+};
+const UNICODE_GREEK_RE = new RegExp(`[${Object.keys(UNICODE_GREEK).join('')}]`, 'g');
+
+/** 把直接打出来的希腊字母换成 `\命令 `（后面带空格：`γx` 不能粘成 `\gammax`）。 */
+export function normalizeGreek(s: string): string {
+  return s.replace(UNICODE_GREEK_RE, (ch) => `\\${UNICODE_GREEK[ch]} `);
+}
+
+/**
+ * 待算式里一个字母的原样写法（`w_0`、`γ`、`\omega_{0}`、`F_{\text{N}}`）→ 算式里的名字（`w_0`、`gamma`、`omega_0`、`F_N`）。
+ * 认不出是一个字母就返回空串。
+ */
+export function symbolNameOfWritten(written: string): string {
+  const s = normalizeGreek(written)
+    .replace(/\\(?:mathrm|text|textrm|mathit|mathbf|boldsymbol|operatorname)\s*\{([^{}]*)\}/g, '$1')
+    .replace(/[\s{}$]/g, '');
+  const m = /^\\?([A-Za-z]+)(?:_([A-Za-z0-9]+))?$/.exec(s);
+  if (!m) return '';
+  // 不带反斜杠的多个字母不是一个字母（`ab` 是 a·b）
+  if (!s.startsWith('\\') && m[1]!.length > 1) return '';
+  const base = m[1]!.replace(/^var/, '');
+  return m[2] ? `${base}_${m[2]}` : base;
+}
+
+/** 式子里出现的"量"的底名：单个字母（`v`）与希腊字母等命令（`alpha`，去掉 var 前缀；`γ` 也算 gamma）。 */
 export function latexSymbolBases(latex: string): Set<string> {
   const out = new Set<string>();
-  const s = latex.replace(TEXT_COMMANDS, ' ');
+  const s = normalizeGreek(latex).replace(TEXT_COMMANDS, ' ');
   for (let i = 0; i < s.length; i++) {
     const c = s[i]!;
     if (c === '\\') {
@@ -371,9 +404,9 @@ export function numberIn(value: number, numbers: readonly number[], signed = tru
   });
 }
 
-/** 去掉空白/排版命令/花括号，用来做"原文片段确实在原文里"的比较。 */
+/** 去掉空白/排版命令/花括号，用来做"原文片段确实在原文里"的比较（`γ` 与 `\gamma` 算同一个）。 */
 export function normalizeQuote(s: string): string {
-  return s
+  return normalizeGreek(s)
     .replace(/\{,\}/g, ',')
     .replace(/\\[,;:! ]|\\q?quad|~/g, '')
     .replace(/[\s{}$]/g, '');

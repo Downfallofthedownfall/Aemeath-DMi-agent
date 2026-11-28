@@ -18,6 +18,8 @@ import { useT } from './i18n.ts';
 
 export interface ComputeValueView {
   symbol: string;
+  /** 这个字母在你式子里的写法（与 symbol 不同时才有：ω₀ 写成了 `w_0`） */
+  written?: string;
   value: number;
   unit: string;
   source: 'draft' | 'problem' | 'stem' | 'part' | 'answer' | 'constant';
@@ -157,7 +159,14 @@ export function ComputeBox({
                     {it.values.map((v, i) => (
                       <span key={v.symbol} title={v.quote}>
                         {i ? t('exercise.common.listSep') : ''}
-                        <code>{v.symbol}</code> = {shortNumber(v.value)}
+                        <code>{v.symbol}</code>
+                        {v.written ? (
+                          <>
+                            {' ≙ '}
+                            <code>{v.written}</code>
+                          </>
+                        ) : null}{' '}
+                        = {shortNumber(v.value)}
                         {v.unit ? ` ${v.unit}` : ''}（{t(SOURCE_KEY[v.source] ?? SOURCE_KEY.draft!, { part: v.part ?? '' })}）
                       </span>
                     ))}
