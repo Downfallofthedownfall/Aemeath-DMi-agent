@@ -2613,6 +2613,13 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
     return { ok: true, html };
   };
 
+  /**
+   * 习题 HTTP 桥的地址。桥只注册在 `/aemeath/api/exercise`（exact 路由），动作走 `?action=`：
+   * 写成 `…/exercise/submission` 这种子路径匹配不到任何路由，浏览器拿到 404，下载就失败。
+   */
+  const exerciseApiUrl = (action: 'submission' | 'print', courseId: string, sheetId: string, extra: Record<string, string> = {}): string =>
+    `/aemeath/api/exercise?${new URLSearchParams({ action, course: courseId, sheet: sheetId, ...extra }).toString()}`;
+
   const buildSubmission = async (input: {
     courseId: string;
     sheetId: string;
@@ -2663,7 +2670,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
           '没找到 Chrome / Edge / Chromium —— 无法自动生成 PDF。\n可以：① 装一个 Chrome/Edge；② 或者在设置里填 chromePath；\n③ 或者用下面的打印页在浏览器里「打印 → 另存为 PDF」（本机浏览器一定有）。',
           'No Chrome / Edge / Chromium found — cannot generate the PDF automatically.\nOptions: 1) install Chrome/Edge; 2) set chromePath in the settings;\n3) use the print page below and choose “Print → Save as PDF” in your browser (every machine has a browser).',
         ),
-        print_url: `/aemeath/api/exercise/print?course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}&draft=0&autoprint=1`,
+        print_url: exerciseApiUrl('print', input.courseId, input.sheetId),
       } as const;
     }
 
@@ -2683,7 +2690,7 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       return {
         ok: false,
         error: tr(`PDF 生成失败：${res.error ?? '未知错误'}`, `PDF generation failed: ${res.error ?? 'unknown error'}`),
-        print_url: `/aemeath/api/exercise/print?course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}&autoprint=1`,
+        print_url: exerciseApiUrl('print', input.courseId, input.sheetId),
         command: res.command ?? '',
       } as const;
     }
@@ -2724,7 +2731,6 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       `${draft ? '草稿 PDF' : '提交包'}已生成：${outPdf}（${res.pages} 页 / ${Math.round((res.bytes ?? 0) / 1024)} KB）` +
         `renderer=${res.renderer ?? chrome.name} merged=${res.merged}`,
     );
-    const query = `course=${encodeURIComponent(input.courseId)}&sheet=${encodeURIComponent(input.sheetId)}`;
     return {
       ok: true,
       file: outPdf,
@@ -2734,8 +2740,8 @@ export async function apply(ctx: Context, config: ExerciseConfig): Promise<void>
       math_warnings: mathWarnings,
       draft,
       // `submission` 端点只发正式提交件，所以草稿不给下载地址（用返回的 file 路径）
-      ...(draft ? {} : { url: `/aemeath/api/exercise/submission?${query}&download=1` }),
-      print_url: `/aemeath/api/exercise/print?${query}${draft ? '&draft=1' : ''}`,
+      ...(draft ? {} : { url: exerciseApiUrl('submission', input.courseId, input.sheetId, { download: '1' }) }),
+      print_url: exerciseApiUrl('print', input.courseId, input.sheetId, draft ? { draft: '1' } : {}),
     } as const;
   };
 

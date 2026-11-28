@@ -694,7 +694,7 @@ export function Workbench({ onClose, standalone = false }: WorkbenchProps): JSX.
     if (!courseId || !sheet) return;
     const q = new URLSearchParams({ action: kind, course: courseId, sheet: sheet.id });
     if (download) q.set('download', '1');
-    window.open(`${API_BASE}?${q.toString()}`, '_blank');
+    openOrDownload(`${API_BASE}?${q.toString()}`);
   };
 
   const openPrint = (): void => {

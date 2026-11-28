@@ -8,6 +8,9 @@
 // ============================================================
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildCheckPrompt, parseCheckOutput, parseJsonLoose, runCheck, repairTruncatedJson } from '../lib/checker.js';
 import { checkWriteOrigin, handleExerciseHttp } from '../lib/http.js';
 import { ASK_HISTORY_TURNS, buildAskPrompt, parseAskOutput, runAsk } from '../lib/ask.js';
@@ -266,6 +269,33 @@ await asyncT('GET submission 没有文件 → 404（不返回空 PDF）', async 
   const res = makeRes();
   await handleExerciseHttp(makeReq('GET', '/aemeath/api/exercise?action=submission&course=c&sheet=s'), res, fakeDeps([]));
   assert.equal(res.out.status, 404);
+});
+
+await asyncT('GET submission&download=1 有文件 → 200 PDF 附件', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'exercise-sub-'));
+  const pdf = join(dir, 'physik-1-ub01-submission.pdf');
+  writeFileSync(pdf, '%PDF-1.4\n%%EOF\n');
+  try {
+    const res = makeRes();
+    await handleExerciseHttp(
+      makeReq('GET', '/aemeath/api/exercise?action=submission&course=c&sheet=s&download=1'),
+      res,
+      { ...fakeDeps([]), submissionPdfPath: () => pdf },
+    );
+    assert.equal(res.out.status, 200);
+    assert.equal(res.out.headers['Content-Type'], 'application/pdf');
+    assert.match(res.out.headers['Content-Disposition'], /^attachment; filename\*=UTF-8''physik-1-ub01-submission\.pdf$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+t('下载/打印地址走 ?action=，不拼子路径（桥只注册了 exact 的 /aemeath/api/exercise，子路径 404）', () => {
+  for (const rel of ['../src/index.ts', '../src/client/workbench.tsx', '../src/client/api.ts']) {
+    const src = readFileSync(new URL(rel, import.meta.url), 'utf-8');
+    const bad = [...src.matchAll(/\/aemeath\/api\/exercise\/(?!assets\b)([A-Za-z_]+)/g)].map((m) => m[0]);
+    assert.deepEqual(bad, [], `${rel} 里有匹配不到路由的地址：${bad.join(', ')}`);
+  }
 });
 
 await asyncT('POST 跨站 Origin → 403（DNS 重绑定/CSRF 防护）', async () => {
